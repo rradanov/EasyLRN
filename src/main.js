@@ -33,7 +33,7 @@ function render(resolved) {
   barTitle.textContent = screen.title;
   mount(barStart, screen.back
     ? h('a', { class: 'back-link', href: screen.back.href, 'aria-label': `Назад към ${screen.back.label}` },
-        h('span', { 'aria-hidden': 'true', text: '‹ ' }), screen.back.label)
+        h('span', { 'aria-hidden': 'true', text: '‹\u00A0' }), screen.back.label)
     : null);
   settingsLink.hidden = resolved?.match.path === '/settings';
   mount(main, screen.body);

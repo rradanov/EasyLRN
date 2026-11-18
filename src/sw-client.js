@@ -1,6 +1,6 @@
 // Service Worker registration and the "new version available" flow.
 // A new SW installs in the background and waits; the user decides when to
-// switch by pressing "Обнови" (then the waiting SW activates and the page reloads).
+// switch by pressing "Презареди" (then the waiting SW activates and the page reloads).
 
 /**
  * @param {(applyUpdate: () => void) => void} onUpdateReady called when a new version is waiting

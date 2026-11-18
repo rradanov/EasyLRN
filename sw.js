@@ -2,10 +2,10 @@
 // - Precaches the app shell under a versioned cache name.
 // - Serves the shell cache-first, so the app opens offline.
 // - A new version installs in the background and waits until the page
-//   sends {type: 'SKIP_WAITING'} (the user pressed "Обнови").
+//   sends {type: 'SKIP_WAITING'} (the user pressed "Презареди").
 // Course files (./c/<course>/<path> from IndexedDB) will be served here in T-009.
 
-const VERSION = '0.1.0'; // keep in sync with src/config.js
+const VERSION = '0.1.1'; // keep in sync with src/config.js
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 

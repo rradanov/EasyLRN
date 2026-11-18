@@ -42,6 +42,8 @@ test.describe('loading', () => {
     await expect(page.locator('#app-bar-title')).toHaveText('EasyLRN');
     await expect(screen(page, 'courses').getByRole('heading', { name: 'Моите курсове' })).toBeVisible();
     await expect(page.locator('#update-banner')).toBeHidden();
+    // UI-DESIGN §10: "Има нова версия. [Презареди]".
+    await expect(page.locator('#update-button')).toHaveText('Презареди');
     await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
     await page.reload();
     await expect(screen(page, 'courses')).toBeVisible();
@@ -117,6 +119,9 @@ test.describe('routes', () => {
     await expect(page).toHaveTitle('Настройки · EasyLRN');
     await expect(page.locator('#nav-settings')).toBeHidden();
     await expect(page.locator('[data-field="version"]')).toHaveText(/^\d+\.\d+\.\d+$/);
+
+    // A real (non-collapsing) space after "‹".
+    expect(await page.locator('.back-link').textContent()).toBe('‹\u00A0Курсове');
 
     await page.goBack();
     await expect(screen(page, 'courses')).toBeVisible();
