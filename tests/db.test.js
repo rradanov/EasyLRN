@@ -355,6 +355,259 @@ test('1000 анотации: заявка по документ (за сведе
   return `${ms.toFixed(1)} ms за 500 от 1000`;
 });
 
+// --- T-006 (tester): edge cases ---------------------------------------------
+const sel = (exact, start = 0, prefix = '', suffix = '') => ({ quote: { exact, prefix, suffix }, position: { start, end: start + exact.length } });
+const annOn = (type, id, exact = 'текст', extra = {}) => db.createAnnotation({ courseId: COURSE, target: { type, id }, selector: sel(exact), ...extra });
+
+test('T-006 празна база: четенията връщат празно, не грешка', async () => {
+  eq(await db.listCourses(), [], 'courses');
+  eq(await db.listLessons(COURSE), [], 'lessons');
+  eq(await db.listCourseFiles(COURSE), [], 'files');
+  eq(await db.getCourse('няма'), undefined, 'course');
+  eq(await db.annotationsFor({ type: 'lesson', id: LESSON }), [], 'annotations');
+  eq(await db.subtopicsByRoot(LESSON), [], 'subtopics by root');
+  eq(await db.getDocChildren({ type: 'message', id: 'няма' }), [], 'doc children');
+  const tree = await db.getLessonTree('няма');
+  eq([tree.record, tree.annotations], [undefined, []], 'tree of a missing lesson');
+  const s = await db.getSettings();
+  eq([s.model, s.maxTokensAnswer, s.maxTokensSubtopic, s.monthlyBudgetUSD, s.apiKey], ['claude-sonnet-5-5', 1500, 3000, 5, ''], 'default settings');
+  eq(await db.usageTotals(db.monthStart()), { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estCostUSD: 0 }, 'usage');
+});
+
+test('T-006 модел (ARCHITECTURE §3): всички полета се записват и четат', async () => {
+  const course = await db.putCourse({ id: COURSE, title: 'Курс', importedAt: '2026-11-18T10:00:00.000Z', files: 3,
+    meta: { mission: 'М', notes: 'Н', resources: 'Р', glossary: 'Г', index: 'И' } });
+  eq(Object.keys((await db.getCourse(COURSE)).meta).sort(), ['glossary', 'index', 'mission', 'notes', 'resources']);
+  const file = await db.putFile({ courseId: COURSE, path: 'lessons/0001-test.html', mime: 'text/html', blob: new Blob(['<h1>Урок</h1>']), sha256: 'f'.repeat(64) });
+  eq([file.key, file.mime, file.sha256.length], [`${COURSE}/lessons/0001-test.html`, 'text/html', 64]);
+  const lesson = await db.putLesson({ id: LESSON, courseId: COURSE, kind: 'reference', number: 'R01', title: 'Р', order: 2, path: 'lessons/0001-test.html', sha256: 'a', textCache: 'чист текст' });
+  eq([lesson.kind, lesson.textCache, lesson.progress], ['reference', 'чист текст', { status: 'new', lastOpenedAt: null, scrollY: 0 }]);
+  const a = await db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, targetVersion: 'a',
+    selector: { ...sel('съответствие', 10, 'x'.repeat(32), 'y'.repeat(32)), hint: { blockPath: 'main > p' } }, color: 'pink', anchorState: 'fuzzy' });
+  const ra = await db.getAnnotation(a.id);
+  eq([ra.targetVersion, ra.color, ra.anchorState, ra.selector.hint.blockPath, ra.selector.quote.prefix.length], ['a', 'pink', 'fuzzy', 'main > p', 32]);
+  for (const k of ['id', 'createdAt', 'updatedAt', 'deleted']) assert(k in ra, `common field ${k}`);
+  const th = await db.createThread({ annotationId: a.id, title: 'Въпрос' });
+  const m = await db.createMessage({ threadId: th.id, role: 'assistant', content: 'О', status: 'done', model: 'claude-sonnet-5-5', usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } });
+  eq([(await db.get(STORES.messages, m.id)).model, (await db.get(STORES.messages, m.id)).usage], ['claude-sonnet-5-5', { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }]);
+  const aM = await annOn('message', m.id, 'О');
+  const st = await db.createSubTopic({ annotationId: aM.id, kind: 'контекст', title: 'Т', content: '# Т', status: 'done', model: 'm', usage: { input: 5 } });
+  const rs = await db.getSubTopic(st.id);
+  eq([rs.courseId, rs.annotationId, rs.parent, rs.rootLessonId, rs.depth, rs.kind, rs.content, rs.status, rs.model, rs.usage],
+    [COURSE, aM.id, { type: 'message', id: m.id }, LESSON, 1, 'контекст', '# Т', 'done', 'm', { input: 5 }]);
+  const s = await db.saveSettings({ apiKey: 'k', colors: [{ id: 'yellow', label: 'Важно' }], fontScale: 1.25, twoColumnMode: true, lastBackupAt: '2026-11-18T00:00:00.000Z' });
+  eq([s.apiKey, s.fontScale, s.twoColumnMode, s.lastBackupAt, s.colors.length], ['k', 1.25, true, '2026-11-18T00:00:00.000Z', 1]);
+  const u = await db.logUsage({ model: 'm', kind: 'subtopic', input: 1, output: 2, cacheRead: 3, cacheWrite: 4, estCostUSD: 0.5 });
+  eq(Object.keys(u).filter((k) => ['id', 'at', 'model', 'kind', 'input', 'output', 'cacheRead', 'cacheWrite', 'estCostUSD'].includes(k)).length, 9, 'UsageLog fields');
+});
+
+/** lesson → A1 → subtopic S1 (d1) → A2 → thread → answer → A3 → subtopic S2 (d2)
+ *  → A4 → note → A5 → subtopic S3 (d3) → A6 → subtopic S4 (d4) → A7 → subtopic S5 (d5). */
+async function seedDeep() {
+  await db.putLesson({ id: LESSON, courseId: COURSE, title: 'Урок', order: 1 });
+  const A1 = await annOn('lesson', LESSON);
+  const S1 = await db.createSubTopic({ annotationId: A1.id, kind: 'термин', title: 'S1' });
+  const A2 = await annOn('subtopic', S1.id);
+  const T = await db.createThread({ annotationId: A2.id });
+  const Q = await db.createMessage({ threadId: T.id, role: 'user', content: 'Защо?' });
+  const ANS = await db.createMessage({ threadId: T.id, role: 'assistant', content: 'Защото', status: 'done' });
+  const A3 = await annOn('message', ANS.id);
+  const S2 = await db.createSubTopic({ annotationId: A3.id, kind: 'контекст', title: 'S2' });
+  const A4 = await annOn('subtopic', S2.id);
+  const N = await db.createNote({ annotationId: A4.id, body: 'бележка' });
+  const A5 = await annOn('note', N.id);
+  const S3 = await db.createSubTopic({ annotationId: A5.id, kind: 'задълбочаване', title: 'S3' });
+  const A6 = await annOn('subtopic', S3.id);
+  const S4 = await db.createSubTopic({ annotationId: A6.id, kind: 'термин', title: 'S4' });
+  const A7 = await annOn('subtopic', S4.id);
+  const S5 = await db.createSubTopic({ annotationId: A7.id, kind: 'термин', title: 'S5' });
+  return { A1, S1, A2, T, Q, ANS, A3, S2, A4, N, A5, S3, A6, S4, A7, S5 };
+}
+
+/** Follow the chain in a tree; returns the S5 node (or throws with the step that broke). */
+function walkDeep(tree) {
+  const step = (cond, what) => { if (!cond) throw new AssertionError(`tree broken at ${what}`); };
+  const s1 = tree.annotations[0]?.subtopics[0]; step(s1?.record?.title === 'S1', 'S1');
+  const ans = s1.annotations[0]?.threads[0]?.messages[1]; step(ans?.record?.content === 'Защото', 'answer');
+  const s2 = ans.annotations[0]?.subtopics[0]; step(s2?.record?.title === 'S2', 'S2');
+  const note = s2.annotations[0]?.notes[0]; step(note?.record?.body === 'бележка', 'note');
+  const s3 = note.annotations[0]?.subtopics[0]; step(s3?.record?.title === 'S3', 'S3');
+  const s4 = s3.annotations[0]?.subtopics[0]; step(s4?.record?.title === 'S4', 'S4');
+  const s5 = s4.annotations[0]?.subtopics[0]; step(s5?.record?.title === 'S5', 'S5');
+  return { s1, ans, s2, note, s3, s4, s5 };
+}
+
+test('T-006 рекурсия: тема → нишка → отговор → тема → бележка → тема… (5 нива)', async () => {
+  const t = await seedDeep();
+  eq([t.S1, t.S2, t.S3, t.S4, t.S5].map((s) => [s.depth, s.rootLessonId]), [[1, LESSON], [2, LESSON], [3, LESSON], [4, LESSON], [5, LESSON]], 'depth/root');
+  eq([t.S2.parent, t.S3.parent], [{ type: 'message', id: t.ANS.id }, { type: 'note', id: t.N.id }], 'parents');
+  const tree = await db.getLessonTree(LESSON);
+  const w = walkDeep(tree);
+  eq(w.s5.annotations, [], 'leaf');
+  eq(w.ans.ref, { type: 'message', id: t.ANS.id });
+  eq(tree.annotations[0].subtopics[0].annotations[0].threads[0].messages[0].record.content, 'Защо?', 'question first');
+  eq((await db.subtopicsByRoot(LESSON)).map((s) => s.title), ['S1', 'S2', 'S3', 'S4', 'S5'], 'by_root');
+  eq((await db.getDocChildren({ type: 'message', id: t.ANS.id }))[0].subtopics.map((s) => s.title), ['S2'], 'children of the answer');
+});
+
+test('T-006 меко изтриване в средата на дървото скрива поддървото; restore го връща', async () => {
+  const t = await seedDeep();
+  await db.remove(STORES.messages, t.ANS.id);
+  let tree = await db.getLessonTree(LESSON);
+  const msgs = tree.annotations[0].subtopics[0].annotations[0].threads[0].messages;
+  eq(msgs.map((m) => m.record.content), ['Защо?'], 'deleted answer hidden');
+  eq((await db.subtopicsByRoot(LESSON)).length, 5, 'subtopics themselves are not deleted');
+  walkDeep(await db.getLessonTree(LESSON, { includeDeleted: true }));
+  await db.restore(STORES.messages, t.ANS.id);
+  walkDeep(await db.getLessonTree(LESSON));
+  // Deleting an annotation hides everything hanging on it.
+  await db.remove(STORES.annotations, t.A5.id);
+  tree = await db.getLessonTree(LESSON);
+  eq(walkDeepUntilNote(tree).annotations, [], 'note has no visible annotations');
+  eq((await db.annotationsFor({ type: 'note', id: t.N.id })).length, 0);
+  eq((await db.annotationsFor({ type: 'note', id: t.N.id }, { includeDeleted: true })).length, 1);
+  // A deleted record stays in the store with deleted: true (needed for backup merge, D-014).
+  const raw = await db.get(STORES.annotations, t.A5.id, { includeDeleted: true });
+  eq(raw.deleted, true);
+  assert(raw.updatedAt >= raw.createdAt, 'updatedAt moves');
+});
+function walkDeepUntilNote(tree) {
+  return tree.annotations[0].subtopics[0].annotations[0].threads[0].messages[1].annotations[0].subtopics[0].annotations[0].notes[0];
+}
+
+test('T-006 цикъл в данните (недостижим от урока) не зацикля getLessonTree и не влиза в дървото', async () => {
+  await db.putLesson({ id: LESSON, courseId: COURSE, title: 'Урок', order: 1 });
+  const a1 = await annOn('lesson', LESSON);
+  const s1 = await db.createSubTopic({ annotationId: a1.id, kind: 'термин' });
+  const a2 = await annOn('subtopic', s1.id);
+  // Bad data: a subtopic whose annotation sits on itself.
+  await db.create(STORES.subtopics, { id: 'LOOP', courseId: COURSE, annotationId: a2.id, parent: { type: 'subtopic', id: s1.id }, rootLessonId: LESSON, depth: 2, kind: 'термин' });
+  await db.create(STORES.annotations, { id: 'LOOPANN', courseId: COURSE, target: { type: 'subtopic', id: 'LOOP' }, selector: sel('x') });
+  await db.update(STORES.subtopics, 'LOOP', { annotationId: 'LOOPANN' });
+  const tree = await Promise.race([db.getLessonTree(LESSON), sleep(3000).then(() => 'timeout')]);
+  assert(tree !== 'timeout', 'tree returns');
+  // Every record has exactly one parent, so a cycle is never reachable from the lesson.
+  eq(tree.annotations[0].subtopics[0].annotations[0].subtopics, [], 'LOOP is not in the tree');
+});
+
+test('T-006 повторен импорт: курс, файлове и уроци се подменят, потребителските данни остават', async () => {
+  const t = await seedDeep();
+  await db.putCourse({ id: COURSE, title: 'v1', meta: { mission: 'стара' } });
+  await db.putFile({ courseId: COURSE, path: 'lessons/0001-test.html', mime: 'text/html', blob: new Blob(['v1']), sha256: 'v1' });
+  await db.setLessonProgress(LESSON, { status: 'started', scrollY: 1234, lastOpenedAt: '2026-11-18T09:00:00.000Z' });
+  await db.saveSettings({ fontScale: 1.2 });
+  const before = await db.getLessonTree(LESSON);
+  // Re-import of a changed course.
+  await db.putCourse({ id: COURSE, title: 'v2', meta: { mission: 'нова' } });
+  await db.putFile({ courseId: COURSE, path: 'lessons/0001-test.html', mime: 'text/html', blob: new Blob(['v2']), sha256: 'v2' });
+  await db.putLesson({ id: LESSON, courseId: COURSE, title: 'Урок (нов)', order: 1, sha256: 'v2' });
+  const lesson = await db.getLesson(LESSON);
+  eq([lesson.title, lesson.sha256], ['Урок (нов)', 'v2'], 'lesson replaced');
+  eq(lesson.progress, { status: 'started', lastOpenedAt: '2026-11-18T09:00:00.000Z', scrollY: 1234 }, 'progress kept');
+  eq(await (await db.getFile(COURSE, 'lessons/0001-test.html')).blob.text(), 'v2', 'file replaced');
+  eq((await db.getCourse(COURSE)).title, 'v2');
+  const after = await db.getLessonTree(LESSON);
+  eq(JSON.stringify(after.annotations), JSON.stringify(before.annotations), 'annotation tree unchanged');
+  eq((await db.getSettings()).fontScale, 1.2, 'settings kept');
+  eq((await db.getAnnotation(t.A1.id)).targetVersion, null, 'annotation not rewritten');
+});
+
+test('T-006 граници: празни низове и невалидни стойности', async () => {
+  await rejects(() => db.putCourse({ id: '' }), /course.id/);
+  await rejects(() => db.putLesson({ id: LESSON, courseId: '' }), /lesson.courseId/);
+  await rejects(() => db.putFile({ courseId: COURSE, path: '' }), /file.path/);
+  await rejects(() => annOn('lesson', ''), /DocRef.id/);
+  await rejects(() => db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: sel('') }), /quote.exact/);
+  await rejects(() => db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: { quote: { exact: 'a' }, position: { start: 5, end: 2 } } }), /position/);
+  await rejects(() => db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: { quote: { exact: 'a' }, position: { start: -1, end: 0 } } }), /position/);
+  await rejects(() => db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: { quote: { exact: 'a' }, position: { start: 0.5, end: 1 } } }), /position/);
+  await rejects(() => annOn('thread', 'T'), /DocRef.type/);
+  await rejects(() => annOn('lesson', LESSON, 'x', { color: 'red' }), /color/);
+  await rejects(() => db.createNote({ annotationId: '' }), /annotationId/);
+  await rejects(() => db.createThread({ annotationId: '' }), /annotationId/);
+  await rejects(() => db.createMessage({ threadId: '', role: 'user' }), /threadId/);
+  await rejects(() => db.logUsage({ kind: '' }), /usage.kind/);
+  await rejects(() => db.setLessonProgress(LESSON, { status: 'finished' }), /progress.status/);
+  await rejects(() => db.create('nope', {}), /Unknown store/);
+  // Empty bodies are allowed (a note / message being written).
+  eq((await db.createNote({ annotationId: 'A', body: '' })).body, '');
+  eq((await db.createMessage({ threadId: 'T', role: 'assistant' })).content, '');
+  eq((await annOn('lesson', LESSON, ' ')).selector.quote.exact, ' ', 'whitespace selection kept as is');
+});
+
+test('T-006 граници: кирилица, емоджи и комбиниращи знаци в цитата', async () => {
+  const exact = 'Наръчник за чая 👩‍💻🇧🇬 — „съответствие“ é ñ';
+  const prefix = '…'.repeat(10) + '🙂'.repeat(11); // 32 UTF-16 units
+  const suffix = 'ъ'.repeat(31) + '‍';
+  const a = await db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: { quote: { exact, prefix, suffix }, position: { start: 100, end: 100 + exact.length } } });
+  const r = await db.getAnnotation(a.id);
+  eq(r.selector.quote, { exact, prefix, suffix }, 'quote round trip');
+  eq(r.selector.position.end - r.selector.position.start, exact.length, 'UTF-16 length');
+  assert(r.selector.quote.exact.normalize('NFC') === exact.normalize('NFC'));
+  const note = await db.createNote({ annotationId: a.id, body: '# Заглавие 🧠\n\n**удебелено** `код` <script>alert(1)</script>' });
+  eq((await db.notesFor(a.id))[0].body, note.body, 'markdown/html kept verbatim (sanitising is the view’s job)');
+});
+
+test('T-006 граници: отговор от 100 KB и тема от 1 MB', async () => {
+  const chunk = 'Текстът на отговора съдържа кирилица и емоджи 🙂. ';
+  const big = chunk.repeat(Math.ceil(100 * 1024 / chunk.length)).slice(0, 100 * 1024);
+  const th = await db.createThread({ annotationId: 'A' });
+  const m = await db.createMessage({ threadId: th.id, role: 'assistant', content: '', status: 'streaming' });
+  // Streaming: many small updates, then done.
+  for (let i = 0; i < 20; i++) await db.update(STORES.messages, m.id, (rec) => ({ content: rec.content + big.slice(i * 5120, (i + 1) * 5120) }));
+  await db.update(STORES.messages, m.id, { status: 'done' });
+  const r = (await db.messagesFor(th.id))[0];
+  eq([r.content.length, r.content === big, r.status], [big.length, true, 'done']);
+  const huge = big.repeat(10);
+  const s = await db.create(STORES.subtopics, { courseId: COURSE, annotationId: 'A', parent: { type: 'lesson', id: LESSON }, rootLessonId: LESSON, depth: 1, kind: 'термин', content: huge });
+  eq((await db.getSubTopic(s.id)).content.length, huge.length);
+});
+
+test('T-006 едновременни записи: 200 анотации, 50 обновявания, 50 настройки', async () => {
+  const anns = await Promise.all(Array.from({ length: 200 }, (_, i) => db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: sel(`ц${i}`, i) })));
+  eq(new Set(anns.map((a) => a.id)).size, 200, 'unique ids');
+  const stored = await db.annotationsFor({ type: 'lesson', id: LESSON });
+  eq(stored.map((a) => a.selector.position.start), Array.from({ length: 200 }, (_, i) => i), 'all stored, creation order');
+  const n = await db.createNote({ annotationId: anns[0].id, body: '' });
+  await Promise.all(Array.from({ length: 50 }, () => db.update(STORES.notes, n.id, (rec) => ({ body: `${rec.body}x` }))));
+  eq((await db.get(STORES.notes, n.id)).body.length, 50, 'no lost update (read+write in one transaction)');
+  await Promise.all(Array.from({ length: 50 }, (_, i) => db.saveSettings({ [`k${i}`]: i })));
+  const s = await db.getSettings();
+  eq(Array.from({ length: 50 }, (_, i) => s[`k${i}`]), Array.from({ length: 50 }, (_, i) => i), 'no lost settings field');
+  const th = await db.createThread({ annotationId: anns[0].id });
+  await Promise.all(Array.from({ length: 30 }, (_, i) => db.createMessage({ threadId: th.id, role: 'user', content: `${i}` })));
+  eq((await db.messagesFor(th.id)).map((m) => m.content), Array.from({ length: 30 }, (_, i) => `${i}`), 'messages keep order');
+});
+
+test('T-006 миграция v1 → v2 (нов store + преместване на прогреса) и v2 → v3', async (name) => {
+  await db.putLesson({ id: LESSON, courseId: COURSE, title: 'Урок', order: 1 });
+  await db.setLessonProgress(LESSON, { status: 'done', scrollY: 77 });
+  const a = await annOn('lesson', LESSON, 'цитат 🙂');
+  db.closeDb();
+  const migrations = {
+    ...db.MIGRATIONS,
+    2(conn, tx) {
+      const progress = conn.createObjectStore('progress', { keyPath: 'lessonId' });
+      progress.createIndex('by_status', 'status');
+      return tx.objectStore('lessons').openCursor().then(function step(c) {
+        if (!c) return;
+        progress.put({ lessonId: c.value.id, ...c.value.progress });
+        return c.continue().then(step);
+      });
+    },
+    3(conn, tx) { tx.objectStore('annotations').createIndex('by_color', 'color'); },
+  };
+  let conn = await db.openDb({ name, version: 2, migrations });
+  eq(conn.version, 2);
+  eq((await conn.get('progress', LESSON)).scrollY, 77, 'progress moved');
+  eq((await db.getAnnotation(a.id)).selector.quote.exact, 'цитат 🙂', 'annotation kept');
+  db.closeDb();
+  conn = await db.openDb({ name, migrations }); // 2 → 3
+  eq(conn.version, 3);
+  eq((await db.byIndex(STORES.annotations, 'by_color', 'yellow')).length, 0);
+  eq((await conn.getAllFromIndex('progress', 'by_status', 'done')).length, 1);
+});
+
 // --- runner -------------------------------------------------------------------
 async function run() {
   const rows = document.getElementById('results');
