@@ -1,8 +1,8 @@
 // T-006 (tester): data layer checks that need Playwright — CPU-throttled
 // performance (approximation of the Galaxy Tab A9+), persistent browser
-// profile, two tabs, migration failures. Known defects are kept as
-// `test.fail()` tests: they pass while the defect exists and turn red when it
-// is fixed (then drop the `test.fail` line). See logs/T-006_tester_*.md.
+// profile, two tabs, migration failures. The tests for defects T006-D1…D4
+// (logs/T-006_tester_*.md) were `test.fail()` until the fix in T-006-fix;
+// they are now ordinary regression tests.
 import { test, expect, chromium } from '@playwright/test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ async function seedAnnotations(page, name, total, onLesson) {
 }
 
 test.describe('T-006 performance (CPU throttling ×4 ≈ Galaxy Tab A9+)', () => {
-  test('annotations of a lesson: 1000 of 3000 in < 100 ms', async ({ page }, info) => {
+  test('annotations of a lesson: 1000 of 3000 in < 100 ms; children and tree < 150 ms', async ({ page }, info) => {
     // The viewport does not matter here; one project only, so the two projects do not share the CPU.
     test.skip(info.project.name !== 'tablet-landscape', 'measured once, in tablet-landscape');
     test.setTimeout(120_000);
@@ -72,6 +72,9 @@ test.describe('T-006 performance (CPU throttling ×4 ≈ Galaxy Tab A9+)', () =>
     expect(r.coldMs).toBeLessThan(100);
     expect(r.maxMs).toBeLessThan(100);
     expect(r.children).toBe(980);
+    // T-006 Н-1 (fixed in T-006-fix): batched reads, target < 150 ms.
+    expect(r.childrenMs).toBeLessThan(150);
+    expect(r.treeMs).toBeLessThan(150);
   });
 });
 
@@ -208,8 +211,7 @@ test.describe('T-006 migrations: failures', () => {
     expect(r).toEqual({ error: 'AbortError', version: 1, body: 'пази' });
   });
 
-  test('DEFECT T006-D3: a failed migration leaves no unhandled promise rejection', async ({ page }) => {
-    test.fail(true, 'T006-D3: openDb() leaves an unhandled AbortError when a migration fails');
+  test('FIXED T006-D3: a failed migration leaves no unhandled promise rejection', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.name || e.message));
     await page.goto(TEST_PAGE);
@@ -225,8 +227,7 @@ test.describe('T-006 migrations: failures', () => {
     expect(errors).toEqual([]);
   });
 
-  test('DEFECT T006-D2: a migration that fails after a non-IndexedDB await does not commit the new version', async ({ page }) => {
-    test.fail(true, 'T006-D2: the version is bumped to 2 although the migration failed (index missing)');
+  test('FIXED T006-D2: a migration that fails after a non-IndexedDB await does not commit the new version', async ({ page }) => {
     await page.goto(TEST_PAGE);
     const r = await page.evaluate(async () => {
       const db = await import('../src/db.js');
@@ -250,8 +251,7 @@ test.describe('T-006 migrations: failures', () => {
 });
 
 test.describe('T-006 re-import vs progress', () => {
-  test('DEFECT T006-D1: re-import of a lesson at the same time as a progress update keeps the progress', async ({ page }) => {
-    test.fail(true, 'T006-D1: putLesson reads progress and writes in two transactions → lost update');
+  test('FIXED T006-D1: re-import of a lesson at the same time as a progress update keeps the progress', async ({ page }) => {
     await page.goto(TEST_PAGE);
     const progress = await page.evaluate(async () => {
       const db = await import('../src/db.js');
@@ -271,8 +271,7 @@ test.describe('T-006 re-import vs progress', () => {
 });
 
 test.describe('T-006 bad data', () => {
-  test('DEFECT T006-D4: createSubTopic on a cyclic note chain fails instead of hanging', async ({ page }) => {
-    test.fail(true, 'T006-D4: resolveRoot() follows note → annotation → note forever (no cycle guard)');
+  test('FIXED T006-D4: createSubTopic on a cyclic note chain fails instead of hanging', async ({ page }) => {
     await page.goto(TEST_PAGE);
     const r = await page.evaluate(async () => {
       const db = await import('../src/db.js');

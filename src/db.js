@@ -8,7 +8,7 @@
 // - Reads skip soft-deleted records unless `{ includeDeleted: true }` is passed.
 // - `remove()` soft-deletes, `purge()` deletes for real (e.g. course file blobs).
 // - A DocRef is `{ type: 'lesson'|'subtopic'|'note'|'message', id }` (D-013).
-import { openDB, deleteDB } from '../vendor/idb.js';
+import { openDB, deleteDB, unwrap } from '../vendor/idb.js';
 
 export const DB_NAME = 'lrn-app';
 
@@ -62,11 +62,21 @@ export const DEFAULT_SETTINGS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 /**
- * Migrations by target version. Each runs inside the upgrade transaction and
- * gets `(db, tx)`; they run in order from the stored version + 1 up to the
- * requested one. A migration may return a promise, but must only await
- * IndexedDB requests of `tx` (anything else lets the transaction close).
- * Never edit a released migration — add a new version instead.
+ * Migrations by target version. Each runs inside the upgrade (versionchange)
+ * transaction and gets `(db, tx)`; they run in order from the stored version
+ * + 1 up to the requested one. Never edit a released migration — add a new
+ * version instead.
+ *
+ * RULE (T006-D2): a migration is SYNCHRONOUS. It may only issue IndexedDB
+ * operations on `db`/`tx` (createObjectStore, createIndex, put…) and must
+ * return nothing — no `async`, no `await`, no promise. Anything awaited outside
+ * IndexedDB lets the upgrade transaction auto-commit with the new version but
+ * without the rest of the migration, and that can never be undone. To move
+ * data, use `eachRecord(tx, store, fn)`: its callback runs synchronously for
+ * every record inside the same transaction. A migration that returns a
+ * promise/thenable is rejected (the upgrade is aborted, the version stays).
+ * An exception (also one thrown by an `eachRecord` callback) aborts the whole
+ * upgrade: the database stays at the old version with its data.
  */
 export const MIGRATIONS = Object.freeze({
   1(db) {
@@ -104,6 +114,32 @@ export const MIGRATIONS = Object.freeze({
   },
 });
 
+/**
+ * For data migrations: call `fn(value, cursor)` synchronously for every record
+ * of `store` (cursor over the raw upgrade transaction). `fn` may call
+ * `cursor.update(next)` / `cursor.delete()` and write to other stores of `tx`.
+ * Must be called from inside a migration.
+ */
+export function eachRecord(tx, store, fn) {
+  const request = unwrap(tx).objectStore(store).openCursor();
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    try {
+      fn(cursor.value, cursor);
+      cursor.continue();
+    } catch (err) {
+      // Abort the whole upgrade; openDb() rejects with this error as `cause`.
+      upgradeErrors.set(request.transaction, err);
+      console.warn('IndexedDB migration failed, upgrade aborted:', err);
+      try { request.transaction.abort(); } catch { /* already finished */ }
+    }
+  };
+}
+
+/** Errors thrown inside eachRecord() callbacks, by raw upgrade transaction. */
+const upgradeErrors = new WeakMap();
+
 /** Current schema version = the highest migration. */
 export const SCHEMA_VERSION = Math.max(...Object.keys(MIGRATIONS).map(Number));
 
@@ -135,18 +171,31 @@ export function openDb(options) {
       return Promise.reject(new Error(`No migration to schema version ${v}`));
     }
   }
+  let migrationError = null;
+  let upgradeTx = null;
   const promise = openDB(name, version, {
     upgrade(db, oldVersion, newVersion, tx) {
-      // Run in order; a migration may return a promise of IndexedDB requests
-      // (e.g. a cursor over old records) and the next one waits for it.
-      let chain = Promise.resolve();
-      for (let v = oldVersion + 1; v <= newVersion; v++) {
-        chain = chain.then(() => migrations[v](db, tx));
-      }
-      chain.catch((err) => {
-        console.error('IndexedDB migration failed:', err);
+      upgradeTx = unwrap(tx);
+      // If a migration fails the transaction is aborted and its `done` promise
+      // rejects with AbortError; openDb() reports the failure, so that promise
+      // must not end up as an unhandled rejection (T006-D3).
+      tx.done.catch(() => {});
+      try {
+        for (let v = oldVersion + 1; v <= newVersion; v++) {
+          const result = migrations[v](db, tx);
+          if (result && typeof result.then === 'function') {
+            result.then(undefined, () => {}); // its later failure is irrelevant: we abort now
+            throw new Error(`Migration ${v} returned a promise; migrations must be synchronous (see MIGRATIONS)`);
+          }
+        }
+      } catch (err) {
+        // Abort explicitly (not by letting the exception escape the event
+        // handler, which Chrome reports as an uncaught error): the version
+        // is not bumped and openDb() rejects with this error as `cause`.
+        migrationError = err;
+        console.warn('IndexedDB migration failed, upgrade aborted:', err);
         try { tx.abort(); } catch { /* already finished */ }
-      });
+      }
     },
     blocking() {
       // A newer version was opened in another tab: let it upgrade.
@@ -158,6 +207,12 @@ export function openDb(options) {
     },
   }).catch((err) => {
     if (dbPromise === promise) dbPromise = null;
+    migrationError ??= upgradeTx && upgradeErrors.get(upgradeTx);
+    if (migrationError) {
+      const e = new Error(`IndexedDB upgrade aborted: ${migrationError.message}`, { cause: migrationError });
+      e.name = 'AbortError';
+      throw e;
+    }
     throw err;
   });
   dbPromise = promise;
@@ -438,12 +493,20 @@ export async function putLesson(lesson) {
   requireString(lesson?.id, 'lesson.id');
   requireString(lesson?.courseId, 'lesson.courseId');
   oneOf(lesson.kind ?? 'lesson', LESSON_KINDS, 'lesson.kind');
-  const existing = await get(STORES.lessons, lesson.id, { includeDeleted: true });
-  return put(STORES.lessons, {
+  // Read and write in ONE readwrite transaction (T006-D1): a concurrent
+  // setLessonProgress() is serialized before or after it, never lost.
+  const db = await openDb();
+  const tx = db.transaction(STORES.lessons, 'readwrite');
+  const existing = await tx.store.get(lesson.id);
+  const record = stamp(STORES.lessons, {
     kind: 'lesson',
     ...lesson,
+    createdAt: existing?.createdAt ?? lesson.createdAt,
     progress: existing?.progress ?? { ...NEW_PROGRESS, ...lesson.progress },
   });
+  await tx.store.put(record);
+  await tx.done;
+  return record;
 }
 
 export const getLesson = (id, opts) => get(STORES.lessons, id, opts);
@@ -537,36 +600,47 @@ export function createMessage({ threadId, role, content = '', status, ...rest })
 /** Messages of a thread, oldest first (ULIDs sort by creation time). */
 export const messagesFor = (threadId, opts) => byIndex(STORES.messages, 'by_thread', threadId, opts).then(byIdOrder);
 
+/** Longest document chain walked upwards before we treat the data as broken. */
+export const MAX_CHAIN_DEPTH = 64;
+
 /**
  * Find the root lesson and depth for a new child of `ref`:
  * lesson → depth 1; subtopic → its depth + 1; note/message → up through the
- * annotation to the document it is attached to.
+ * annotation to the document it is attached to. Guarded against cycles and
+ * over-long chains in bad data (T006-D4, e.g. from a corrupt backup).
  */
 export async function resolveRoot(ref) {
-  const { type, id } = checkDocRef(ref, 'parent');
-  let ann;
-  switch (type) {
-    case 'lesson':
-      return { rootLessonId: id, depth: 1 };
-    case 'subtopic': {
-      const sub = await get(STORES.subtopics, id, { includeDeleted: true });
-      if (!sub) throw new Error(`subtopic not found: ${id}`);
-      return { rootLessonId: sub.rootLessonId, depth: (sub.depth ?? 1) + 1 };
+  let { type, id } = checkDocRef(ref, 'parent');
+  const seen = new Set();
+  for (;;) {
+    const key = `${type}:${id}`;
+    if (seen.has(key)) throw new Error(`Cycle in the document chain at ${key}`);
+    if (seen.size >= MAX_CHAIN_DEPTH) throw new Error(`Document chain longer than ${MAX_CHAIN_DEPTH} at ${key}`);
+    seen.add(key);
+    let ann;
+    switch (type) {
+      case 'lesson':
+        return { rootLessonId: id, depth: 1 };
+      case 'subtopic': {
+        const sub = await get(STORES.subtopics, id, { includeDeleted: true });
+        if (!sub) throw new Error(`subtopic not found: ${id}`);
+        return { rootLessonId: sub.rootLessonId, depth: (sub.depth ?? 1) + 1 };
+      }
+      case 'note': {
+        const note = await get(STORES.notes, id, { includeDeleted: true });
+        ann = note && await get(STORES.annotations, note.annotationId, { includeDeleted: true });
+        break;
+      }
+      case 'message': {
+        const msg = await get(STORES.messages, id, { includeDeleted: true });
+        const thread = msg && await get(STORES.threads, msg.threadId, { includeDeleted: true });
+        ann = thread && await get(STORES.annotations, thread.annotationId, { includeDeleted: true });
+        break;
+      }
     }
-    case 'note': {
-      const note = await get(STORES.notes, id, { includeDeleted: true });
-      ann = note && await get(STORES.annotations, note.annotationId, { includeDeleted: true });
-      break;
-    }
-    case 'message': {
-      const msg = await get(STORES.messages, id, { includeDeleted: true });
-      const thread = msg && await get(STORES.threads, msg.threadId, { includeDeleted: true });
-      ann = thread && await get(STORES.annotations, thread.annotationId, { includeDeleted: true });
-      break;
-    }
+    if (!ann) throw new Error(`cannot find the document chain of ${type} ${id}`);
+    ({ type, id } = checkDocRef(ann.target, 'annotation.target'));
   }
-  if (!ann) throw new Error(`cannot find the document chain of ${type} ${id}`);
-  return resolveRoot(ann.target);
 }
 
 /**
@@ -613,38 +687,118 @@ function byIdOrder(records) {
 
 const TREE_STORES = [STORES.annotations, STORES.notes, STORES.threads, STORES.messages, STORES.subtopics];
 
+/** Up to this many keys are read one getAll() each; more are read as one key range. */
+const BATCH_SINGLE_MAX = 8;
+
+const getPath = (record, path) => path.split('.').reduce((v, k) => v?.[k], record);
+// Map key for an IndexedDB key: strings as they are, arrays as JSON (prefixed, so they never collide).
+const serKey = (key) => (typeof key === 'string' ? key : `\u0001${JSON.stringify(key)}`);
+
+/**
+ * Batched index read (T-006 Н-1): records of `store` whose `index` key is one of
+ * `keys`, as Map<serialized key, record[]>. A few keys → one getAll per key;
+ * many keys → one getAll over the key range [min, max] (per first component
+ * for compound keys), filtered in memory. Keeps the number of IndexedDB
+ * requests per tree level constant instead of one per record.
+ */
+async function batchByIndex(tx, store, index, keys) {
+  const out = new Map();
+  const unique = [...new Map(keys.map((k) => [serKey(k), k])).values()];
+  if (!unique.length) return out;
+  const idx = tx.objectStore(store).index(index);
+  const { keyPath } = idx;
+  const keyOfRecord = (r) => (Array.isArray(keyPath) ? keyPath.map((p) => getPath(r, p)) : getPath(r, keyPath));
+  const wanted = new Set(unique.map(serKey));
+
+  let records;
+  if (unique.length <= BATCH_SINGLE_MAX) {
+    records = (await Promise.all(unique.map((k) => idx.getAll(k)))).flat();
+  } else {
+    // Group compound keys by their first component so a range never spans
+    // unrelated types (e.g. all 'lesson' targets vs. all 'note' targets).
+    const groups = new Map();
+    for (const k of unique) {
+      const g = Array.isArray(k) ? serKey(k[0]) : '';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(k);
+    }
+    const parts = await Promise.all([...groups.values()].map((group) => {
+      if (group.length === 1) return idx.getAll(group[0]);
+      group.sort((a, b) => indexedDB.cmp(a, b));
+      return idx.getAll(IDBKeyRange.bound(group[0], group[group.length - 1]));
+    }));
+    records = parts.flat().filter((r) => wanted.has(serKey(keyOfRecord(r))));
+  }
+  for (const r of records) {
+    const k = serKey(keyOfRecord(r));
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(r);
+  }
+  return out;
+}
+
+/**
+ * Children of several documents at once, in a constant number of requests:
+ * Map<"type:id", [{ annotation, notes, threads: [{ thread, messages }], subtopics }]>.
+ */
+async function childrenOfMany(tx, refs, opts) {
+  const keep = visible(opts);
+  const pick = (map, key) => byIdOrder((map.get(serKey(key)) || []).filter(keep));
+
+  const targets = refs.map((r) => [r.type, r.id]);
+  const childrenOf = (ids) => Promise.all([
+    batchByIndex(tx, STORES.notes, 'by_annotation', ids),
+    batchByIndex(tx, STORES.threads, 'by_annotation', ids),
+    batchByIndex(tx, STORES.subtopics, 'by_annotation', ids),
+  ]);
+  let annMap;
+  let notes;
+  let threads;
+  let subtopics;
+  if (targets.length <= BATCH_SINGLE_MAX) {
+    // Few documents (e.g. the lesson itself): the annotation ids come cheaply
+    // from getAllKeys, so the annotation values and their children are read
+    // in parallel. Soft-deleted annotations may fetch a few extra children;
+    // they are dropped below because only visible annotations are walked.
+    const by = tx.objectStore(STORES.annotations).index('by_target');
+    const keyLists = await Promise.all(targets.map((t) => by.getAllKeys(t)));
+    [annMap, [notes, threads, subtopics]] = await Promise.all([
+      batchByIndex(tx, STORES.annotations, 'by_target', targets),
+      childrenOf(keyLists.flat()),
+    ]);
+  } else {
+    annMap = await batchByIndex(tx, STORES.annotations, 'by_target', targets);
+    const ids = [...annMap.values()].flat().filter(keep).map((a) => a.id);
+    [notes, threads, subtopics] = await childrenOf(ids);
+  }
+  const annsByDoc = refs.map((r) => pick(annMap, [r.type, r.id]));
+  const annIds = annsByDoc.flat().map((a) => a.id);
+  const threadIds = annIds.flatMap((id) => pick(threads, id).map((t) => t.id));
+  const messages = await batchByIndex(tx, STORES.messages, 'by_thread', threadIds);
+
+  const result = new Map();
+  refs.forEach((ref, i) => {
+    result.set(`${ref.type}:${ref.id}`, annsByDoc[i].map((annotation) => ({
+      annotation,
+      notes: pick(notes, annotation.id),
+      threads: pick(threads, annotation.id).map((thread) => ({ thread, messages: pick(messages, thread.id) })),
+      subtopics: pick(subtopics, annotation.id),
+    })));
+  });
+  return result;
+}
+
 /**
  * Direct children of a document: its annotations and, for each, the notes,
  * threads (with messages) and subtopics attached to it. One read transaction.
  */
 export async function getDocChildren(ref, opts) {
+  const doc = checkDocRef(ref, 'document');
   const db = await openDb();
   const tx = db.transaction(TREE_STORES, 'readonly');
-  const result = await childrenIn(tx, checkDocRef(ref, 'document'), opts);
+  const result = await childrenOfMany(tx, [doc], opts);
   await tx.done;
-  return result;
-}
-
-async function childrenIn(tx, { type, id }, opts) {
-  const keep = visible(opts);
-  const anns = byIdOrder((await tx.objectStore(STORES.annotations).index('by_target').getAll([type, id])).filter(keep));
-  return Promise.all(anns.map(async (annotation) => {
-    const [notes, threads, subtopics] = await Promise.all([
-      tx.objectStore(STORES.notes).index('by_annotation').getAll(annotation.id),
-      tx.objectStore(STORES.threads).index('by_annotation').getAll(annotation.id),
-      tx.objectStore(STORES.subtopics).index('by_annotation').getAll(annotation.id),
-    ]);
-    const threadsWithMessages = await Promise.all(byIdOrder(threads.filter(keep)).map(async (thread) => ({
-      thread,
-      messages: byIdOrder((await tx.objectStore(STORES.messages).index('by_thread').getAll(thread.id)).filter(keep)),
-    })));
-    return {
-      annotation,
-      notes: byIdOrder(notes.filter(keep)),
-      threads: threadsWithMessages,
-      subtopics: byIdOrder(subtopics.filter(keep)),
-    };
-  }));
+  return result.get(`${doc.type}:${doc.id}`);
 }
 
 /**
@@ -653,36 +807,43 @@ async function childrenIn(tx, { type, id }, opts) {
  * and the same again for annotations on notes, messages and subtopics.
  * Node: { ref, record?, annotations: [{ annotation, notes: [node], threads:
  *         [{ thread, messages: [node] }], subtopics: [node] }] }
+ * Read level by level (breadth-first) in one transaction, so the number of
+ * requests grows with the depth of the tree, not with the number of nodes.
  */
 export async function getLessonTree(lessonId, opts) {
   const db = await openDb();
   const tx = db.transaction([STORES.lessons, ...TREE_STORES], 'readonly');
   const seen = new Set();
-
-  const node = async (ref, record) => {
-    const key = `${ref.type}:${ref.id}`;
-    if (seen.has(key)) return { ref, record, annotations: [] }; // guard against bad data cycles
-    seen.add(key);
-    const anns = await childrenIn(tx, ref, opts);
-    return {
-      ref,
-      record,
-      annotations: await Promise.all(anns.map(async (a) => ({
-        annotation: a.annotation,
-        notes: await Promise.all(a.notes.map((n) => node({ type: 'note', id: n.id }, n))),
-        threads: await Promise.all(a.threads.map(async (t) => ({
-          thread: t.thread,
-          messages: await Promise.all(t.messages.map((m) => node({ type: 'message', id: m.id }, m))),
-        }))),
-        subtopics: await Promise.all(a.subtopics.map((s) => node({ type: 'subtopic', id: s.id }, s))),
-      }))),
-    };
-  };
+  const makeNode = (ref, record) => ({ ref, record, annotations: [] });
 
   const lesson = await tx.objectStore(STORES.lessons).get(lessonId);
-  const tree = await node({ type: 'lesson', id: lessonId }, lesson);
+  const root = makeNode({ type: 'lesson', id: lessonId }, lesson);
+  let level = [root];
+  seen.add(`lesson:${lessonId}`);
+  let depth = 0;
+  while (level.length) {
+    if (++depth > MAX_CHAIN_DEPTH) break; // bad data: stop instead of looping
+    const children = await childrenOfMany(tx, level.map((n) => n.ref), opts);
+    const next = [];
+    // A node already in the tree (a cycle in bad data) is shown as a leaf.
+    const child = (type, record) => {
+      const node = makeNode({ type, id: record.id }, record);
+      const key = `${type}:${record.id}`;
+      if (!seen.has(key)) { seen.add(key); next.push(node); }
+      return node;
+    };
+    for (const node of level) {
+      node.annotations = children.get(`${node.ref.type}:${node.ref.id}`).map((a) => ({
+        annotation: a.annotation,
+        notes: a.notes.map((n) => child('note', n)),
+        threads: a.threads.map((t) => ({ thread: t.thread, messages: t.messages.map((m) => child('message', m)) })),
+        subtopics: a.subtopics.map((s) => child('subtopic', s)),
+      }));
+    }
+    level = next;
+  }
   await tx.done;
-  return tree;
+  return root;
 }
 
 // ---------------------------------------------------------------------------

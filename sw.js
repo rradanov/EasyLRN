@@ -5,7 +5,7 @@
 //   sends {type: 'SKIP_WAITING'} (the user pressed "Презареди").
 // Course files (./c/<course>/<path> from IndexedDB) will be served here in T-009.
 
-const VERSION = '0.2.0'; // keep in sync with src/config.js
+const VERSION = '0.2.1'; // keep in sync with src/config.js
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 

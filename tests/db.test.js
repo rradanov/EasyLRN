@@ -79,12 +79,8 @@ test('миграция v1 → v2 запазва данните и добавя �
     ...db.MIGRATIONS,
     2(conn, tx) {
       tx.objectStore('notes').createIndex('by_updated', 'updatedAt');
-      // Data migration example: give old notes a `format` field.
-      return tx.objectStore('notes').openCursor().then(function step(cursor) {
-        if (!cursor) return;
-        cursor.update({ ...cursor.value, format: 'markdown' });
-        return cursor.continue().then(step);
-      });
+      // Data migration example: give old notes a `format` field (synchronous, see MIGRATIONS).
+      db.eachRecord(tx, 'notes', (value, cursor) => cursor.update({ ...value, format: 'markdown' }));
     },
   };
   await db.openDb({ name, version: 1 });
@@ -96,6 +92,29 @@ test('миграция v1 → v2 запазва данните и добавя �
   eq(migrated.body, 'стара', 'body kept');
   eq(migrated.format, 'markdown', 'data migrated');
   eq((await db.byIndex(STORES.notes, 'by_updated', note.updatedAt)).length, 1, 'new index');
+});
+
+test('T-006-fix: асинхронна миграция се отхвърля, версията остава', async (name) => {
+  await db.createNote({ annotationId: 'KEEP', body: 'пази' });
+  db.closeDb();
+  const bad = { ...db.MIGRATIONS, async 2(conn, tx) { tx.objectStore('notes').createIndex('x', 'body'); } };
+  await rejects(db.openDb({ name, migrations: bad }), /./);
+  const conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  eq(conn.version, 1, 'version unchanged');
+  eq((await db.byIndex(STORES.notes, 'by_annotation', 'KEEP')).length, 1, 'data kept');
+});
+
+test('T-006-fix: грешка в eachRecord прекъсва миграцията', async (name) => {
+  await db.createNote({ annotationId: 'KEEP', body: 'пази' });
+  db.closeDb();
+  const bad = { ...db.MIGRATIONS, 2(conn, tx) {
+    tx.objectStore('notes').createIndex('x', 'body');
+    db.eachRecord(tx, 'notes', () => { throw new Error('boom'); });
+  } };
+  await rejects(db.openDb({ name, migrations: bad }), /./);
+  const conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  eq(conn.version, 1, 'version unchanged');
+  eq([...conn.transaction('notes').objectStore('notes').indexNames], ['by_annotation'], 'no index x');
 });
 
 test('липсваща миграция → грешка, без да се чупи следващото отваряне', async (name) => {
@@ -589,11 +608,7 @@ test('T-006 миграция v1 → v2 (нов store + преместване н
     2(conn, tx) {
       const progress = conn.createObjectStore('progress', { keyPath: 'lessonId' });
       progress.createIndex('by_status', 'status');
-      return tx.objectStore('lessons').openCursor().then(function step(c) {
-        if (!c) return;
-        progress.put({ lessonId: c.value.id, ...c.value.progress });
-        return c.continue().then(step);
-      });
+      db.eachRecord(tx, 'lessons', (lesson) => progress.put({ lessonId: lesson.id, ...lesson.progress }));
     },
     3(conn, tx) { tx.objectStore('annotations').createIndex('by_color', 'color'); },
   };
