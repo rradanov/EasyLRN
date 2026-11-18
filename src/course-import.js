@@ -12,7 +12,7 @@
 // User-facing messages are in Bulgarian (ImportError.message).
 import { strFromU8 } from '../vendor/fflate.js';
 import { listZip, readEntry } from './zip.js';
-import { listCourseFiles, listLessons, getCourse, listCourses, saveCourseImport } from './db.js';
+import { listCourseFiles, listLessons, listQuizzes, getCourse, listCourses, saveCourseImport } from './db.js';
 import { renderCourse } from './lesson-render.js';
 
 /** Error with a message for the user (Bulgarian). */
@@ -254,6 +254,59 @@ function lessonKind(path) {
   return null;
 }
 
+// --- Quizzes (T-047, D-032/D-033): quizzes/<slug>.json ------------------------
+
+const QUIZ_LIMITS = Object.freeze({ quizzes: 500, questions: 500, options: 20, q: 4000, option: 1000, why: 4000, src: 500, title: 300 });
+const quizSlug = (path) => /^quizzes\/([^/]+)\.json$/i.exec(path)?.[1] ?? null;
+const clampText = (value, max) => {
+  const s = typeof value === 'string' ? value : String(value ?? '');
+  return s.length > max ? s.slice(0, max) : s;
+};
+
+/**
+ * Validate a quizzes/<slug>.json into a clean quiz record, or null if it has no
+ * valid question. All text stays PLAIN TEXT (D-032): the UI shows it with
+ * textContent, never innerHTML, so HTML or <script> inside a field cannot run.
+ * Invalid questions (bad shape, fewer than 2 options, answer index out of
+ * range) are dropped with a note; limits bound every length and count.
+ */
+export function parseQuiz(courseId, path, bytes, notes = []) {
+  const slug = quizSlug(path);
+  if (!slug) return null;
+  let json;
+  try { json = JSON.parse(text(bytes)); } catch { notes.push(`quiz ${path}: невалиден JSON`); return null; }
+  if (!json || typeof json !== 'object' || !Array.isArray(json.questions)) { notes.push(`quiz ${path}: няма въпроси`); return null; }
+  const questions = [];
+  json.questions.forEach((q, i) => {
+    if (questions.length >= QUIZ_LIMITS.questions) return;
+    if (!q || typeof q !== 'object' || typeof q.q !== 'string' || !q.q.trim() || !Array.isArray(q.options)) {
+      notes.push(`quiz ${path} #${i + 1}: грешна форма на въпроса`); return;
+    }
+    const options = q.options.filter((o) => typeof o === 'string').slice(0, QUIZ_LIMITS.options).map((o) => clampText(o, QUIZ_LIMITS.option));
+    if (options.length < 2) { notes.push(`quiz ${path} #${i + 1}: трябват поне 2 опции`); return; }
+    if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= options.length) { notes.push(`quiz ${path} #${i + 1}: индексът на отговора е извън диапазона`); return; }
+    questions.push({
+      q: clampText(q.q, QUIZ_LIMITS.q),
+      options,
+      answer: q.answer,
+      why: clampText(q.why ?? '', QUIZ_LIMITS.why),
+      src: clampText(q.src ?? '', QUIZ_LIMITS.src),
+    });
+  });
+  if (!questions.length) { notes.push(`quiz ${path}: няма валидни въпроси`); return null; }
+  const lesson = json.lesson == null ? null : String(json.lesson).trim() || null;
+  return {
+    id: `${courseId}/${path}`,
+    courseId,
+    path,
+    slug,
+    lesson,
+    title: clampText(json.title ?? slug, QUIZ_LIMITS.title),
+    questions,
+    count: questions.length,
+  };
+}
+
 /**
  * Import a course.
  * @param {File[]|FileList} files one or more ZIPs, or individual course files
@@ -317,13 +370,15 @@ export async function importCourse(files, { onProgress } = {}) {
   }
 
   // Compare with what is stored.
-  const [oldCourse, oldFiles, oldLessons] = await Promise.all([
+  const [oldCourse, oldFiles, oldLessons, oldQuizzes] = await Promise.all([
     getCourse(courseId, { includeDeleted: true }),
     listCourseFiles(courseId, { includeDeleted: true }),
     listLessons(courseId, { includeDeleted: true }),
+    listQuizzes(courseId, { includeDeleted: true }),
   ]);
   const oldFileSha = new Map(oldFiles.map((f) => [f.path, f.deleted ? null : f.sha256]));
   const oldLessonById = new Map(oldLessons.map((l) => [l.id, l]));
+  const oldQuizById = new Map(oldQuizzes.map((q) => [q.id, q]));
 
   const fileStats = { total, added: 0, changed: 0, unchanged: 0 };
   const filesToWrite = [];
@@ -384,6 +439,42 @@ export async function importCourse(files, { onProgress } = {}) {
     lessonsToWrite.push(record);
   }
 
+  // Quizzes (T-047, D-032/D-033): quizzes/<slug>.json. Answers live in a
+  // separate store and are never touched here, so a re-import keeps the answers
+  // of unchanged questions (by text). Quizzes stored but absent from this
+  // (partial) import are kept, like files and lessons.
+  const quizNotes = [];
+  const quizzes = [];
+  for (const e of list) {
+    if (!quizSlug(e.path)) continue;
+    if (quizzes.length >= QUIZ_LIMITS.quizzes) { quizNotes.push(`над ${QUIZ_LIMITS.quizzes} теста, останалите пропуснати`); break; }
+    const quiz = parseQuiz(courseId, e.path, e.data, quizNotes);
+    if (quiz) { quiz.sha256 = e.sha256; quizzes.push(quiz); }
+  }
+  if (quizNotes.length) console.info(`EasyLRN quizzes ${courseId}:`, quizNotes.join('; '));
+
+  // Quizzes stored but absent from this (partial) import keep their place in the
+  // order, exactly like lessons, so a partial re-import is "Без промени".
+  const newQuizIds = new Set(quizzes.map((q) => q.id));
+  const allQuizzes = [...quizzes, ...oldQuizzes.filter((q) => !newQuizIds.has(q.id)).map((q) => ({ ...q, keep: true }))];
+  allQuizzes.sort((a, b) => String(a.lesson ?? '￿').localeCompare(String(b.lesson ?? '￿'), 'bg', { numeric: true })
+    || String(a.slug).localeCompare(String(b.slug), 'bg', { numeric: true }));
+  allQuizzes.forEach((q, i) => { q.order = i + 1; });
+
+  const quizStats = { added: 0, changed: 0, unchanged: 0 };
+  const quizzesToWrite = [];
+  for (const q of allQuizzes) {
+    const old = oldQuizById.get(q.id);
+    const { keep, ...record } = q;
+    if (keep) {
+      if (!old.deleted && old.order !== q.order) quizzesToWrite.push({ ...old, order: q.order });
+      continue;
+    }
+    if (old && !old.deleted && old.sha256 === q.sha256 && old.order === q.order) { quizStats.unchanged++; continue; }
+    if (!old || old.deleted) quizStats.added++; else if (old.sha256 !== q.sha256) quizStats.changed++;
+    quizzesToWrite.push(record);
+  }
+
   // Course record: metadata from the files in this import; missing ones are kept.
   const meta = {};
   const metaText = (name) => findEntry(list, name) && text(findEntry(list, name).data);
@@ -395,17 +486,19 @@ export async function importCourse(files, { onProgress } = {}) {
   const title = missionTitle(meta.mission ?? oldCourse?.meta?.mission) || oldCourse?.title || courseId;
   const fileCount = new Set([...oldFiles.filter((f) => !f.deleted).map((f) => f.path), ...list.map((e) => e.path)]).size;
   const isNew = !oldCourse || oldCourse.deleted;
-  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length;
-  const contentChanged = fileStats.added || fileStats.changed || lessonStats.added.length || lessonStats.changed.length;
+  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length && !quizzesToWrite.length;
+  const contentChanged = fileStats.added || fileStats.changed || lessonStats.added.length || lessonStats.changed.length
+    || quizStats.added || quizStats.changed;
   const status = isNew ? 'new' : contentChanged ? 'updated' : 'unchanged';
 
   // "Без промени" writes nothing, so the course keeps its updatedAt (backup merge, D-014).
-  progress({ phase: 'save', done: 0, total: filesToWrite.length + lessonsToWrite.length });
+  progress({ phase: 'save', done: 0, total: filesToWrite.length + lessonsToWrite.length + quizzesToWrite.length });
   if (!nothingToWrite) {
     await saveCourseImport({
       course: { id: courseId, title, importedAt: new Date().toISOString(), files: fileCount, meta },
       files: filesToWrite,
       lessons: lessonsToWrite,
+      quizzes: quizzesToWrite,
     });
   }
 
@@ -426,9 +519,11 @@ export async function importCourse(files, { onProgress } = {}) {
     status,
     files: fileStats,
     lessons: lessonStats,
+    quizzes: quizStats,
     counts: {
       lessons: items.filter((i) => i.kind === 'lesson').length,
       references: items.filter((i) => i.kind === 'reference').length,
+      quizzes: allQuizzes.length,
       files: fileCount,
     },
     items,
@@ -448,11 +543,14 @@ export function plural(n, one, many) {
 
 /** One-line summary for the result box. */
 export function describeSummary(s) {
-  const content = `${plural(s.counts.lessons, 'урок', 'урока')}, ${plural(s.counts.references, 'справочник', 'справочника')}, ${plural(s.counts.files, 'файл', 'файла')}`;
+  const quizPart = s.counts.quizzes ? `, ${plural(s.counts.quizzes, 'тест', 'теста')}` : '';
+  const content = `${plural(s.counts.lessons, 'урок', 'урока')}, ${plural(s.counts.references, 'справочник', 'справочника')}${quizPart}, ${plural(s.counts.files, 'файл', 'файла')}`;
   if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.`;
   if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).`;
+  const quizChanges = s.quizzes && (s.quizzes.added || s.quizzes.changed)
+    ? ` Тестове — нови: ${s.quizzes.added}, променени: ${s.quizzes.changed}.` : '';
   return `Курсът ${s.courseId} е обновен: нови уроци: ${s.lessons.added.length}, променени: ${s.lessons.changed.length}; `
-    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}. Бележките и прогресът са запазени.`;
+    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}.${quizChanges} Бележките, прогресът и отговорите на тестовете са запазени.`;
 }
 
 /** Message for any error thrown by importCourse(). */

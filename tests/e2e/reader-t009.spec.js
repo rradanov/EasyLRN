@@ -372,7 +372,7 @@ test.describe('T-009 offline', () => {
 });
 
 test.describe('T-009 real lesson (T009_REAL_DIR, outside the repository)', () => {
-  test('lesson 0001 of a real course: its own quiz.js and reflect.js run unchanged', async ({ page }, info) => {
+  test('lesson 0001 of a real course: its own reflect.js runs unchanged (no embedded quiz, D-033)', async ({ page }, info) => {
     const dir = process.env.T009_REAL_DIR;
     test.skip(!dir || !existsSync(dir) || info.project.name !== 'tablet-landscape', 'needs T009_REAL_DIR');
     allowed = [/fonts\.g/];
@@ -383,12 +383,9 @@ test.describe('T-009 real lesson (T009_REAL_DIR, outside the repository)', () =>
     await page.locator('a.lesson-link').first().click();
     const lf = lessonFrame(page);
     await expect(lf.locator('h1')).toBeVisible();
-    const quiz = lf.locator('.quiz').first();
-    await expect(quiz.locator('.opt').first()).toBeVisible();
-    await quiz.locator('.opt').first().click();
-    await expect(quiz.locator('.quiz-fb')).toBeVisible();
-    await quiz.locator('.quiz-controls .btn').first().click();
-    await expect(quiz.locator('.quiz-meta')).toContainText('2 /');
+    // D-033: tests are separate files (quizzes/*.json), shown by the app, not in
+    // the lesson. The real lesson 0001 no longer carries an embedded quiz.
+    await expect(lf.locator('.quiz')).toHaveCount(0);
     const reflect = lf.locator('.reflect').first();
     await reflect.locator('textarea').first().fill('тест');
     await reflect.locator('button', { hasText: 'Копирай' }).click();

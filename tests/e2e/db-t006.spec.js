@@ -168,13 +168,13 @@ test.describe('T-006 two tabs', () => {
       const db = await import('../src/db.js');
       await db.deleteDatabase('easylrn-v2');
       window.__versionChange = false;
-      await db.openDb({ name: 'easylrn-v2', onVersionChange: () => { window.__versionChange = true; } });
+      await db.openDb({ name: 'easylrn-v2', version: 1, migrations: { 1: db.MIGRATIONS[1] }, onVersionChange: () => { window.__versionChange = true; } });
       await db.createNote({ annotationId: 'A', body: 'от раздел A' });
     });
     const v = await b.evaluate(async () => {
       const db = await import('../src/db.js');
       const conn = await Promise.race([
-        db.openDb({ name: 'easylrn-v2', migrations: { ...db.MIGRATIONS, 2(c, tx) { tx.objectStore('notes').createIndex('by_body', 'body'); } } }),
+        db.openDb({ name: 'easylrn-v2', version: 2, migrations: { 1: db.MIGRATIONS[1], 2(c, tx) { tx.objectStore('notes').createIndex('by_body', 'body'); } } }),
         new Promise((r) => setTimeout(() => r('blocked'), 5000)),
       ]);
       if (conn === 'blocked') return 'blocked';
@@ -197,13 +197,14 @@ test.describe('T-006 migrations: failures', () => {
     await page.goto(TEST_PAGE);
     const r = await page.evaluate(async () => {
       const db = await import('../src/db.js');
+      const V1 = { 1: db.MIGRATIONS[1] };
       await db.deleteDatabase('easylrn-mig');
-      await db.openDb({ name: 'easylrn-mig' });
+      await db.openDb({ name: 'easylrn-mig', version: 1, migrations: V1 });
       await db.createNote({ annotationId: 'KEEP', body: 'пази' });
       db.closeDb();
       let error = null;
-      try { await db.openDb({ name: 'easylrn-mig', migrations: { ...db.MIGRATIONS, 2() { throw new Error('boom'); } } }); } catch (e) { error = e.name; }
-      const conn = await db.openDb({ name: 'easylrn-mig', migrations: db.MIGRATIONS });
+      try { await db.openDb({ name: 'easylrn-mig', version: 2, migrations: { ...V1, 2() { throw new Error('boom'); } } }); } catch (e) { error = e.name; }
+      const conn = await db.openDb({ name: 'easylrn-mig', version: 1, migrations: V1 });
       const out = { error, version: conn.version, body: (await db.byIndex('notes', 'by_annotation', 'KEEP'))[0]?.body };
       await db.deleteDatabase('easylrn-mig');
       return out;
@@ -217,10 +218,11 @@ test.describe('T-006 migrations: failures', () => {
     await page.goto(TEST_PAGE);
     await page.evaluate(async () => {
       const db = await import('../src/db.js');
+      const V1 = { 1: db.MIGRATIONS[1] };
       await db.deleteDatabase('easylrn-mig3');
-      await db.openDb({ name: 'easylrn-mig3' });
+      await db.openDb({ name: 'easylrn-mig3', version: 1, migrations: V1 });
       db.closeDb();
-      try { await db.openDb({ name: 'easylrn-mig3', migrations: { ...db.MIGRATIONS, 2() { throw new Error('boom'); } } }); } catch { /* expected */ }
+      try { await db.openDb({ name: 'easylrn-mig3', version: 2, migrations: { ...V1, 2() { throw new Error('boom'); } } }); } catch { /* expected */ }
       await new Promise((r) => setTimeout(r, 200));
       await db.deleteDatabase('easylrn-mig3');
     });
@@ -231,12 +233,13 @@ test.describe('T-006 migrations: failures', () => {
     await page.goto(TEST_PAGE);
     const r = await page.evaluate(async () => {
       const db = await import('../src/db.js');
+      const V1 = { 1: db.MIGRATIONS[1] };
       await db.deleteDatabase('easylrn-mig2');
-      await db.openDb({ name: 'easylrn-mig2' });
+      await db.openDb({ name: 'easylrn-mig2', version: 1, migrations: V1 });
       db.closeDb();
       let outcome;
       try {
-        const conn = await db.openDb({ name: 'easylrn-mig2', migrations: { ...db.MIGRATIONS,
+        const conn = await db.openDb({ name: 'easylrn-mig2', version: 2, migrations: { ...V1,
           async 2(c, tx) { await new Promise((res) => setTimeout(res, 10)); tx.objectStore('notes').createIndex('by_body', 'body'); } } });
         outcome = { opened: true, version: conn.version, indexes: [...conn.transaction('notes').objectStore('notes').indexNames] };
       } catch (e) {

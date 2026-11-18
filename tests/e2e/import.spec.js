@@ -64,7 +64,7 @@ test.describe('T-007 import: ZIP', () => {
     await importVia(page, 'zip', asFile(DRIVE_ZIP_NAME, makeZip(FILES)));
     await expect(result(page)).toBeVisible();
     await expect(result(page).locator('[data-status]')).toHaveAttribute('data-status', 'new');
-    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
+    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 2 теста, 13 файла.');
     await expect(result(page)).toContainText('0001 Какви видове чай има?');
     await expect(result(page)).toContainText('R01 Температура и време за запарване');
     await expect(result(page)).toContainText('Пропуснати PDF файлове: 2');
@@ -90,7 +90,7 @@ test.describe('T-007 import: ZIP', () => {
 
   test('Drive ZIP split in two parts, picked together', async ({ page }) => {
     await importVia(page, 'zip', splitZips(FILES, 2));
-    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
+    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 2 теста, 13 файла.');
     expectFullCourse(await dbState(page));
   });
 
@@ -138,7 +138,7 @@ test.describe('T-007 re-import', () => {
     await importVia(page, 'zip', asFile('LRN-DEMO-20261119T090000Z-1-001.zip', makeZip(withChangedLesson(FILES))));
     await expect(result(page).locator('[data-status]')).toHaveAttribute('data-status', 'updated');
     await expect(result(page)).toContainText('нови уроци: 0, променени: 1');
-    await expect(result(page)).toContainText('файлове — нови: 0, променени: 1, без промяна: 10');
+    await expect(result(page)).toContainText('файлове — нови: 0, променени: 1, без промяна: 12');
 
     const after = await page.evaluate(async ({ lessonId, a, n }) => {
       const db = await import('./src/db.js');
@@ -186,7 +186,7 @@ test.describe('T-007 fallback: files and folder', () => {
 
   test('a picked folder (webkitdirectory) works like the ZIP', async ({ page }) => {
     await importVia(page, 'folder', FIXTURE_DIR);
-    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
+    await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 2 теста, 13 файла.');
     expectFullCourse(await dbState(page));
   });
 });

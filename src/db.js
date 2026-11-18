@@ -24,6 +24,8 @@ export const STORES = Object.freeze({
   subtopics: 'subtopics',
   settings: 'settings',
   usage: 'usage',
+  quizzes: 'quizzes',
+  quizAnswers: 'quizAnswers',
 });
 
 export const DOC_TYPES = Object.freeze(['lesson', 'subtopic', 'note', 'message']);
@@ -111,6 +113,17 @@ export const MIGRATIONS = Object.freeze({
 
     const usage = db.createObjectStore(STORES.usage, { keyPath: 'id' });
     usage.createIndex('by_at', 'at');
+  },
+  // v2 (T-047, D-032/D-033): the "Тестове" section. `quizzes` holds the
+  // imported quiz definitions (quizzes/*.json); `quizAnswers` holds the user's
+  // answers, keyed by the quiz id, each choice under a hash of the question
+  // text so a re-import keeps the answers of unchanged questions.
+  2(db) {
+    const quizzes = db.createObjectStore(STORES.quizzes, { keyPath: 'id' });
+    quizzes.createIndex('by_course', 'courseId');
+    quizzes.createIndex('by_lesson', ['courseId', 'lesson']);
+
+    db.createObjectStore(STORES.quizAnswers, { keyPath: 'id' });
   },
 });
 
@@ -542,7 +555,7 @@ export const getLesson = (id, opts) => get(STORES.lessons, id, opts);
  * Re-importing undeletes a soft-deleted course, file or lesson.
  * User data (annotations, notes, threads, messages, subtopics) is not touched.
  */
-export async function saveCourseImport({ course, files = [], lessons = [] }) {
+export async function saveCourseImport({ course, files = [], lessons = [], quizzes = [] }) {
   requireString(course?.id, 'course.id');
   for (const f of files) {
     if (f.courseId !== course.id) throw new TypeError('file.courseId must match course.id');
@@ -553,16 +566,22 @@ export async function saveCourseImport({ course, files = [], lessons = [] }) {
     requireString(l.id, 'lesson.id');
     oneOf(l.kind ?? 'lesson', LESSON_KINDS, 'lesson.kind');
   }
+  for (const q of quizzes) {
+    if (q.courseId !== course.id) throw new TypeError('quiz.courseId must match course.id');
+    requireString(q.id, 'quiz.id');
+  }
   const db = await openDb();
-  const tx = db.transaction([STORES.courses, STORES.files, STORES.lessons], 'readwrite');
+  const tx = db.transaction([STORES.courses, STORES.files, STORES.lessons, STORES.quizzes], 'readwrite');
   const courses = tx.objectStore(STORES.courses);
   const fileStore = tx.objectStore(STORES.files);
   const lessonStore = tx.objectStore(STORES.lessons);
+  const quizStore = tx.objectStore(STORES.quizzes);
   const keys = files.map((f) => fileKey(f.courseId, f.path));
-  const [oldCourse, oldFiles, oldLessons] = await Promise.all([
+  const [oldCourse, oldFiles, oldLessons, oldQuizzes] = await Promise.all([
     courses.get(course.id),
     Promise.all(keys.map((k) => fileStore.get(k))),
     Promise.all(lessons.map((l) => lessonStore.get(l.id))),
+    Promise.all(quizzes.map((q) => quizStore.get(q.id))),
   ]);
   const courseRecord = stamp(STORES.courses, {
     ...oldCourse,
@@ -585,6 +604,11 @@ export async function saveCourseImport({ course, files = [], lessons = [] }) {
       progress: old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
     })));
   });
+  // Quiz definitions are replaced; the answers (a separate store, keyed by
+  // question text) are never touched here, so they survive a re-import.
+  quizzes.forEach((q, i) => {
+    writes.push(quizStore.put(stamp(STORES.quizzes, { ...q, createdAt: oldQuizzes[i]?.createdAt, deleted: false })));
+  });
   await Promise.all([...writes, tx.done]);
   return courseRecord;
 }
@@ -603,6 +627,119 @@ export function setLessonProgress(lessonId, progress) {
   return update(STORES.lessons, lessonId, (lesson) => ({
     progress: { ...NEW_PROGRESS, ...lesson.progress, ...progress },
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Quizzes and quiz answers (T-047, D-032/D-033)
+// ---------------------------------------------------------------------------
+
+/**
+ * A stable key for a question, from its text (FNV-1a, hex). A re-import keeps
+ * the answer of a question whose text did not change, even if its position or
+ * the rest of the quiz did (D-032).
+ */
+export function questionKey(q) {
+  const s = String(q ?? '').trim();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Quizzes of a course, in order (`order`, then id). */
+export async function listQuizzes(courseId, opts) {
+  const quizzes = await byIndex(STORES.quizzes, 'by_course', courseId, opts);
+  return quizzes.sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || String(a.id).localeCompare(String(b.id)));
+}
+
+export const getQuiz = (id, opts) => get(STORES.quizzes, id, opts);
+
+/** Quizzes attached to a lesson number ("0001"); a lesson may have several. */
+export const quizzesForLesson = (courseId, lesson, opts) =>
+  byIndex(STORES.quizzes, 'by_lesson', [courseId, lesson], opts).then((qs) =>
+    qs.sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || String(a.id).localeCompare(String(b.id))));
+
+/** The user's answers for a quiz: { choices: { [questionKey]: index }, cursor }. */
+export async function getQuizAnswers(quizId) {
+  const record = await get(STORES.quizAnswers, quizId);
+  return { id: quizId, choices: record?.choices ?? {}, cursor: record?.cursor ?? 0, ...record };
+}
+
+/** Save one chosen option for a question (merged into the quiz's answer record). */
+export async function saveQuizChoice(quizId, { courseId, qKey, choice, cursor }) {
+  requireString(quizId, 'quizId');
+  requireString(qKey, 'qKey');
+  const db = await openDb();
+  const tx = db.transaction(STORES.quizAnswers, 'readwrite');
+  const old = await tx.store.get(quizId);
+  const record = stamp(STORES.quizAnswers, {
+    ...old,
+    id: quizId,
+    courseId: courseId ?? old?.courseId ?? null,
+    createdAt: old?.createdAt,
+    deleted: false,
+    choices: { ...old?.choices, [qKey]: choice },
+    cursor: cursor ?? old?.cursor ?? 0,
+  });
+  await tx.store.put(record);
+  await tx.done;
+  return record;
+}
+
+/** Remember which question the reader is on (navigation), without changing choices. */
+export async function saveQuizCursor(quizId, cursor) {
+  const db = await openDb();
+  const tx = db.transaction(STORES.quizAnswers, 'readwrite');
+  const old = await tx.store.get(quizId);
+  await tx.store.put(stamp(STORES.quizAnswers, {
+    ...old, id: quizId, createdAt: old?.createdAt, deleted: false, choices: old?.choices ?? {}, cursor,
+  }));
+  await tx.done;
+}
+
+/** Forget the given question answers (used by "Опитай пак грешните"). */
+export async function clearQuizChoices(quizId, qKeys) {
+  const db = await openDb();
+  const tx = db.transaction(STORES.quizAnswers, 'readwrite');
+  const old = await tx.store.get(quizId);
+  const choices = { ...old?.choices };
+  for (const k of qKeys) delete choices[k];
+  await tx.store.put(stamp(STORES.quizAnswers, {
+    ...old, id: quizId, createdAt: old?.createdAt, deleted: false, choices, cursor: old?.cursor ?? 0,
+  }));
+  await tx.done;
+}
+
+/** Clear every answer of a quiz ("Нулирай отговорите"). */
+export async function resetQuizAnswers(quizId) {
+  const db = await openDb();
+  const tx = db.transaction(STORES.quizAnswers, 'readwrite');
+  const old = await tx.store.get(quizId);
+  await tx.store.put(stamp(STORES.quizAnswers, {
+    ...old, id: quizId, createdAt: old?.createdAt, deleted: false, choices: {}, cursor: 0,
+  }));
+  await tx.done;
+}
+
+/**
+ * Score of a quiz from its questions and the stored answers.
+ * @returns {{ total: number, answered: number, correct: number, wrong: number[], started: boolean, done: boolean }}
+ */
+export function scoreQuiz(quiz, answers) {
+  const choices = answers?.choices ?? {};
+  const wrong = [];
+  let answered = 0;
+  let correct = 0;
+  quiz.questions.forEach((question, i) => {
+    const choice = choices[questionKey(question.q)];
+    if (typeof choice !== 'number') return;
+    answered++;
+    if (choice === question.answer) correct++; else wrong.push(i);
+  });
+  const total = quiz.questions.length;
+  return { total, answered, correct, wrong, started: answered > 0, done: total > 0 && answered === total };
 }
 
 // ---------------------------------------------------------------------------

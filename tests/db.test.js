@@ -57,12 +57,13 @@ async function seedTree() {
 test('схема v1: всички хранилища и индекси', async () => {
   const conn = await db.openDb();
   eq(conn.version, db.SCHEMA_VERSION, 'version');
-  eq(db.SCHEMA_VERSION, 1, 'SCHEMA_VERSION');
+  eq(db.SCHEMA_VERSION, 2, 'SCHEMA_VERSION');
   eq([...conn.objectStoreNames].sort(), Object.values(STORES).sort(), 'stores');
   const expected = {
     files: ['by_course'], lessons: ['by_course'], annotations: ['by_course', 'by_target'],
     notes: ['by_annotation'], threads: ['by_annotation'], messages: ['by_thread'],
     subtopics: ['by_annotation', 'by_course', 'by_parent', 'by_root'], usage: ['by_at'],
+    quizzes: ['by_course', 'by_lesson'], quizAnswers: [],
     courses: [], settings: [],
   };
   const tx = conn.transaction(Object.values(STORES));
@@ -74,19 +75,30 @@ test('схема v1: всички хранилища и индекси', async (
   eq(tx.objectStore('files').keyPath, 'key', 'files keyPath');
 });
 
+// The runner opens each test's database at the current SCHEMA_VERSION (2), so
+// these migration-machinery tests reset to a fresh v1 database first and then
+// drive a custom upgrade with their own migration set (V1 holds only the real
+// migration 1).
+const V1 = { 1: db.MIGRATIONS[1] };
+async function freshAtV1(name) {
+  db.closeDb();
+  await db.deleteDatabase(name);
+  await db.openDb({ name, version: 1, migrations: V1 });
+}
+
 test('миграция v1 → v2 запазва данните и добавя индекс', async (name) => {
   const v2 = {
-    ...db.MIGRATIONS,
+    ...V1,
     2(conn, tx) {
       tx.objectStore('notes').createIndex('by_updated', 'updatedAt');
       // Data migration example: give old notes a `format` field (synchronous, see MIGRATIONS).
       db.eachRecord(tx, 'notes', (value, cursor) => cursor.update({ ...value, format: 'markdown' }));
     },
   };
-  await db.openDb({ name, version: 1 });
+  await freshAtV1(name);
   const note = await db.createNote({ annotationId: 'A1', body: 'стара' });
   db.closeDb();
-  const conn = await db.openDb({ name, migrations: v2 });
+  const conn = await db.openDb({ name, version: 2, migrations: v2 });
   eq(conn.version, 2, 'version');
   const migrated = await db.get(STORES.notes, note.id);
   eq(migrated.body, 'стара', 'body kept');
@@ -95,31 +107,35 @@ test('миграция v1 → v2 запазва данните и добавя �
 });
 
 test('T-006-fix: асинхронна миграция се отхвърля, версията остава', async (name) => {
+  await freshAtV1(name);
   await db.createNote({ annotationId: 'KEEP', body: 'пази' });
   db.closeDb();
-  const bad = { ...db.MIGRATIONS, async 2(conn, tx) { tx.objectStore('notes').createIndex('x', 'body'); } };
-  await rejects(db.openDb({ name, migrations: bad }), /./);
-  const conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  const bad = { ...V1, async 2(conn, tx) { tx.objectStore('notes').createIndex('x', 'body'); } };
+  await rejects(db.openDb({ name, version: 2, migrations: bad }), /./);
+  const conn = await db.openDb({ name, version: 1, migrations: V1 });
   eq(conn.version, 1, 'version unchanged');
   eq((await db.byIndex(STORES.notes, 'by_annotation', 'KEEP')).length, 1, 'data kept');
 });
 
 test('T-006-fix: грешка в eachRecord прекъсва миграцията', async (name) => {
+  await freshAtV1(name);
   await db.createNote({ annotationId: 'KEEP', body: 'пази' });
   db.closeDb();
-  const bad = { ...db.MIGRATIONS, 2(conn, tx) {
+  const bad = { ...V1, 2(conn, tx) {
     tx.objectStore('notes').createIndex('x', 'body');
     db.eachRecord(tx, 'notes', () => { throw new Error('boom'); });
   } };
-  await rejects(db.openDb({ name, migrations: bad }), /./);
-  const conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  await rejects(db.openDb({ name, version: 2, migrations: bad }), /./);
+  const conn = await db.openDb({ name, version: 1, migrations: V1 });
   eq(conn.version, 1, 'version unchanged');
   eq([...conn.transaction('notes').objectStore('notes').indexNames], ['by_annotation'], 'no index x');
 });
 
 test('липсваща миграция → грешка, без да се чупи следващото отваряне', async (name) => {
-  await rejects(db.openDb({ name, version: 3, migrations: { 1: db.MIGRATIONS[1] } }), /No migration to schema version 2/);
-  const conn = await db.openDb({ name });
+  await freshAtV1(name);
+  db.closeDb();
+  await rejects(db.openDb({ name, version: 3, migrations: V1 }), /No migration to schema version 2/);
+  const conn = await db.openDb({ name, version: 1, migrations: V1 });
   eq(conn.version, 1);
 });
 
@@ -141,6 +157,8 @@ const SAMPLES = {
   subtopics: () => ({ courseId: COURSE, annotationId: 'A1', parent: { type: 'lesson', id: LESSON }, rootLessonId: LESSON, depth: 1, title: 'Тема', kind: 'термин', content: '# Тема', status: 'done' }),
   settings: () => ({ id: 'settings', model: 'claude-sonnet-5-5' }),
   usage: () => ({ at: new Date().toISOString(), model: 'claude-sonnet-5-5', kind: 'answer', input: 10, output: 20, cacheRead: 0, cacheWrite: 0, estCostUSD: 0.001 }),
+  quizzes: () => ({ id: `${COURSE}/quizzes/0001-1.json`, courseId: COURSE, path: 'quizzes/0001-1.json', slug: '0001-1', lesson: '0001', title: 'Тест', count: 1, order: 1, questions: [{ q: 'Въпрос?', options: ['А', 'Б'], answer: 0, why: '', src: '' }], sha256: 'q' }),
+  quizAnswers: () => ({ id: `${COURSE}/quizzes/0001-1.json`, courseId: COURSE, choices: { abc: 0 }, cursor: 0 }),
 };
 
 for (const store of Object.values(STORES)) {
@@ -599,12 +617,13 @@ test('T-006 едновременни записи: 200 анотации, 50 об
 });
 
 test('T-006 миграция v1 → v2 (нов store + преместване на прогреса) и v2 → v3', async (name) => {
+  await freshAtV1(name);
   await db.putLesson({ id: LESSON, courseId: COURSE, title: 'Урок', order: 1 });
   await db.setLessonProgress(LESSON, { status: 'done', scrollY: 77 });
   const a = await annOn('lesson', LESSON, 'цитат 🙂');
   db.closeDb();
   const migrations = {
-    ...db.MIGRATIONS,
+    ...V1,
     2(conn, tx) {
       const progress = conn.createObjectStore('progress', { keyPath: 'lessonId' });
       progress.createIndex('by_status', 'status');

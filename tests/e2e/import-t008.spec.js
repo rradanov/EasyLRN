@@ -86,16 +86,17 @@ test.describe('T-008 retest of T-006-fix', () => {
     await page.goto('./tests/db.html?run=none');
     const r = await page.evaluate(async () => {
       const db = await import('../src/db.js');
+      const V1 = { 1: db.MIGRATIONS[1] };
       await db.deleteDatabase('t008-mig');
-      await db.openDb({ name: 't008-mig' });
+      await db.openDb({ name: 't008-mig', version: 1, migrations: V1 });
       await db.createNote({ annotationId: 'KEEP', body: 'пази' });
       db.closeDb();
       let error = null;
       try {
-        await db.openDb({ name: 't008-mig', migrations: { ...db.MIGRATIONS,
+        await db.openDb({ name: 't008-mig', version: 2, migrations: { ...V1,
           async 2(c, tx) { await new Promise((res) => setTimeout(res, 10)); tx.objectStore('notes').createIndex('by_body', 'body'); } } });
       } catch (e) { error = e.name; }
-      const conn = await db.openDb({ name: 't008-mig', migrations: db.MIGRATIONS });
+      const conn = await db.openDb({ name: 't008-mig', version: 1, migrations: V1 });
       const out = { error, version: conn.version, indexes: [...conn.transaction('notes').objectStore('notes').indexNames], body: (await db.byIndex('notes', 'by_annotation', 'KEEP'))[0]?.body };
       await db.deleteDatabase('t008-mig');
       return out;
@@ -170,7 +171,7 @@ test.describe('T-008 ZIP shapes', () => {
     const noIndex = Object.fromEntries(Object.entries(FILES).filter(([p]) => p !== 'INDEX.md'));
     let r = await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(noIndex)));
     expect(r.ok).toBe(true);
-    expect(r.line).toBe('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 10 файла.');
+    expect(r.line).toBe('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 2 теста, 12 файла.');
     expect(r.lessons.map((l) => [l.number, l.title, l.order, l.artifactId])).toEqual([
       ['0001', 'Какви видове чай има?', 1, null], ['R01', 'Температура и време за запарване', 2, null]]);
     await page.evaluate(() => indexedDB.deleteDatabase('lrn-app'));
@@ -276,7 +277,7 @@ test.describe('T-008 ZIP shapes', () => {
     }, { zip, name: zipName });
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
     info.annotations.push({ type: 'perf', description: `real course ${r.mb.toFixed(1)} MB: ${Math.round(r.ms)} ms (CPU ×4)` });
-    const first = new RegExp(`^Курсът ${root} е импортиран: \\d+ урока?, \\d+ справочника?, \\d+ файла?\\.$`);
+    const first = new RegExp(`^Курсът ${root} е импортиран: \\d+ урока?, \\d+ справочника?(, \\d+ теста?)?, \\d+ файла?\\.$`);
     expect(r.first).toMatch(first);
     expect(r.items.length).toBeGreaterThan(0);
     expect(r.items.every((i) => i.title && i.title.length > 1)).toBe(true);

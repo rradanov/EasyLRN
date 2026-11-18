@@ -10,6 +10,7 @@ import { initStorage } from './db.js';
 import { coursesScreen } from './screens/courses.js';
 import { courseScreen } from './screens/course.js';
 import { readerScreen } from './screens/reader.js';
+import { quizScreen } from './screens/quiz.js';
 import { settingsScreen } from './screens/settings.js';
 import { notFoundScreen } from './screens/not-found.js';
 
@@ -36,6 +37,7 @@ function startApp() {
   addRoute('/', coursesScreen);
   addRoute('/c/:courseId', courseScreen);
   addRoute('/c/:courseId/read/:lessonId', readerScreen);
+  addRoute('/c/:courseId/quiz/:quizId', quizScreen);
   addRoute('/settings', settingsScreen);
 
   const main = document.getElementById('main');

@@ -4,8 +4,9 @@
 // come in T-027.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
-import { getCourse, listLessons, getSettings, setLessonProgress } from '../db.js';
+import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson } from '../db.js';
 import { createLessonFrame } from '../lesson-frame.js';
+import { quizLink } from './quiz-link.js';
 
 /** Find a lesson by number (case-insensitive), id or path. */
 export function findLesson(lessons, key) {
@@ -25,6 +26,7 @@ export function readerScreen({ params, query }) {
   const { courseId, lessonId } = params;
   const path = (query.get('path') || '').split('/').filter(Boolean);
   const hash = query.get('at') ? `#${query.get('at')}` : '';
+  const quizzesBox = h('div', { class: 'reader__quizzes', 'data-field': 'lesson-quizzes' });
   const content = h('div', { class: 'reader__content', 'data-field': 'reader-content' },
     h('p', { class: 'muted', text: 'Зареждам…' }));
   let frame = null;
@@ -38,6 +40,17 @@ export function readerScreen({ params, query }) {
       mount(content, h('p', { class: 'empty', 'data-field': 'reader-missing',
         text: course ? 'Урокът не е намерен в курса. Импортирай курса отново.' : 'Курсът още не е импортиран.' }));
       return;
+    }
+    // "Тест към урока" (D-032): a lesson may have several quizzes (field `lesson`).
+    if (lesson.number) {
+      quizzesForLesson(courseId, lesson.number).then((quizzes) => {
+        if (destroyed || !quizzes.length) return;
+        mount(quizzesBox,
+          h('h3', { class: 'card__eyebrow', text: quizzes.length > 1 ? 'Тестове към урока' : 'Тест към урока' }),
+          h('ul', { class: 'import__items quiz-list' }, quizzes.map((q) =>
+            h('li', { 'data-quiz': q.id },
+              h('a', { class: 'quiz-list__link', href: quizLink(courseId, q) }, q.title)))));
+      }).catch((err) => console.warn('Cannot load the lesson quizzes:', err));
     }
     frame = createLessonFrame({
       course,
@@ -73,6 +86,7 @@ export function readerScreen({ params, query }) {
         ...path.map((id) => h('span', { text: ` › ${id}` })),
       ),
       content,
+      quizzesBox,
     ),
   };
 }

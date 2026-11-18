@@ -55,7 +55,7 @@ test.describe('data layer (IndexedDB)', () => {
     expect(after).toEqual({ course: 'Демо', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
   });
 
-  test('the app opens lrn-app v1 and requests persistent storage at start', async ({ page }) => {
+  test('the app opens lrn-app v2 and requests persistent storage at start', async ({ page }) => {
     await page.addInitScript(() => {
       window.__persistCalls = 0;
       const original = navigator.storage.persist.bind(navigator.storage);
@@ -69,14 +69,14 @@ test.describe('data layer (IndexedDB)', () => {
     await expect.poll(() => page.evaluate(async () => {
       const dbs = await indexedDB.databases();
       return dbs.find((d) => d.name === 'lrn-app')?.version ?? null;
-    })).toBe(1);
+    })).toBe(2);
     await expect.poll(() => page.evaluate(() => window.__persistCalls)).toBeGreaterThanOrEqual(1);
     const stores = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('lrn-app');
       req.onsuccess = () => { const names = [...req.result.objectStoreNames].sort(); req.result.close(); resolve(names); };
       req.onerror = () => reject(req.error);
     }));
-    expect(stores).toEqual(['annotations', 'courses', 'files', 'lessons', 'messages', 'notes', 'settings', 'subtopics', 'threads', 'usage']);
+    expect(stores).toEqual(['annotations', 'courses', 'files', 'lessons', 'messages', 'notes', 'quizAnswers', 'quizzes', 'settings', 'subtopics', 'threads', 'usage']);
     expect(problems).toEqual([]);
   });
 });
