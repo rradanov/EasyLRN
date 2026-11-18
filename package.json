@@ -1,0 +1,13 @@
+{
+  "name": "easylrn-tests",
+  "private": true,
+  "description": "End-to-end tests for the EasyLRN PWA shell (the app itself has no build step).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "serve": "node tests/serve.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
