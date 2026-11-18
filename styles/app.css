@@ -170,6 +170,24 @@ button:focus-visible,
 .card--placeholder { border-style: dashed; box-shadow: none; opacity: 0.8; }
 .card__title { margin: 0 0 4px; font-size: 1.1rem; }
 .card__meta { margin: 0; color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.85rem; }
+.card__eyebrow { margin: 0 0 2px; color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+a.card { display: block; color: inherit; text-decoration: none; min-height: var(--touch); }
+a.card:active { background: var(--paper); }
+
+/* ---- Course import (T-007) ---- */
+.card-grid--import { grid-template-columns: minmax(0, 640px); }
+.card--import { border-style: dashed; box-shadow: none; }
+.import__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.import__actions .button { display: inline-flex; align-items: center; }
+.import__progress { margin-top: 12px; }
+.import__bar { width: 100%; height: 8px; accent-color: var(--accent); }
+.import__status { margin: 4px 0 0; color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.9rem; }
+.import__error { margin: 12px 0 0; padding: 8px 12px; border-left: 3px solid #b3261e; background: var(--paper); font-family: var(--font-sans); font-size: 0.95rem; }
+.import__result { margin-top: 12px; font-family: var(--font-sans); font-size: 0.95rem; }
+.import__result .button { display: inline-flex; align-items: center; text-decoration: none; }
+.import__headline { margin: 0 0 8px; }
+.import__items { margin: 0 0 12px; padding-left: 1.2em; }
+.import__num { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
 
 .two-col {
   display: grid;

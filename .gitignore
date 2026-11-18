@@ -15,6 +15,9 @@ playwright-report/
 secrets/
 courses/
 LRN-*/
+# Exception (T-007): shortened, anonymized test copy of LRN-DEMO for the import tests.
+# MISSION/NOTES/learning-records are rewritten, Drive/artifact ids are fake; see logs/T-007.
+!tests/fixtures/LRN-DEMO/
 *.zip
 backup*.json
 easylrn-backup*.json

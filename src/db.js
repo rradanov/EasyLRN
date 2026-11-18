@@ -511,6 +511,63 @@ export async function putLesson(lesson) {
 
 export const getLesson = (id, opts) => get(STORES.lessons, id, opts);
 
+/**
+ * Write the result of a course import in ONE readwrite transaction over
+ * courses, files and lessons (T-007): either all of it is stored or nothing.
+ * - course: merged over the stored one (`meta` fields missing in this import are kept);
+ * - files: inserted or replaced (`createdAt` kept);
+ * - lessons: inserted or replaced; the user's `progress` is always kept.
+ * Re-importing undeletes a soft-deleted course, file or lesson.
+ * User data (annotations, notes, threads, messages, subtopics) is not touched.
+ */
+export async function saveCourseImport({ course, files = [], lessons = [] }) {
+  requireString(course?.id, 'course.id');
+  for (const f of files) {
+    if (f.courseId !== course.id) throw new TypeError('file.courseId must match course.id');
+    requireString(f.path, 'file.path');
+  }
+  for (const l of lessons) {
+    if (l.courseId !== course.id) throw new TypeError('lesson.courseId must match course.id');
+    requireString(l.id, 'lesson.id');
+    oneOf(l.kind ?? 'lesson', LESSON_KINDS, 'lesson.kind');
+  }
+  const db = await openDb();
+  const tx = db.transaction([STORES.courses, STORES.files, STORES.lessons], 'readwrite');
+  const courses = tx.objectStore(STORES.courses);
+  const fileStore = tx.objectStore(STORES.files);
+  const lessonStore = tx.objectStore(STORES.lessons);
+  const keys = files.map((f) => fileKey(f.courseId, f.path));
+  const [oldCourse, oldFiles, oldLessons] = await Promise.all([
+    courses.get(course.id),
+    Promise.all(keys.map((k) => fileStore.get(k))),
+    Promise.all(lessons.map((l) => lessonStore.get(l.id))),
+  ]);
+  const courseRecord = stamp(STORES.courses, {
+    ...oldCourse,
+    ...course,
+    meta: { ...oldCourse?.meta, ...course.meta },
+    createdAt: oldCourse?.createdAt,
+    deleted: false,
+  });
+  const writes = [courses.put(courseRecord)];
+  files.forEach((f, i) => {
+    writes.push(fileStore.put(stamp(STORES.files, { ...f, key: keys[i], createdAt: oldFiles[i]?.createdAt, deleted: false })));
+  });
+  lessons.forEach((l, i) => {
+    const old = oldLessons[i];
+    writes.push(lessonStore.put(stamp(STORES.lessons, {
+      kind: 'lesson',
+      ...l,
+      createdAt: old?.createdAt,
+      deleted: false,
+      progress: old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
+    })));
+  });
+  await Promise.all([...writes, tx.done]);
+  return courseRecord;
+}
+
+
 /** Lessons and references of a course, in course order (`order`, then number). */
 export async function listLessons(courseId, opts) {
   const lessons = await byIndex(STORES.lessons, 'by_course', courseId, opts);
