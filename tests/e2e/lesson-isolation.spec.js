@@ -472,6 +472,9 @@ test.describe('T-045 П-3 bridge protocol and the checks in the app (§5.3)', ()
     const h = await frame.evaluate((el) => el.getBoundingClientRect().height);
     expect(h).toBeGreaterThan(300);
     expect(h).toBeLessThanOrEqual(await page.evaluate(() => innerHeight));
+    // The lesson scrolls inside its frame.
+    const f = frameOf(page, 'LRN-BROKEN');
+    expect(await f.evaluate(() => { window.scrollTo(0, 600); return window.scrollY; })).toBeGreaterThan(500);
   });
 });
 

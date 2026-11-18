@@ -35,13 +35,15 @@
   const baseFontPx = parseFloat(getComputedStyle(root).fontSize) || 16;
   const style = document.createElement('style');
   style.setAttribute('data-easylrn', 'bridge');
-  const state = { fontScale: 1, palette: {}, exclude: BASE_EXCLUDE, readySent: false };
+  const state = { fontScale: 1, palette: {}, exclude: BASE_EXCLUDE, active: false };
   const renderStyle = () => {
-    const rules = [
-      // The frame is as tall as its content; the app window scrolls (no inner scroll).
+    // Only once the app has answered (lrn:init): the frame is then as tall as its
+    // content and the app window scrolls. Before that (or if the app falls back
+    // to an inner scroll) the lesson keeps its own scrolling.
+    const rules = state.active ? [
       'html { height: auto !important; min-height: 0 !important; overflow-y: hidden !important; }',
       'body { min-height: 0 !important; }',
-    ];
+    ] : [];
     if (state.fontScale !== 1) rules.push(`html { font-size: ${(baseFontPx * state.fontScale).toFixed(2)}px !important; }`);
     for (const c of COLORS) {
       const color = state.palette[c] || 'Highlight';
@@ -185,6 +187,7 @@
   const fontsLoaded = [];
   const handlers = {
     'lrn:init'(m) {
+      state.active = true;
       if (m.palette && typeof m.palette === 'object') {
         const palette = {};
         for (const c of COLORS) if (typeof m.palette[c] === 'string' && CSS_COLOR.test(m.palette[c])) palette[c] = m.palette[c];
@@ -255,7 +258,6 @@
 
   // --- Ready ------------------------------------------------------------------------
   function sendReady() {
-    state.readySent = true;
     send('lrn:ready', { v: PROTOCOL, title: String(document.title || '').slice(0, 300), textLength: textModel().text.length });
   }
   const fontsReady = document.fonts?.ready ?? Promise.resolve();
