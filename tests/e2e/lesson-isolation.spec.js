@@ -11,6 +11,7 @@ import { strToU8 } from '../../vendor/fflate.js';
 const FILES = readFixture();
 const LESSON_PATH = 'lessons/0001-vidove-chay.html';
 const FAKE_KEY = 'sk-ant-T045-FAKE-KEY';
+const SHELL_CACHE = `easylrn-shell-${/APP_VERSION = '([^']+)'/.exec(readFileSync(new URL('../../src/config.js', import.meta.url), 'utf8'))[1]}`;
 // 1×1 PNG (one red pixel).
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
 
@@ -128,20 +129,21 @@ test.describe('T-045 П-1 delivery: opaque origin, served by the Service Worker,
       return { links: f.links, version: f.renderVersion, sameSha: f.renderSha === f.sha256, deps: Object.keys(f.renderDeps).sort(), original: (await f.blob.text()).includes('../assets/S.CSS') };
     });
     expect(file.links).toEqual(expect.arrayContaining(['https://example.org/a?x=1&y=2', expect.stringMatching(/\/EasyLRN\/c\/LRN-PIC\/lessons\/0001-pic\.html#box$/)]));
-    expect(file).toMatchObject({ version: 1, sameSha: true, deps: ['assets/S.css', 'assets/dot.png'], original: true });
+    expect(file).toMatchObject({ version: 2, sameSha: true, deps: ['assets/S.css', 'assets/dot.png'], original: true });
   });
 
   test('RENDER_VERSION is the same in the Service Worker and in lesson-render.js; the bridge files are clean modules', async () => {
     const sw = readFileSync(new URL('../../sw.js', import.meta.url), 'utf8');
     const render = readFileSync(new URL('../../src/lesson-render.js', import.meta.url), 'utf8');
     expect(/const RENDER_VERSION = (\d+)/.exec(sw)[1]).toBe(/export const RENDER_VERSION = (\d+)/.exec(render)[1]);
-    for (const name of ['anchor.js', 'lesson-bridge.js']) {
+    for (const name of ['anchor.js', 'lesson-bridge.js', 'lesson-guard.js']) {
       const text = readFileSync(new URL(`../../src/${name}`, import.meta.url), 'utf8');
       expect(text, name).not.toMatch(/^\s*import\b/m);
       expect(text, name).not.toMatch(/<\/script/i);
     }
     expect(sw).toContain("'./src/lesson-bridge.js'");
     expect(sw).toContain("'./src/anchor.js'");
+    expect(sw).toContain("'./src/lesson-guard.js'");
     expect(sw).toContain("'./src/lesson-render.js'");
   });
 
@@ -184,7 +186,7 @@ test.describe('T-045 П-1 delivery: opaque origin, served by the Service Worker,
     });
     await page.reload();
     await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
-    await expect.poll(() => page.evaluate(async () => (await caches.keys()).sort())).toEqual(['easylrn-shell-0.5.0']);
+    await expect.poll(() => page.evaluate(async () => (await caches.keys()).sort())).toEqual([SHELL_CACHE]);
   });
 });
 

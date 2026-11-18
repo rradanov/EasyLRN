@@ -8,12 +8,14 @@
 //   the lesson gets an opaque origin and cannot reach the app (IndexedDB,
 //   caches, DOM, window), the network, popups or the top window.
 // - For HTML files it serves the self-contained version assembled by the app
-//   (src/lesson-render.js) and appends the bridge (src/anchor.js +
-//   src/lesson-bridge.js, read from the shell cache) before </body>.
+//   (src/lesson-render.js), puts the guard (src/lesson-guard.js: no WebRTC,
+//   the bridge's own references, lrn:hello) first, right after the doctype,
+//   and appends the bridge (src/anchor.js + src/lesson-bridge.js, read from
+//   the shell cache) before </body>.
 // - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.5.0'; // keep in sync with src/config.js
-const RENDER_VERSION = 1; // keep in sync with src/lesson-render.js
+const VERSION = '0.5.1'; // keep in sync with src/config.js
+const RENDER_VERSION = 2; // keep in sync with src/lesson-render.js
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 
@@ -37,6 +39,7 @@ const SHELL = [
   './src/lesson-frame.js',
   './src/lesson-render.js',
   './src/lesson-bridge.js',
+  './src/lesson-guard.js',
   './src/anchor.js',
   './src/screens/settings.js',
   './src/screens/not-found.js',
@@ -237,13 +240,13 @@ async function serveCourseFile(url) {
       return courseError(404, 'Урокът още не е подготвен за показване. Отвори урока отново.');
     }
     let html;
-    let bridge;
+    let scripts;
     try {
-      [html, bridge] = await Promise.all([file.rendered.text(), bridgeScript()]);
+      [html, scripts] = await Promise.all([file.rendered.text(), bridgeScripts()]);
     } catch {
       return courseError(404, 'Урокът не може да се покаже. Презареди приложението.');
     }
-    return new Response(withBridge(html, bridge), {
+    return new Response(withBridge(html, scripts), {
       status: 200,
       headers: { ...COURSE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
     });
@@ -254,12 +257,15 @@ async function serveCourseFile(url) {
   });
 }
 
-// --- The bridge in every lesson (D-029) --------------------------------------
+// --- The guard and the bridge in every lesson (D-029, T-045-fix) ----------------
 
 let bridgePromise = null;
 
-/** anchor.js + lesson-bridge.js from the shell cache, as one inline module. */
-function bridgeScript() {
+/**
+ * { guard, bridge } from the shell cache: the guard (src/lesson-guard.js) as a
+ * classic inline script, anchor.js + lesson-bridge.js as one inline module.
+ */
+function bridgeScripts() {
   if (!bridgePromise) {
     bridgePromise = (async () => {
       const cache = await caches.open(CACHE_NAME);
@@ -269,10 +275,15 @@ function bridgeScript() {
         if (!response.ok) throw new Error(`${path}: ${response.status}`);
         return response.text();
       };
-      const [anchor, bridge] = await Promise.all([read('./src/anchor.js'), read('./src/lesson-bridge.js')]);
-      // Neither file may close the script element early.
+      const [guard, anchor, bridge] = await Promise.all([
+        read('./src/lesson-guard.js'), read('./src/anchor.js'), read('./src/lesson-bridge.js'),
+      ]);
+      // None of the files may close the script element early.
       const safe = (text) => text.replace(/<\/(script)/gi, '<\\/$1');
-      return `<script type="module" data-easylrn="bridge">\n${safe(anchor)}\n${safe(bridge)}\n</script>`;
+      return {
+        guard: `<script data-easylrn="guard">\n${safe(guard)}\n</script>`,
+        bridge: `<script type="module" data-easylrn="bridge">\n${safe(anchor)}\n${safe(bridge)}\n</script>`,
+      };
     })().catch((err) => {
       bridgePromise = null;
       throw err;
@@ -281,8 +292,16 @@ function bridgeScript() {
   return bridgePromise;
 }
 
-/** Put the bridge right before the last </body> (or at the end). */
-function withBridge(html, bridge) {
-  const at = html.toLowerCase().lastIndexOf('</body');
-  return at === -1 ? `${html}\n${bridge}` : `${html.slice(0, at)}${bridge}\n${html.slice(at)}`;
+// A leading doctype (after a BOM, spaces and comments): the guard goes right
+// after it, so the document keeps its (no-quirks) mode, and before <html>,
+// <head> and every script of the lesson (the parser puts it into <head>).
+const LEADING_DOCTYPE = /^\uFEFF?(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i;
+
+/** The guard first (after the doctype), the bridge right before the last </body> (or at the end). */
+function withBridge(html, { guard, bridge }) {
+  const doctype = LEADING_DOCTYPE.exec(html);
+  const cut = doctype ? doctype[0].length : 0;
+  const withGuard = `${html.slice(0, cut)}${guard}${html.slice(cut)}`;
+  const at = withGuard.toLowerCase().lastIndexOf('</body');
+  return at === -1 ? `${withGuard}\n${bridge}` : `${withGuard.slice(0, at)}${bridge}\n${withGuard.slice(at)}`;
 }

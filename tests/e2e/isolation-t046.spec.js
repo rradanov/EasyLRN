@@ -17,10 +17,13 @@
 // evaluate() calls.
 import { test, expect } from '@playwright/test';
 import dgram from 'node:dgram';
+import { readFileSync } from 'node:fs';
 import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.mjs';
 import { strToU8 } from '../../vendor/fflate.js';
 
 const FAKE_KEY = 'sk-ant-T046-FAKE-KEY-0123456789';
+// The shell cache of the current version (T-045-fix: no longer a fixed 0.5.0).
+const SHELL_CACHE = `easylrn-shell-${/APP_VERSION = '([^']+)'/.exec(readFileSync(new URL('../../src/config.js', import.meta.url), 'utf8'))[1]}`;
 const TYPED_KEY = 'sk-ant-api03-TYPED-INTO-THE-LESSON';
 const NO_GESTURE_MS = 5600;
 
@@ -86,18 +89,18 @@ async function openLesson(page, course, number = '0001', { wait = 'ready' } = {}
 
 /** Everything the app must still have after an attack. */
 async function appIntact(page, { url, title } = {}) {
-  const s = await page.evaluate(async () => ({
+  const s = await page.evaluate(async (SHELL_CACHE) => ({
     key: (await (await import('./src/db.js')).getSettings()).apiKey,
     ls: localStorage.getItem('t046'),
     caches: (await caches.keys()).sort(),
     scripts: [...document.scripts].map((x) => x.getAttribute('src')),
     frames: document.querySelectorAll('iframe').length,
     sandbox: document.querySelector('iframe.lesson-frame')?.getAttribute('sandbox') ?? null,
-    shell: (await (await (await caches.open('easylrn-shell-0.5.0')).match('./index.html')).text()).includes('src/main.js'),
-  }));
+    shell: (await (await (await caches.open(SHELL_CACHE)).match('./index.html')).text()).includes('src/main.js'),
+  }), SHELL_CACHE);
   expect(s.key).toBe(FAKE_KEY);
   expect(s.ls).toBe('LS-SECRET-T046');
-  expect(s.caches).toEqual(['easylrn-shell-0.5.0']);
+  expect(s.caches).toEqual([SHELL_CACHE]);
   expect(s.scripts).toEqual(['src/main.js']);
   expect(s.frames).toBeLessThanOrEqual(1);
   if (s.sandbox !== null) expect(s.sandbox).toBe('allow-scripts');
@@ -242,7 +245,10 @@ test.describe('T-046 a hostile lesson cannot reach the app (T-010 attempts + new
   });
 
   test('[T046-S1] WebRTC: the lesson can send what it knows (e.g. a key typed into a fake form) to any host over UDP (TURN/STUN)', async ({ page }) => {
-    test.fail(true, 'T046-S1: CSP connect-src does not cover WebRTC in Chromium; RTCPeerConnection is available in the opaque lesson');
+    // T-045-fix: RTCPeerConnection is now gone from the lesson (src/lesson-guard.js),
+    // so `new RTCPeerConnection(...)` in the lesson's own script throws — that is
+    // the fix, not an app error. Nothing leaves over UDP.
+    allowed = [/RTCPeerConnection/];
     const turn = await turnServer();
     try {
       await importCourse(page, 'LRN-EVIL', {
@@ -498,7 +504,7 @@ test.describe('T-046 forged messages', () => {
         { lrn: 1, type: '__proto__' }, { lrn: 1, type: 'constructor' }, { lrn: 1, type: 'hasOwnProperty' }, { lrn: 1, type: 'toString' },
         { lrn: 1, type: 'lrn:init' }, { lrn: 1, type: 'lrn:scroll-to', fragment: 'x' }, { lrn: 1, type: big },
         { lrn: 1, type: 'lrn:size', height: -1 }, { lrn: 1, type: 'lrn:size', height: -0.0001 }, { lrn: 1, type: 'lrn:size', height: Infinity },
-        { lrn: 1, type: 'lrn:size', height: 1e308 }, { lrn: 1, type: 'lrn:size', height: 200001 }, { lrn: 1, type: 'lrn:size', height: 5n },
+        { lrn: 1, type: 'lrn:size', height: 1e308 }, { lrn: 1, type: 'lrn:size', height: 1e8 + 1 }, { lrn: 1, type: 'lrn:size', height: 5n },
         { lrn: 1, type: 'lrn:size', height: [5] }, { lrn: 1, type: 'lrn:size' }, { lrn: 1, type: 'lrn:size', height: '5' },
         { lrn: 1, type: 'lrn:ready', v: 2 }, { lrn: 1, type: 'lrn:ready', v: 1, title: big }, { lrn: 1, type: 'lrn:ready', v: 1, textLength: -1 },
         { lrn: 1, type: 'lrn:selection', empty: false, quote: { exact: big }, position: { start: 0, end: 1 } },
@@ -634,16 +640,21 @@ test.describe('T-046 forged messages', () => {
 test.describe('T-046 a broken bridge and big lessons', () => {
   test('[T046-D1] a lesson with a top-level `var parent = …` (an ordinary variable name) loses the bridge: it must be shown in the fallback mode, not stopped', async ({ page }) => {
     test.setTimeout(40_000);
-    test.fail(true, 'T046-D1: a document that never speaks is taken for a self-navigation; after two reloads the lesson is stopped with a wrong message');
     allowed = [/status of 40/];
     await importCourse(page, 'LRN-VAR', {
       'INDEX.md': strToU8('# LRN-VAR\n'),
       'lessons/0001-var.html': doc('<h1>Урок</h1><ul id="list"><li>a</li></ul><p style="height:3000px">…</p><script>var parent = document.getElementById("list"); parent.append(document.createElement("li"));</script>'),
     });
     await openLesson(page, 'LRN-VAR', '0001', { wait: null });
-    await expect(page.locator('[data-lesson-state="fallback"], [data-lesson-state="error"]')).toBeVisible({ timeout: 20000 });
-    expect(await lessonState(page)).toBe('fallback');
-    await expect(page.locator('[data-field="lesson-note"]')).toHaveText('Маркирането не е налично за този урок.');
+    // T-045-fix: the bridge keeps its own `parent` (src/lesson-guard.js), so the
+    // lesson now works fully ("ready"); the fallback would also be acceptable,
+    // the error ("stopped") is not.
+    await expect(page.locator('[data-lesson-state="ready"], [data-lesson-state="fallback"], [data-lesson-state="error"]')).toBeVisible({ timeout: 20000 });
+    await page.waitForTimeout(6000); // past the 4 s "silent document" check
+    expect(await lessonState(page)).toBe('ready');
+    await expect(page.locator('[data-field="lesson-note"]')).toBeHidden();
+    const f = frameOf(page, 'LRN-VAR');
+    expect(await f.evaluate(() => document.querySelectorAll('#list li').length)).toBe(2); // the lesson's own script ran
   });
 
   test('a lesson that replaces addEventListener/ResizeObserver/postMessage: fallback with an inner scroll; the attacks still fail there', async ({ page }) => {
@@ -667,7 +678,6 @@ test.describe('T-046 a broken bridge and big lessons', () => {
   });
 
   test('[T046-D2] a very long lesson (over 200 000 px): the end of the lesson must stay reachable', async ({ page }) => {
-    test.fail(true, 'T046-D2: lrn:size over 200 000 is dropped; the frame keeps its old height and the rest of the lesson cannot be reached (no inner scroll)');
     await importCourse(page, 'LRN-LONG', {
       'INDEX.md': strToU8('# LRN-LONG\n'),
       'lessons/0001-long.html': doc('<h1>Дълъг урок</h1><div style="height:240000px">…</div><p id="end">Край на урока</p>'),

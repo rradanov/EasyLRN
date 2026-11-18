@@ -16,11 +16,22 @@
 // `lrn:annotations` answers `lrn:anchored` with an empty list.
 (function lrnBridge() {
   'use strict';
-  if (window.parent === window) return; // only inside the app's lesson frame
+  // The real references, kept by src/lesson-guard.js before the lesson's scripts
+  // ran (T046-D1): `parent`, `scrollY`, timers… are [Replaceable], so an ordinary
+  // `var parent = …` in a lesson would replace them. Without the guard (never
+  // in the app) the window's own names are used.
+  const own = window.__easylrn && typeof window.__easylrn === 'object' ? window.__easylrn : {};
+  const fn = (name) => (typeof own[name] === 'function' ? own[name] : window[name].bind(window));
+  const parentWindow = own.parent || window.top;
+  if (parentWindow === window) return; // only inside the app's lesson frame
+  const setTimeout = fn('setTimeout');
+  const clearTimeout = fn('clearTimeout');
+  const requestAnimationFrame = fn('requestAnimationFrame');
+  const getComputedStyle = fn('getComputedStyle');
+  const pageY = typeof own.scrollY === 'function' ? own.scrollY : () => window.scrollY;
 
   const PROTOCOL = 1;
   const APP_ORIGIN = location.origin; // the URL's origin = the app (our own origin is "null")
-  const parentWindow = window.parent;
   const COLORS = ['yellow', 'green', 'blue', 'pink', 'orange'];
   const CSS_COLOR = /^[#a-zA-Z0-9(),.%\s-]{1,64}$/;
   const FAMILY = /^[A-Za-z0-9 _-]{1,64}$/;
@@ -35,12 +46,12 @@
   const baseFontPx = parseFloat(getComputedStyle(root).fontSize) || 16;
   const style = document.createElement('style');
   style.setAttribute('data-easylrn', 'bridge');
-  const state = { fontScale: 1, palette: {}, exclude: BASE_EXCLUDE, active: false };
+  const state = { fontScale: 1, palette: {}, exclude: BASE_EXCLUDE, active: false, inner: false };
   const renderStyle = () => {
     // Only once the app has answered (lrn:init): the frame is then as tall as its
     // content and the app window scrolls. Before that (or if the app falls back
     // to an inner scroll) the lesson keeps its own scrolling.
-    const rules = state.active ? [
+    const rules = state.active && !state.inner ? [
       'html { height: auto !important; min-height: 0 !important; overflow-y: hidden !important; }',
       'body { min-height: 0 !important; }',
     ] : [];
@@ -86,8 +97,8 @@
     let text = '';
     const body = document.body;
     if (!body) return { text, map, index };
-    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (excluded(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    const walker = document.createTreeWalker(body, 4 /* NodeFilter.SHOW_TEXT */, {
+      acceptNode: (n) => (excluded(n) ? 2 /* FILTER_REJECT */ : 1 /* FILTER_ACCEPT */),
     });
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       map.push({ node: n, start: text.length });
@@ -140,7 +151,7 @@
         suffix: model.text.slice(end, end + 32),
       },
       position: { start, end },
-      rect: { top: Math.round(rect.top + scrollY), bottom: Math.round(rect.bottom + scrollY) },
+      rect: { top: Math.round(rect.top + pageY()), bottom: Math.round(rect.bottom + pageY()) },
       inExcluded: excluded(range.startContainer) || excluded(range.endContainer),
     });
   };
@@ -156,7 +167,7 @@
     try { id = decodeURIComponent(fragment); } catch { /* keep it raw */ }
     return document.getElementById(id) || document.getElementsByName(id)[0] || null;
   };
-  const topOf = (el) => Math.round(el.getBoundingClientRect().top + scrollY);
+  const topOf = (el) => Math.round(el.getBoundingClientRect().top + pageY());
   const withoutHash = (href) => href.split('#')[0];
 
   document.addEventListener('click', (event) => {
@@ -171,7 +182,8 @@
       try { url = new URL(raw, document.baseURI); } catch { return; }
       if (url.hash.length > 1 && withoutHash(url.href) === withoutHash(location.href)) {
         const el = elementForFragment(url.hash.slice(1));
-        if (el) send('lrn:anchor', { top: topOf(el) });
+        if (el && state.inner) el.scrollIntoView({ block: 'start' });
+        else if (el) send('lrn:anchor', { top: topOf(el) });
         return;
       }
       send('lrn:link', { href: url.href.slice(0, 2048) });
@@ -203,6 +215,11 @@
       sendSize(true);
       sendReady();
     },
+    'lrn:scroll-mode'(m) {
+      // A lesson taller than the app allows for the frame (T046-D2): it scrolls inside.
+      state.inner = m.inner === true;
+      renderStyle();
+    },
     'lrn:settings'(m) {
       applyScale(m.fontScale);
       renderStyle();
@@ -233,6 +250,7 @@
     'lrn:scroll-to'(m) {
       if (typeof m.fragment === 'string' && m.fragment.length <= 512) {
         const el = elementForFragment(m.fragment.replace(/^#/, ''));
+        if (el && state.inner) { el.scrollIntoView({ block: 'start' }); send('lrn:position', { top: null }); return; }
         send('lrn:position', { top: el ? topOf(el) : null });
       } else {
         send('lrn:position', { top: null });

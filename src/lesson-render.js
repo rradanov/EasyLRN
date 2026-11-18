@@ -29,12 +29,15 @@ import { getFile, listCourseFiles, setFileRender } from './db.js';
 import { courseFileUrl, parseCourseUrl } from './lesson-frame.js';
 
 /** Bump when the output changes; must equal RENDER_VERSION in sw.js. */
-export const RENDER_VERSION = 1;
+export const RENDER_VERSION = 2; // D-034: nested frames removed
 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 const MAX_CSS_DEPTH = 4;
 const GOOGLE_FONTS = /^https?:\/\/fonts\.(googleapis|gstatic)\.com\//i;
 const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+// Nested browsing contexts: removed at assembly (D-034, T046-S1). A lesson may
+// not contain or run a frame of its own; the guard blocks creating them too.
+const FRAME_TAGS = new Set(['iframe', 'frame', 'embed', 'portal', 'frameset', 'object']);
 
 export const isHtmlPath = (path) => /\.html?$/i.test(path);
 
@@ -259,6 +262,12 @@ export async function assembleLesson(html, { courseId, path, files }) {
     }
     if (name === 'base' || (name === 'meta' && /refresh/i.test(getAttr(tag, 'http-equiv') || ''))) {
       emit(tag.end, `<!-- EasyLRN: <${name}> removed -->`);
+      continue;
+    }
+    if (FRAME_TAGS.has(name)) {
+      // Drop the whole element (iframe carries its srcdoc; object/frameset keep
+      // any fallback children, but without a browsing context).
+      emit(RAW_TEXT.has(name) ? elementEnd : tag.end, `<!-- EasyLRN: <${name}> removed (D-034) -->`);
       continue;
     }
     if (name === 'link') {

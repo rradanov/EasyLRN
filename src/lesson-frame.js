@@ -15,11 +15,15 @@
 //   rate. Nothing secret is ever sent to the lesson.
 // - The iframe has no scroll of its own (height from `lrn:size`); the app
 //   window scrolls. Reading position, anchors and links are decided here.
-// - A second `load`, or a document that sends no message at all within 4 s of
-//   its `load` (the lesson navigated away before the bridge ran), means the
-//   lesson navigated its own frame: the frame is recreated (twice in a row →
-//   stopped with a message).
+// - A second `load`, or a document that sends no message at all within 4 s
+//   after its `load` (the lesson navigated away before the bridge ran), means
+//   the lesson navigated its own frame: the frame is recreated (twice in a row →
+//   stopped with a message). Every document of ours speaks after its load,
+//   whatever the lesson does: the guard (src/lesson-guard.js, the first script
+//   of the lesson) sends `lrn:hello` (T046-D1).
 // - No `lrn:ready` within 8 s → fallback: an inner scroll and a note.
+// - A lesson taller than MAX_HEIGHT (T046-D2) → the frame is as tall as the
+//   window and the lesson scrolls inside it (`lrn:scroll-mode`).
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
 
@@ -30,7 +34,8 @@ const ARTIFACT = /^https:\/\/claude\.ai\/(?:public\/)?artifacts?\/([A-Za-z0-9_-]
 const SW_TIMEOUT_MS = 8000;
 const READY_TIMEOUT_MS = 8000;
 const SILENT_TIMEOUT_MS = 4000;
-const MAX_HEIGHT = 200000;
+const MAX_HEIGHT = 1000000; // the frame grows with the lesson up to this, then scrolls inside (T046-D2)
+const MAX_COORD = 1e8; // limit of heights and positions in messages
 const MAX_MESSAGES_PER_SECOND = 60;
 const PROTOCOL = 1;
 
@@ -75,9 +80,10 @@ const isStr = (v, max) => typeof v === 'string' && v.length <= max;
 
 /** Validators by type: return the clean fields, or null to drop the message. */
 const CHECK = {
+  'lrn:hello': (m) => (m.v === PROTOCOL ? {} : null),
   'lrn:ready': (m) => (m.v === PROTOCOL && (m.title === undefined || isStr(m.title, 300))
     && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { title: m.title ?? '', textLength: m.textLength ?? 0 } : null),
-  'lrn:size': (m) => (isNum(m.height, 0, MAX_HEIGHT) ? { height: Math.ceil(m.height) } : null),
+  'lrn:size': (m) => (isNum(m.height, 0, MAX_COORD) ? { height: Math.ceil(m.height) } : null),
   'lrn:selection': (m) => {
     if (m.empty === true) return { empty: true };
     const q = m.quote;
@@ -85,7 +91,7 @@ const CHECK = {
     if (!isPlain(q) || !isPlain(p) || !isStr(q.exact, 2000) || !q.exact || !isStr(q.prefix ?? '', 64) || !isStr(q.suffix ?? '', 64)) return null;
     if (!isInt(p.start, 0, 1e7) || !isInt(p.end, 0, 1e7) || p.start >= p.end) return null;
     if (m.hint !== undefined && !isStr(m.hint, 200)) return null;
-    const rect = isPlain(m.rect) && isNum(m.rect.top, -MAX_HEIGHT, MAX_HEIGHT) && isNum(m.rect.bottom, -MAX_HEIGHT, MAX_HEIGHT)
+    const rect = isPlain(m.rect) && isNum(m.rect.top, -MAX_COORD, MAX_COORD) && isNum(m.rect.bottom, -MAX_COORD, MAX_COORD)
       ? { top: m.rect.top, bottom: m.rect.bottom } : null;
     return {
       empty: false,
@@ -98,9 +104,9 @@ const CHECK = {
   },
   'lrn:tap': (m) => (m.annotationId === null || isStr(m.annotationId, 64) ? { annotationId: m.annotationId } : null),
   'lrn:anchored': (m) => (Array.isArray(m.results) && m.results.length <= 10000 ? { results: m.results } : null),
-  'lrn:layout': (m) => (Array.isArray(m.items) && m.items.length <= 10000 && isNum(m.height, 0, MAX_HEIGHT) ? { items: m.items, height: m.height } : null),
-  'lrn:position': (m) => (m.top === null || isNum(m.top, 0, MAX_HEIGHT) ? { top: m.top } : null),
-  'lrn:anchor': (m) => (isNum(m.top, 0, MAX_HEIGHT) ? { top: m.top } : null),
+  'lrn:layout': (m) => (Array.isArray(m.items) && m.items.length <= 10000 && isNum(m.height, 0, MAX_COORD) ? { items: m.items, height: m.height } : null),
+  'lrn:position': (m) => (m.top === null || isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
+  'lrn:anchor': (m) => (isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
   'lrn:link': (m) => (isStr(m.href, 2048) && m.href ? { href: m.href } : null),
   'lrn:fonts-ok': (m) => (isInt(m.loaded, 0, 64) ? { loaded: m.loaded } : null),
 };
@@ -141,7 +147,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   let initialized = false;
   let readyTimer = null;
   let silentTimer = null;
-  let heard = false; // any message from the current document of the frame
+  let heard = false; // any message from the current document of the frame since its load
+  let innerScroll = false; // the lesson is taller than MAX_HEIGHT: it scrolls inside the frame
   let rate = { start: 0, count: 0 };
   let selfNavigations = 0;
 
@@ -280,8 +287,21 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       post({ type: 'lrn:annotations', items: [] });
       restore();
     },
+    'lrn:hello'() { /* `heard` is set for every message */ },
     'lrn:size'({ height }) {
-      if (frame && element.getAttribute('data-lesson-state') !== 'fallback') frame.style.height = `${height}px`;
+      if (!frame || element.getAttribute('data-lesson-state') === 'fallback') return;
+      if (height > MAX_HEIGHT) {
+        if (!innerScroll) {
+          innerScroll = true;
+          element.setAttribute('data-lesson-scroll', 'inner');
+          frame.removeAttribute('scrolling');
+          post({ type: 'lrn:scroll-mode', inner: true });
+          showNote('Урокът е много дълъг: превърта се вътре в рамката.');
+        }
+        frame.style.height = `${viewportFrameHeight()}px`;
+        return;
+      }
+      if (!innerScroll) frame.style.height = `${height}px`;
     },
     'lrn:selection'(m) { selection = m.empty ? null : m; },
     'lrn:tap'() { /* T-015: only known annotation ids open a card; there are none yet. */ },
@@ -331,12 +351,13 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   window.addEventListener('easylrn:settings', onSettings);
 
   // --- The iframe ----------------------------------------------------------------------
+  const viewportFrameHeight = () => Math.max(320, Math.round(window.innerHeight - barHeight()));
   const fallback = () => {
     if (destroyed || initialized || !frame) return;
     setState('fallback');
     status.hidden = true;
     frame.removeAttribute('scrolling');
-    frame.style.height = `${Math.max(320, window.innerHeight - barHeight())}px`;
+    frame.style.height = `${viewportFrameHeight()}px`;
     showNote('Маркирането не е налично за този урок.');
     if (!restored) { restored = true; startRecording(); }
   };
@@ -362,6 +383,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     loads++;
     clearTimeout(silentTimer);
     if (loads > 1) { reloadAfterNavigation(); return; }
+    // Only what the document says after its load counts (the guard's lrn:hello):
+    // a lesson that navigates away at once may have spoken before it left.
+    heard = false;
     // The lesson itself, unless it navigated away before its bridge ran: then the
     // document that loaded is not ours and never says anything.
     silentTimer = setTimeout(() => {
@@ -373,6 +397,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     frame?.remove();
     loads = 0;
     heard = false;
+    innerScroll = false;
+    element.removeAttribute('data-lesson-scroll');
     clearTimeout(silentTimer);
     initSent = false;
     initialized = false;
