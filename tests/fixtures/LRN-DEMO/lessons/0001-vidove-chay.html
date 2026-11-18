@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LRN-DEMO урок 0001: Какви видове чай има?</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+  .leaf-list li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="kicker">LRN-DEMO · Урок 0001</p>
+<h1>Какви видове чай има?</h1>
+
+<p class="tip">След урока ще знаеш кои са петте основни вида чай и защо се различават. Отнема около <strong>15 минути</strong>. Съдържание: <a href="#vidove">видове</a>, <a href="#voda">вода</a>, <a href="#test">тест</a>.</p>
+
+<h2 id="vidove">Едно растение, много чайове</h2>
+<p>Всички „истински“ чайове идват от едно растение, <em>Camellia sinensis</em>. Разликата между зеления и черния чай не е в сорта, а в обработката: колко дълго листата се оставят да <em>окисляват</em> след беритбата.</p>
+<p>Билковите напитки (мента, лайка, ройбос) не са чай в този смисъл. Те се наричат <em>запарки</em> (tisane), защото нямат листа от чаеното растение.</p>
+<ul class="leaf-list">
+  <li><strong>Бял чай</strong> — почти без обработка, само изсушени млади листа.</li>
+  <li><strong>Зелен чай</strong> — окисляването се спира с топлина веднага след беритбата.</li>
+  <li><strong>Улун</strong> (oolong) — частично окислен, между зеления и черния.</li>
+  <li><strong>Черен чай</strong> — напълно окислен, затова е тъмен и по-силен.</li>
+  <li><strong>Пу-ер</strong> (pu-erh) — ферментира и отлежава с години.</li>
+</ul>
+<p>Подробна таблица с температурите има в справочника <a href="../reference/R01-temperatura-i-vreme.html">R01 Температура и време</a>. Същият справочник като артефакт: <a href="https://claude.ai/artifact/DemoArtifactR01">R01 (интерактивно)</a>.</p>
+
+<h2 id="voda">Водата е половината чай</h2>
+<p>Твърде горещата вода прави зеления чай горчив. Черният чай понася вряща вода. Добре е водата да е мека и прясна; преварената вода дава „плосък“ вкус.</p>
+<table>
+  <thead><tr><th>Вид</th><th>Вода</th><th>Време</th></tr></thead>
+  <tbody>
+    <tr><td>Зелен</td><td>75–80 °C</td><td>2 мин</td></tr>
+    <tr><td>Улун</td><td>85–90 °C</td><td>3 мин</td></tr>
+    <tr><td>Черен</td><td>95–100 °C</td><td>4 мин</td></tr>
+  </tbody>
+</table>
+<p>За повече примери виж <a href="https://example.org/tea">примерната страница за чай</a>.</p>
+
+<h2 id="test">Провери се</h2>
+<section class="quiz" data-src="quiz-vidove"></section>
+<script type="application/json" id="quiz-vidove">
+{ "title": "Видове чай",
+  "items": [
+    { "text": "От какво зависи дали чаят ще е зелен или черен?", "choices": ["От сорта на растението", "От окисляването след беритбата", "От температурата на водата"], "right": 1, "note": "Едно и също растение дава и двата вида; разликата е в обработката." },
+    { "text": "Мента чай ли е в тесния смисъл?", "choices": ["Да", "Не, това е запарка"], "right": 1, "note": "Мента няма листа от Camellia sinensis." },
+    { "text": "Коя вода е подходяща за зелен чай?", "choices": ["75–80 °C", "100 °C"], "right": 0, "note": "Врящата вода го прави горчив." }
+  ] }
+</script>
+
+<h2 id="tvoyat">Упражнение: твоят чай</h2>
+<div class="reflect" data-name="LRN-DEMO · Урок 0001 · Моят чай">
+  <label for="t1">Какъв чай пиеш най-често?</label><textarea id="t1"></textarea>
+  <label for="t2">С каква вода го запарваш и колко време?</label><textarea id="t2"></textarea>
+</div>
+
+<footer>Синтетичен урок за тестовете на EasyLRN. Всички текстове са измислени.</footer>
+</main>
+<script>document.documentElement.setAttribute('data-inline-script', 'ran');</script>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/reflect.js"></script>
+</body>
+</html>

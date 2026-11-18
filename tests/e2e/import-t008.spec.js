@@ -2,19 +2,19 @@
 // retest of T-006-fix (D1, D2). Known defects found here are `test.fail()`
 // with the id from logs/T-008_tester_*.md; remove `test.fail` when fixed.
 //
-// Optional: T008_REAL_DIR=/path/to/LRN-DEMO runs the import on a real copy of
-// the course (never committed; D-020). T008_SHOTS=dir saves screenshots.
+// Optional: T008_REAL_DIR=/path/to/LRN-<topic> runs the import on a real copy of
+// a course kept outside the repository (never committed; D-020, D-026). T008_SHOTS=dir saves screenshots.
 import { test, expect } from '@playwright/test';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { strToU8 } from '../../vendor/fflate.js';
 import { DRIVE_ZIP_NAME, readFixture, makeZip, splitZips, withChangedLesson, asFile } from '../fixtures/zips.mjs';
 import { rawZip, EMPTY_ZIP, cp866 } from '../fixtures/rawzip.mjs';
 
 const FILES = readFixture();
-const LESSON_PATH = 'lessons/0001-kakvo-e-chayat.html';
+const LESSON_PATH = 'lessons/0001-vidove-chay.html';
 const LESSON_ID = `LRN-DEMO/${LESSON_PATH}`;
-const REF_ID = 'LRN-DEMO/reference/R01-vidove-chay.html';
+const REF_ID = 'LRN-DEMO/reference/R01-temperatura-i-vreme.html';
 const LESSON = FILES[LESSON_PATH];
 const IMPORTED = Object.keys(FILES).filter((p) => !p.endsWith('.pdf')).length; // 11
 
@@ -66,15 +66,15 @@ const seedUserData = (page) => page.evaluate(async ({ LESSON_ID, REF_ID }) => {
   await db.setLessonProgress(LESSON_ID, { status: 'started', scrollY: 640 });
   await db.setLessonProgress(REF_ID, { status: 'done', scrollY: 10 });
   const sel = (exact, start) => ({ quote: { exact }, position: { start, end: start + exact.length } });
-  const a = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: LESSON_ID }, selector: sel('TEA', 10), color: 'yellow' });
-  const gone = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: LESSON_ID }, selector: sel('ЕС', 40), color: 'pink' });
+  const a = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: LESSON_ID }, selector: sel('чай', 10), color: 'yellow' });
+  const gone = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: LESSON_ID }, selector: sel('вода', 40), color: 'pink' });
   await db.remove('annotations', gone.id);
-  const r = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: REF_ID }, selector: sel('срокове', 5), color: 'green' });
+  const r = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: REF_ID }, selector: sel('време', 5), color: 'green' });
   const n = await db.createNote({ annotationId: a.id, body: 'моя бележка' });
   await db.createNote({ annotationId: r.id, body: 'бележка в справочника' });
   const t = await db.createThread({ annotationId: a.id, title: 'Въпрос' });
-  await db.createMessage({ threadId: t.id, role: 'user', content: 'Какво е RDPS?', status: 'done' });
-  await db.createSubTopic({ annotationId: a.id, kind: 'термин', title: 'RDPS' });
+  await db.createMessage({ threadId: t.id, role: 'user', content: 'Какво е улун?', status: 'done' });
+  await db.createSubTopic({ annotationId: a.id, kind: 'термин', title: 'Улун' });
   const a2 = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'note', id: n.id }, selector: sel('моя', 0), color: 'blue' });
   await db.createNote({ annotationId: a2.id, body: 'бележка върху бележка' });
   await db.saveSettings({ monthlyBudgetUSD: 7 });
@@ -172,7 +172,7 @@ test.describe('T-008 ZIP shapes', () => {
     expect(r.ok).toBe(true);
     expect(r.line).toBe('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 10 файла.');
     expect(r.lessons.map((l) => [l.number, l.title, l.order, l.artifactId])).toEqual([
-      ['0001', 'Какво е чаят?', 1, null], ['R01', 'Видове чай', 2, null]]);
+      ['0001', 'Какви видове чай има?', 1, null], ['R01', 'Температура и време за запарване', 2, null]]);
     await page.evaluate(() => indexedDB.deleteDatabase('lrn-app'));
     await page.reload();
     r = await imp(page, zipOf('download.zip', makeZip(noIndex, { root: null })));
@@ -190,7 +190,7 @@ test.describe('T-008 ZIP shapes', () => {
     for (const [name, buf] of [
       ['LRN-DEMO.ZIP', makeZip(FILES)],
       ['LRN-DEMO', makeZip(FILES)],
-      ['Моят курс-20261118T090000Z-1-001.zip', makeZip(FILES, { root: 'Моят курс' })],
+      ['Моят курс чай-20261118T090000Z-1-001.zip', makeZip(FILES, { root: 'Моят курс чай' })],
       ['LRN-DEMO-20261118T090000Z-1-001 (1).zip', makeZip(FILES)],
     ]) {
       const r = await imp(page, zipOf(name, buf));
@@ -209,7 +209,7 @@ test.describe('T-008 ZIP shapes', () => {
     ])));
     expect(r.ok).toBe(true);
     expect(r.stored['LRN-DEMO']).toEqual(['assets/стил 2.css', LESSON_PATH, 'lessons/0002-роли и задължения.html']);
-    expect(r.lessons.map((l) => l.title)).toEqual(['Какво е чаят?', 'Роли и задължения']);
+    expect(r.lessons.map((l) => l.title)).toEqual(['Какви видове чай има?', 'Роли и задължения']);
   });
 
   test('observation: a ZIP without the UTF-8 flag (CP866 names) imports, but the path is mojibake', async ({ page }) => {
@@ -218,7 +218,7 @@ test.describe('T-008 ZIP shapes', () => {
       { name: cp866('LRN-DEMO/lessons/0002-роли.html'), data: strToU8('<h1>Роли</h1>') },
     ])));
     expect(r.ok).toBe(true);
-    expect(r.lessons.map((l) => l.title)).toEqual(['Какво е чаят?', 'Роли']); // the title is fine
+    expect(r.lessons.map((l) => l.title)).toEqual(['Какви видове чай има?', 'Роли']); // the title is fine
     expect(r.stored['LRN-DEMO'].some((p) => p.includes('роли'))).toBe(false); // the name is not
   });
 
@@ -255,12 +255,14 @@ test.describe('T-008 ZIP shapes', () => {
     expect(r.ms).toBeLessThan(3000);
   });
 
-  test('real LRN-DEMO copy (T008_REAL_DIR, not committed): ZIP and split ZIP, < 3 s at CPU ×4, then "без промени"', async ({ page }, info) => {
+  test('real course copy (T008_REAL_DIR, outside the repository; D-026): ZIP and split ZIP, < 3 s at CPU ×4, then "без промени"', async ({ page }, info) => {
     const dir = process.env.T008_REAL_DIR;
     test.skip(!dir || !existsSync(dir) || info.project.name !== 'tablet-landscape', 'needs T008_REAL_DIR');
     test.setTimeout(120_000);
     const real = readFixture(dir);
-    const zip = [...makeZip(real)];
+    const root = basename(dir.replace(/[\\/]+$/, '')); // e.g. LRN-XYZ: only generic checks here, no course content
+    const zipName = `${root}-20261118T090000Z-1-001.zip`;
+    const zip = [...makeZip(real, { root })];
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
     const r = await page.evaluate(async ({ zip, name }) => {
@@ -271,21 +273,22 @@ test.describe('T-008 ZIP shapes', () => {
       const ms = performance.now() - t0;
       const s2 = await importCourse([file()]);
       return { ms, mb: zip.length / 1048576, first: describeSummary(s1), items: s1.items, pdf: s1.skippedPdf, title: s1.title, second: s2.status };
-    }, { zip, name: DRIVE_ZIP_NAME });
+    }, { zip, name: zipName });
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
     info.annotations.push({ type: 'perf', description: `real course ${r.mb.toFixed(1)} MB: ${Math.round(r.ms)} ms (CPU ×4)` });
-    console.log('[T-008 real]', JSON.stringify(r));
-    expect(r.first).toBe('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
-    expect(r.items.map((i) => `${i.number} ${i.title}`)).toEqual(['0001 Какво е чаят?', 'R01 Видове чай']);
-    expect(r.title).toBe('Основи на чая');
+    const first = new RegExp(`^Курсът ${root} е импортиран: \\d+ урока?, \\d+ справочника?, \\d+ файла?\\.$`);
+    expect(r.first).toMatch(first);
+    expect(r.items.length).toBeGreaterThan(0);
+    expect(r.items.every((i) => i.title && i.title.length > 1)).toBe(true);
+    expect(r.title.length).toBeGreaterThan(1);
     expect(r.second).toBe('unchanged');
     expect(r.ms).toBeLessThan(3000);
     // The same real course as two Drive parts in a fresh database.
     await page.evaluate(() => new Promise((res) => { const q = indexedDB.deleteDatabase('lrn-app'); q.onsuccess = q.onerror = q.onblocked = res; }));
     await page.reload();
-    const parts = splitZips(Object.fromEntries(Object.entries(real).filter(([p]) => !p.endsWith('.pdf'))), 2);
+    const parts = splitZips(Object.fromEntries(Object.entries(real).filter(([p]) => !p.endsWith('.pdf'))), 2, root);
     const s = await imp(page, parts);
-    expect(s.line).toBe('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
+    expect(s.line).toBe(r.first);
   });
 });
 
@@ -295,7 +298,7 @@ test.describe('T-008 broken and hostile files (Bulgarian errors, nothing stored)
     ['an empty ZIP (no entries)', () => zipOf('LRN-DEMO.zip', EMPTY_ZIP), 'Избраното е празно.'],
     ['a ZIP with directories only', () => zipOf('LRN-DEMO.zip', rawZip([{ name: 'LRN-DEMO/' }, { name: 'LRN-DEMO/lessons/' }])), 'Избраното е празно.'],
     ['a RAR renamed to .zip', () => zipOf('LRN-DEMO.zip', Buffer.from('Rar!\x1a\x07\x00 ...')), 'Файлът „LRN-DEMO.zip“ не е ZIP архив.'],
-    ['a ZIP cut before the end record', () => zipOf('LRN-DEMO.zip', makeZip(FILES).subarray(0, 20000)), 'Файлът „LRN-DEMO.zip“ не може да се отвори: ZIP архивът е повреден или непълен.'],
+    ['a ZIP cut before the end record', () => { const z = makeZip(FILES); return zipOf('LRN-DEMO.zip', z.subarray(0, Math.floor(z.length / 2))); }, 'Файлът „LRN-DEMO.zip“ не може да се отвори: ZIP архивът е повреден или непълен.'],
     ['a ZIP cut by one byte', () => { const z = makeZip(FILES); return zipOf('LRN-DEMO.zip', z.subarray(0, z.length - 1)); }, 'Файлът „LRN-DEMO.zip“ не може да се отвори: ZIP архивът е повреден или непълен.'],
     ['a ZIP with an unsupported compression method (bzip2)', () => zipOf('LRN-DEMO.zip', rawZip([{ name: `LRN-DEMO/${LESSON_PATH}`, data: LESSON, method: 12 }])), 'ZIP архивът е повреден или непълен.'],
     ['a ZIP with photos only', () => zipOf('photos.zip', makeZip({ 'IMG_0001.jpg': new Uint8Array([255, 216, 255]) }, { root: 'Снимки' })), 'Това не прилича на курс LRN'],
@@ -442,13 +445,13 @@ test.describe('T-008 re-import keeps everything', () => {
     const part2 = splitZips(FILES, 2)[1]; // MISSION, RESOURCES, quiz.js, style.css, lesson 0001 (no INDEX.md)
     const r = await imp(page, [part2]);
     expect(r.s.status).toBe('unchanged');
-    expect(r.lessons.find((l) => l.number === '0001').artifactId).toBe('FixtureArtifact0001');
+    expect(r.lessons.find((l) => l.number === '0001').artifactId).toBe('DemoArtifact0001');
   });
 
   test('T008-D1: a loose lesson downloaded twice ("… (1).html") becomes a second lesson 0001', async ({ page }) => {
     test.fail(true, 'T008-D1: the " (1)" suffix from Chrome/Drive downloads is not stripped; duplicate lesson');
     await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
-    const r = await imp(page, [asFile('0001-kakvo-e-chayat (1).html', Buffer.from(LESSON), 'text/html')]);
+    const r = await imp(page, [asFile('0001-vidove-chay (1).html', Buffer.from(LESSON), 'text/html')]);
     expect(r.lessons.map((l) => l.number)).toEqual(['0001', 'R01']);
     expect(r.stored['LRN-DEMO']).toHaveLength(IMPORTED);
   });

@@ -15,9 +15,9 @@ playwright-report/
 secrets/
 courses/
 LRN-*/
-# Exception (T-007): shortened, anonymized test copy of LRN-DEMO for the import tests.
-# MISSION/NOTES/learning-records are rewritten, Drive/artifact ids are fake; see logs/T-007.
-!tests/fixtures/LRN-DEMO/
+# D-026: no course or personal content in the repository, only code. The test
+# course tests/fixtures/LRN-DEMO/ is fully synthetic and was added with
+# `git add -f` (the rule above still ignores every LRN-* folder).
 *.zip
 backup*.json
 easylrn-backup*.json

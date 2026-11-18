@@ -1,5 +1,5 @@
 // T-007: course import (ZIP with/without root folder, split ZIP, loose files,
-// folder, re-import, broken input). Uses tests/fixtures/LRN-DEMO (anonymized).
+// folder, re-import, broken input). Uses tests/fixtures/LRN-DEMO (synthetic, D-026).
 import { test, expect } from '@playwright/test';
 import { strToU8 } from '../../vendor/fflate.js';
 import {
@@ -7,8 +7,8 @@ import {
 } from '../fixtures/zips.mjs';
 
 const FILES = readFixture();
-const LESSON_ID = 'LRN-DEMO/lessons/0001-kakvo-e-chayat.html';
-const REF_ID = 'LRN-DEMO/reference/R01-vidove-chay.html';
+const LESSON_ID = 'LRN-DEMO/lessons/0001-vidove-chay.html';
+const REF_ID = 'LRN-DEMO/reference/R01-temperatura-i-vreme.html';
 const IMPORTED_FILES = Object.keys(FILES).filter((p) => !p.endsWith('.pdf')).length; // 11
 
 let consoleErrors;
@@ -33,7 +33,7 @@ const dbState = (page) => page.evaluate(async () => {
   const course = await db.getCourse('LRN-DEMO');
   const lessons = await db.listLessons('LRN-DEMO');
   const files = await db.listCourseFiles('LRN-DEMO');
-  const lesson = await db.getFile('LRN-DEMO', 'lessons/0001-kakvo-e-chayat.html');
+  const lesson = await db.getFile('LRN-DEMO', 'lessons/0001-vidove-chay.html');
   return {
     course: course && { title: course.title, files: course.files, hasMission: !!course.meta?.mission, artifacts: course.meta?.artifacts },
     lessons: lessons.map((l) => ({ id: l.id, kind: l.kind, number: l.number, title: l.title, order: l.order, artifactId: l.artifactId, sha: l.sha256?.length })),
@@ -46,12 +46,12 @@ const dbState = (page) => page.evaluate(async () => {
 function expectFullCourse(state) {
   expect(state.course).toMatchObject({ title: 'Основи на чая', files: IMPORTED_FILES, hasMission: true });
   expect(state.course.artifacts).toEqual({
-    FixtureArtifact0001: 'lessons/0001-kakvo-e-chayat.html',
-    FixtureArtifactR01: 'reference/R01-vidove-chay.html',
+    DemoArtifact0001: 'lessons/0001-vidove-chay.html',
+    DemoArtifactR01: 'reference/R01-temperatura-i-vreme.html',
   });
   expect(state.lessons).toEqual([
-    { id: LESSON_ID, kind: 'lesson', number: '0001', title: 'Какво е чаят?', order: 1, artifactId: 'FixtureArtifact0001', sha: 64 },
-    { id: REF_ID, kind: 'reference', number: 'R01', title: 'Видове чай', order: 2, artifactId: 'FixtureArtifactR01', sha: 64 },
+    { id: LESSON_ID, kind: 'lesson', number: '0001', title: 'Какви видове чай има?', order: 1, artifactId: 'DemoArtifact0001', sha: 64 },
+    { id: REF_ID, kind: 'reference', number: 'R01', title: 'Температура и време за запарване', order: 2, artifactId: 'DemoArtifactR01', sha: 64 },
   ]);
   expect(state.paths).toHaveLength(IMPORTED_FILES);
   expect(state.paths.some((p) => p.endsWith('.pdf'))).toBe(false);
@@ -65,8 +65,8 @@ test.describe('T-007 import: ZIP', () => {
     await expect(result(page)).toBeVisible();
     await expect(result(page).locator('[data-status]')).toHaveAttribute('data-status', 'new');
     await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 11 файла.');
-    await expect(result(page)).toContainText('0001 Какво е чаят?');
-    await expect(result(page)).toContainText('R01 Видове чай');
+    await expect(result(page)).toContainText('0001 Какви видове чай има?');
+    await expect(result(page)).toContainText('R01 Температура и време за запарване');
     await expect(result(page)).toContainText('Пропуснати PDF файлове: 2');
     expectFullCourse(await dbState(page));
     // The course card appears in the list.
@@ -76,7 +76,7 @@ test.describe('T-007 import: ZIP', () => {
     await expect(page.locator('.empty')).toBeHidden();
     // The course screen lists the lessons in order.
     await card.click();
-    await expect(page.locator('[data-screen="course"] [data-lesson]')).toHaveText(['0001 Какво е чаят?', 'R01 Видове чай']);
+    await expect(page.locator('[data-screen="course"] [data-lesson]')).toHaveText(['0001 Какви видове чай има?', 'R01 Температура и време за запарване']);
   });
 
   test('ZIP without a root folder (named LRN-DEMO.zip, and with a neutral name)', async ({ page }) => {
@@ -123,7 +123,7 @@ test.describe('T-007 re-import', () => {
     const ids = await page.evaluate(async (lessonId) => {
       const db = await import('./src/db.js');
       await db.setLessonProgress(lessonId, { status: 'started', scrollY: 640 });
-      const a = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: lessonId }, selector: { quote: { exact: 'TEA' }, position: { start: 10, end: 13 } }, color: 'yellow' });
+      const a = await db.createAnnotation({ courseId: 'LRN-DEMO', target: { type: 'lesson', id: lessonId }, selector: { quote: { exact: 'чай' }, position: { start: 10, end: 13 } }, color: 'yellow' });
       const n = await db.createNote({ annotationId: a.id, body: 'моя бележка' });
       const before = (await db.getLesson(lessonId)).updatedAt;
       return { a: a.id, n: n.id, before };
@@ -143,7 +143,7 @@ test.describe('T-007 re-import', () => {
     const after = await page.evaluate(async ({ lessonId, a, n }) => {
       const db = await import('./src/db.js');
       const lesson = await db.getLesson(lessonId);
-      const file = await db.getFile('LRN-DEMO', 'lessons/0001-kakvo-e-chayat.html');
+      const file = await db.getFile('LRN-DEMO', 'lessons/0001-vidove-chay.html');
       return {
         progress: lesson.progress,
         annotation: (await db.getAnnotation(a))?.selector.quote.exact,
@@ -153,21 +153,21 @@ test.describe('T-007 re-import', () => {
         courses: (await db.listCourses()).length,
       };
     }, { lessonId: LESSON_ID, ...ids });
-    expect(after).toMatchObject({ progress: { status: 'started', scrollY: 640 }, annotation: 'TEA', note: 'моя бележка', newText: true, lessons: 2, courses: 1 });
+    expect(after).toMatchObject({ progress: { status: 'started', scrollY: 640 }, annotation: 'чай', note: 'моя бележка', newText: true, lessons: 2, courses: 1 });
     await expect(page.locator('[data-list="courses"] .card')).toHaveCount(1);
   });
 
   test('a partial import (one new lesson as a loose file) adds it and keeps the rest', async ({ page }) => {
     await importVia(page, 'zip', asFile(DRIVE_ZIP_NAME, makeZip(FILES)));
     await expect(result(page).locator('[data-status]')).toHaveAttribute('data-status', 'new');
-    const html = new TextDecoder().decode(FILES['lessons/0001-kakvo-e-chayat.html'])
-      .replace('Урок 0001', 'Урок 0002').replace('<h1>Какво е чаят?</h1>', '<h1>Запарка</h1>');
-    await importVia(page, 'files', asFile('0002-roli.html', Buffer.from(html), 'text/html'));
+    const html = new TextDecoder().decode(FILES['lessons/0001-vidove-chay.html'])
+      .replace('Урок 0001', 'Урок 0002').replace('<h1>Какви видове чай има?</h1>', '<h1>Зелен чай</h1>');
+    await importVia(page, 'files', asFile('0002-zelen-chay.html', Buffer.from(html), 'text/html'));
     await expect(result(page).locator('[data-status]')).toHaveAttribute('data-status', 'updated');
     await expect(result(page)).toContainText('нови уроци: 1, променени: 0');
     const state = await dbState(page);
     expect(state.lessons.map((l) => [l.number, l.title, l.order])).toEqual([
-      ['0001', 'Какво е чаят?', 1], ['0002', 'Запарка', 2], ['R01', 'Видове чай', 3],
+      ['0001', 'Какви видове чай има?', 1], ['0002', 'Зелен чай', 2], ['R01', 'Температура и време за запарване', 3],
     ]);
     expect(state.paths).toHaveLength(IMPORTED_FILES + 1);
   });
@@ -175,13 +175,13 @@ test.describe('T-007 re-import', () => {
 
 test.describe('T-007 fallback: files and folder', () => {
   test('individual files (no folders) are recognised by name', async ({ page }) => {
-    const pick = ['INDEX.md', 'MISSION.md', 'NOTES.md', 'RESOURCES.md', 'lessons/0001-kakvo-e-chayat.html', 'reference/R01-vidove-chay.html', 'assets/quiz.js', 'assets/style.css', 'sources/source-book.pdf'];
+    const pick = ['INDEX.md', 'MISSION.md', 'NOTES.md', 'RESOURCES.md', 'lessons/0001-vidove-chay.html', 'reference/R01-temperatura-i-vreme.html', 'assets/quiz.js', 'assets/style.css', 'sources/chay-naruchnik.pdf'];
     await importVia(page, 'files', pick.map((p) => asFile(p.split('/').pop(), Buffer.from(FILES[p]), 'application/octet-stream')));
     await expect(result(page)).toContainText('Курсът LRN-DEMO е импортиран: 1 урок, 1 справочник, 8 файла.');
     await expect(result(page)).toContainText('Пропуснати PDF файлове: 1');
     const state = await dbState(page);
-    expect(state.paths).toEqual(['INDEX.md', 'MISSION.md', 'NOTES.md', 'RESOURCES.md', 'assets/quiz.js', 'assets/style.css', 'lessons/0001-kakvo-e-chayat.html', 'reference/R01-vidove-chay.html']);
-    expect(state.lessons.map((l) => l.title)).toEqual(['Какво е чаят?', 'Видове чай']);
+    expect(state.paths).toEqual(['INDEX.md', 'MISSION.md', 'NOTES.md', 'RESOURCES.md', 'assets/quiz.js', 'assets/style.css', 'lessons/0001-vidove-chay.html', 'reference/R01-temperatura-i-vreme.html']);
+    expect(state.lessons.map((l) => l.title)).toEqual(['Какви видове чай има?', 'Температура и време за запарване']);
   });
 
   test('a picked folder (webkitdirectory) works like the ZIP', async ({ page }) => {
@@ -196,7 +196,7 @@ test.describe('T-007 errors (Bulgarian, nothing stored)', () => {
     ['not a ZIP', () => asFile('LRN-DEMO.zip', Buffer.from('това не е архив')), 'не е ZIP архив'],
     ['a truncated ZIP', () => asFile('LRN-DEMO.zip', makeZip(FILES).subarray(0, 4000)), 'ZIP архивът е повреден или непълен'],
     ['a ZIP without course files', () => asFile('photos.zip', makeZip({ 'a.txt': strToU8('x'), 'b/c.png': new Uint8Array([1, 2, 3]) }, { root: 'photos' })), 'не прилича на курс LRN'],
-    ['a ZIP with only PDFs', () => asFile('LRN-DEMO.zip', makeZip({ 'sources/a.pdf': FILES['sources/C_2026_5252_guidelines.pdf'] })), 'само PDF файлове'],
+    ['a ZIP with only PDFs', () => asFile('LRN-DEMO.zip', makeZip({ 'sources/a.pdf': FILES['sources/chay-tablica.pdf'] })), 'само PDF файлове'],
   ];
   for (const [name, file, message] of cases) {
     test(name, async ({ page }) => {

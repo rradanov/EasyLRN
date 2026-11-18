@@ -23,7 +23,7 @@ test.describe('data layer (IndexedDB)', () => {
       const db = await import('../src/db.js');
       await db.deleteDatabase('easylrn-persist');
       await db.openDb({ name: 'easylrn-persist' });
-      await db.putCourse({ id: 'LRN-DEMO', title: 'TEA' });
+      await db.putCourse({ id: 'LRN-DEMO', title: 'Демо' });
       await db.putLesson({ id: 'LRN-DEMO/lessons/0001.html', courseId: 'LRN-DEMO', number: '0001', title: 'Урок', order: 1 });
       await db.putFile({ courseId: 'LRN-DEMO', path: 'lessons/0001.html', mime: 'text/html', blob: new Blob(['<p>здравей</p>'], { type: 'text/html' }), sha256: 'x' });
       const a = await db.createAnnotation({
@@ -52,7 +52,7 @@ test.describe('data layer (IndexedDB)', () => {
       await db.deleteDatabase('easylrn-persist');
       return out;
     }, ids);
-    expect(after).toEqual({ course: 'TEA', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
+    expect(after).toEqual({ course: 'Демо', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
   });
 
   test('the app opens lrn-app v1 and requests persistent storage at start', async ({ page }) => {

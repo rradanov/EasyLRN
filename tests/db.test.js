@@ -555,7 +555,7 @@ test('T-006 граници: празни низове и невалидни ст
 });
 
 test('T-006 граници: кирилица, емоджи и комбиниращи знаци в цитата', async () => {
-  const exact = 'Наръчник за чая 👩‍💻🇧🇬 — „съответствие“ é ñ';
+  const exact = 'Зелен чай (ЕС) 2026/0001 👩‍💻🇧🇬 — „запарка“ é ñ';
   const prefix = '…'.repeat(10) + '🙂'.repeat(11); // 32 UTF-16 units
   const suffix = 'ъ'.repeat(31) + '‍';
   const a = await db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: LESSON }, selector: { quote: { exact, prefix, suffix }, position: { start: 100, end: 100 + exact.length } } });

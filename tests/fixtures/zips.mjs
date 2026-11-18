@@ -1,8 +1,8 @@
 // Builds test ZIPs from tests/fixtures/LRN-DEMO/ in Node (T-007), shaped like
 // Drive's "Изтегляне": a root folder `LRN-DEMO/` with directory entries, file
 // name `LRN-DEMO-<timestamp>-1-001.zip`, optionally split into several parts.
-// The fixture is a shortened, anonymized copy of the real course (see
-// logs/T-007_developer_*.md); sources/*.pdf are tiny stand-ins.
+// The fixture is a fully synthetic course ("Основи на чая", D-026): no real
+// course content; sources/*.pdf are tiny stand-ins.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,18 +45,18 @@ export function makeZip(files, { root = 'LRN-DEMO', dirs = true } = {}) {
 }
 
 /** Split the fixture into `n` Drive-like parts (each with the root folder). */
-export function splitZips(files, n = 2) {
+export function splitZips(files, n = 2, root = 'LRN-DEMO') {
   const paths = Object.keys(files);
   return Array.from({ length: n }, (_, i) => ({
-    name: `LRN-DEMO-20261118T090000Z-1-00${i + 1}.zip`,
+    name: `${root}-20261118T090000Z-1-00${i + 1}.zip`,
     mimeType: 'application/zip',
-    buffer: makeZip(Object.fromEntries(paths.filter((_, j) => j % n === i).map((p) => [p, files[p]]))),
+    buffer: makeZip(Object.fromEntries(paths.filter((_, j) => j % n === i).map((p) => [p, files[p]])), { root }),
   }));
 }
 
 /** The fixture with one lesson edited (a sentence added). */
 export function withChangedLesson(files) {
-  const path = 'lessons/0001-kakvo-e-chayat.html';
+  const path = 'lessons/0001-vidove-chay.html';
   const html = new TextDecoder().decode(files[path]).replace('</h1>', '</h1>\n<p>Нов абзац в обновената версия.</p>');
   return { ...files, [path]: strToU8(html) };
 }

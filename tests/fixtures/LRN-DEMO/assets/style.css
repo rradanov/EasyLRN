@@ -1,0 +1,31 @@
+/* LRN-DEMO: shared page style (synthetic test course). */
+:root {
+  --text: #22201c;
+  --muted: #6b655c;
+  --bg: #fdfbf6;
+  --card: #f4f0e6;
+  --line: #ddd5c4;
+  --leaf: #3d6b35;
+  --leaf-soft: #e5efe1;
+  --rust: #a03a26;
+  --rust-soft: #f6e3de;
+  --body: Georgia, 'Times New Roman', serif;
+  --ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --text: #ece7dc; --muted: #a59e91; --bg: #191815; --card: #24221d; --line: #3a372f; --leaf-soft: #23331f; --rust-soft: #3a221c; }
+}
+html { font-size: 18px; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--body); line-height: 1.6; }
+main { max-width: 38rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+.kicker { font-family: var(--ui); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 0 0 .5rem; }
+h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 1.5rem; }
+h2 { font-size: 1.35rem; margin: 2.5rem 0 .75rem; padding-top: .75rem; border-top: 1px solid var(--line); }
+a { color: var(--leaf); }
+table { border-collapse: collapse; width: 100%; font-family: var(--ui); font-size: .85rem; margin: 1rem 0; }
+th, td { border-bottom: 1px solid var(--line); padding: .4rem .5rem; text-align: left; }
+.tip { font-family: var(--ui); font-size: .9rem; background: var(--leaf-soft); border-radius: 6px; padding: .75rem 1rem; }
+.btn { font-family: var(--ui); font-size: .85rem; padding: .5rem .9rem; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+textarea { width: 100%; min-height: 4rem; box-sizing: border-box; font: inherit; font-size: .9rem; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+label { display: block; font-family: var(--ui); font-size: .85rem; margin: 1rem 0 .25rem; }
+footer { margin-top: 3rem; font-family: var(--ui); font-size: .8rem; color: var(--muted); }

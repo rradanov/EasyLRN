@@ -29,11 +29,11 @@
 Тестове (само за разработка, не се публикуват): `npm install`, `npx playwright install chromium`,
 `npx playwright test`. Тестовете на слоя за данни могат да се отворят и в браузъра:
 `npm run serve` → http://localhost:4173/EasyLRN/tests/db.html. Тестовете за импорт (`tests/e2e/import.spec.js`)
-строят ZIP-овете от `tests/fixtures/LRN-DEMO/` (`tests/fixtures/zips.mjs`).
+строят ZIP-овете от синтетичния курс `tests/fixtures/LRN-DEMO/` (`tests/fixtures/zips.mjs`).
 
 ## Данни и сигурност
-В хранилището няма курсове, лични данни и API ключове (освен съкратено и обезличено тестово копие
-на един урок и справочник в `tests/fixtures/LRN-DEMO/`). Курсовете, бележките и ключът
+В хранилището има само код: няма курсове, лични данни и API ключове. Тестовият курс
+`tests/fixtures/LRN-DEMO/` („Основи на чая“) е изцяло измислен. Курсовете, бележките и ключът
 живеят само в браузъра на устройството (IndexedDB).
 
 
