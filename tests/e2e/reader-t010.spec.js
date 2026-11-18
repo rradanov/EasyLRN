@@ -497,14 +497,16 @@ test.describe('T-010 real lesson (T010_REAL_DIR, outside the repository)', () =>
     await expect(lf(page).locator('h1').first()).toBeVisible();
     const lessonUrl = page.url();
 
-    // quiz.js of the course
+    // quiz.js of the course (T-046: since D-032 a lesson may have no quiz inside; quizzes/*.json instead)
     const quizzes = lf(page).locator('.quiz');
-    expect(await quizzes.count()).toBeGreaterThan(0);
-    const q = quizzes.first();
-    await q.locator('.opt').first().click();
-    await expect(q.locator('.quiz-fb')).toBeVisible();
-    await q.locator('.quiz-controls .btn').first().click();
-    await expect(q.locator('.quiz-meta')).toContainText('2 /');
+    const hasQuiz = (await quizzes.count()) > 0;
+    if (hasQuiz) {
+      const q = quizzes.first();
+      await q.locator('.opt').first().click();
+      await expect(q.locator('.quiz-fb')).toBeVisible();
+      await q.locator('.quiz-controls .btn').first().click();
+      await expect(q.locator('.quiz-meta')).toContainText('2 /');
+    }
     // reflect.js of the course
     const rf = lf(page).locator('.reflect').first();
     await rf.locator('textarea').first().fill('T010 отговор');
@@ -564,8 +566,10 @@ test.describe('T-010 real lesson (T010_REAL_DIR, outside the repository)', () =>
       await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(target - 80);
       expect(Math.abs(await page.evaluate(() => scrollY) - target)).toBeLessThan(80);
       // offline: the quiz still works, R01 opens
-      await lf(page).locator('.quiz').first().locator('.opt').first().click();
-      await expect(lf(page).locator('.quiz').first().locator('.quiz-fb')).toBeVisible();
+      if (hasQuiz) {
+        await lf(page).locator('.quiz').first().locator('.opt').first().click();
+        await expect(lf(page).locator('.quiz').first().locator('.quiz-fb')).toBeVisible();
+      }
       await lf(page).locator('a[href^="https://claude.ai/artifact/"]').first().click();
       await expect(page).toHaveURL(new RegExp(`#/c/${root}/read/R\\d+$`));
       await expect(lf(page).locator('h1').first()).toBeVisible();
