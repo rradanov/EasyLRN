@@ -20,6 +20,10 @@
 
 Локален старт: `python3 -m http.server 8000` в папката и http://localhost:8000/.
 
+Тестове (само за разработка, не се публикуват): `npm install`, `npx playwright install chromium`,
+`npx playwright test`. Тестовете на слоя за данни могат да се отворят и в браузъра:
+`npm run serve` → http://localhost:4173/EasyLRN/tests/db.html.
+
 ## Данни и сигурност
 В хранилището няма курсове, лични данни и API ключове. Курсовете, бележките и ключът
 живеят само в браузъра на устройството (IndexedDB).

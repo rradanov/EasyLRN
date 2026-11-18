@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EasyLRN — тестове на слоя за данни</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 24px; color: #111; background: #fffff8; }
+    h1 { font-size: 1.3rem; }
+    table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+    td, th { border-bottom: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+    .pass { color: #1a7f37; } .fail { color: #b42318; font-weight: 600; }
+    td.ms { text-align: right; color: #666; white-space: nowrap; }
+    pre { margin: 0; white-space: pre-wrap; font-size: .85rem; }
+  </style>
+  <script type="module" src="db.test.js"></script>
+</head>
+<body>
+  <h1>Слой за данни (IndexedDB) — тестове</h1>
+  <p>Всеки тест работи в отделна временна база; базата на приложението (<code>lrn-app</code>) не се пипа.
+     Добави <code>?run=none</code>, за да заредиш страницата без да пускаш тестовете.</p>
+  <p id="summary" role="status">Изпълнява се…</p>
+  <table>
+    <thead><tr><th>Тест</th><th>Резултат</th><th>мс</th></tr></thead>
+    <tbody id="results"></tbody>
+  </table>
+</body>
+</html>
