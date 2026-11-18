@@ -10,7 +10,8 @@
 //   lesson or one part of a split ZIP, must not remove the rest).
 // - INDEX.md gives the lesson order and the artifact ↔ file table.
 // User-facing messages are in Bulgarian (ImportError.message).
-import { unzipSync, strFromU8 } from '../vendor/fflate.js';
+import { strFromU8 } from '../vendor/fflate.js';
+import { listZip, readEntry } from './zip.js';
 import { listCourseFiles, listLessons, getCourse, listCourses, saveCourseImport } from './db.js';
 
 /** Error with a message for the user (Bulgarian). */
@@ -52,6 +53,14 @@ function cleanPath(raw) {
   return parts.join('/');
 }
 
+/**
+ * A file name without the suffix that browsers add to a repeated download:
+ * "0001-a (1).html" → "0001-a.html", "INDEX (2).md" → "INDEX.md" (T008-D1).
+ */
+export function stripDownloadSuffix(name) {
+  return String(name).replace(/\s?\(\d{1,3}\)(?=(\.[^./\\]+)?$)/, '');
+}
+
 /** Where a loose file (no folder path) belongs, by its name. */
 export function pathForLooseFile(name) {
   if (/^\d{4}-.+\.html?$/i.test(name)) return `lessons/${name}`;
@@ -77,46 +86,63 @@ const readBytes = async (file) => new Uint8Array(await file.arrayBuffer());
  * a possible root folder). ZIPs are unpacked; PDFs are counted and skipped.
  */
 async function collect(inputs) {
-  const entries = [];
   const zipNames = [];
   let skippedPdf = 0;
+  // Phase 1 (T008-D3): plan every file from the ZIP central directories and
+  // the File sizes, and check the limits before anything is unpacked or read.
+  const plan = []; // { path, size, source, zip?: { data, entry, broken } } | { path, size, source, file }
   let total = 0;
-  const add = (path, data, source) => {
-    if (entries.length >= MAX_FILES) throw new ImportError(`Твърде много файлове (над ${MAX_FILES}). Това не прилича на курс.`);
-    if (data.length > MAX_FILE_BYTES) throw new ImportError(`Файлът „${path}“ е твърде голям (${Math.round(data.length / 1048576)} MB).`);
-    total += data.length;
+  const take = (item, tooBig) => {
+    if (item.size > MAX_FILE_BYTES) throw new ImportError(tooBig);
+    if (plan.length >= MAX_FILES) throw new ImportError(`Твърде много файлове (над ${MAX_FILES}). Това не прилича на курс.`);
+    total += item.size;
     if (total > MAX_TOTAL_BYTES) throw new ImportError('Курсът е твърде голям (над 200 MB без PDF-ите).');
-    entries.push({ path, data, source });
+    plan.push(item);
   };
 
   for (const file of inputs) {
-    const data = await readBytes(file);
-    if (isZipName(file.name) || isZipData(data)) {
-      if (!isZipData(data)) throw new ImportError(`Файлът „${file.name}“ не е ZIP архив.`);
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    if (isZipName(file.name) || isZipData(head)) {
+      if (!isZipData(head)) throw new ImportError(`Файлът „${file.name}“ не е ZIP архив.`);
       zipNames.push(file.name);
-      let files;
+      const broken = (err) => new ImportError(`Файлът „${file.name}“ не може да се отвори: ZIP архивът е повреден или непълен.`, { cause: err });
+      const data = await readBytes(file);
+      let listing;
       try {
-        files = unzipSync(data, {
-          filter: (f) => {
-            const path = cleanPath(f.name);
-            if (!path || f.name.endsWith('/') || IGNORED.test(path)) return false;
-            if (isPdf(path)) { skippedPdf++; return false; }
-            if (f.originalSize > MAX_FILE_BYTES) throw new ImportError(`Файлът „${path}“ в архива е твърде голям.`);
-            return true;
-          },
-        });
+        listing = listZip(data);
       } catch (err) {
-        if (err instanceof ImportError) throw err;
-        throw new ImportError(`Файлът „${file.name}“ не може да се отвори: ZIP архивът е повреден или непълен.`, { cause: err });
+        throw broken(err);
       }
-      for (const [name, bytes] of Object.entries(files)) add(cleanPath(name), bytes, file.name);
+      for (const entry of listing) {
+        const path = cleanPath(entry.name);
+        if (!path || entry.dir || IGNORED.test(path)) continue;
+        if (isPdf(path)) { skippedPdf++; continue; }
+        take({ path, size: entry.size, source: file.name, zip: { data, entry, broken } }, `Файлът „${path}“ в архива е твърде голям.`);
+      }
     } else {
       const rel = file.webkitRelativePath && file.webkitRelativePath.includes('/') ? cleanPath(file.webkitRelativePath) : null;
-      const path = rel || pathForLooseFile(file.name);
+      const path = rel || pathForLooseFile(stripDownloadSuffix(file.name));
       if (!path || IGNORED.test(path)) continue;
       if (isPdf(path)) { skippedPdf++; continue; }
-      add(path, data, file.name);
+      take({ path, size: file.size, source: file.name, file }, `Файлът „${path}“ е твърде голям (${Math.round(file.size / 1048576)} MB).`);
     }
+  }
+
+  // Phase 2: unpack. readEntry() stops an entry that grows past its declared
+  // size and checks its CRC-32 (T008-D2).
+  const entries = [];
+  for (const item of plan) {
+    let data;
+    if (item.zip) {
+      try {
+        data = readEntry(item.zip.data, item.zip.entry);
+      } catch (err) {
+        throw item.zip.broken(err);
+      }
+    } else {
+      data = await readBytes(item.file);
+    }
+    entries.push({ path: item.path, data, source: item.source });
   }
   return { entries, zipNames, skippedPdf, loose: zipNames.length === 0 };
 }
@@ -239,7 +265,7 @@ export async function importCourse(files, { onProgress } = {}) {
   if (!entries.length) {
     throw new ImportError(skippedPdf
       ? 'В избраното има само PDF файлове. Те не се импортират — избери ZIP на папката или уроците (.html) и .md файловете.'
-      : 'Избраното е празно.');
+      : zipNames.length ? 'ZIP архивът е празен.' : 'Избраното е празно.');
   }
   const root = stripRoot(entries);
 
@@ -296,7 +322,9 @@ export async function importCourse(files, { onProgress } = {}) {
   }
 
   // Lessons and references, in INDEX order (then by number).
-  const index = parseIndex(indexMd);
+  // T008-D4: a partial import without INDEX.md (one part of a split ZIP, a
+  // loose lesson) uses the stored INDEX.md, so artifact links and titles stay.
+  const index = parseIndex(indexMd ?? oldCourse?.meta?.index);
   const rowByPath = new Map(index.rows.filter((r) => r.path).map((r) => [r.path, r]));
   const rowByNumber = new Map(index.rows.map((r) => [`${r.kind}:${r.number.toUpperCase()}`, r]));
   const artifactByPath = Object.fromEntries(Object.entries(index.artifacts).map(([id, p]) => [p, id]));
@@ -353,15 +381,20 @@ export async function importCourse(files, { onProgress } = {}) {
   if (indexMd) meta.artifacts = index.artifacts;
   const title = missionTitle(meta.mission ?? oldCourse?.meta?.mission) || oldCourse?.title || courseId;
   const fileCount = new Set([...oldFiles.filter((f) => !f.deleted).map((f) => f.path), ...list.map((e) => e.path)]).size;
-  const nothingChanged = oldCourse && !oldCourse.deleted && !filesToWrite.length && !lessonsToWrite.length;
-  const status = !oldCourse || oldCourse.deleted ? 'new' : nothingChanged ? 'unchanged' : 'updated';
+  const isNew = !oldCourse || oldCourse.deleted;
+  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length;
+  const contentChanged = fileStats.added || fileStats.changed || lessonStats.added.length || lessonStats.changed.length;
+  const status = isNew ? 'new' : contentChanged ? 'updated' : 'unchanged';
 
+  // "Без промени" writes nothing, so the course keeps its updatedAt (backup merge, D-014).
   progress({ phase: 'save', done: 0, total: filesToWrite.length + lessonsToWrite.length });
-  await saveCourseImport({
-    course: { id: courseId, title, importedAt: new Date().toISOString(), files: fileCount, meta },
-    files: filesToWrite,
-    lessons: lessonsToWrite,
-  });
+  if (!nothingToWrite) {
+    await saveCourseImport({
+      course: { id: courseId, title, importedAt: new Date().toISOString(), files: fileCount, meta },
+      files: filesToWrite,
+      lessons: lessonsToWrite,
+    });
+  }
 
   const items = all.map((l) => ({ kind: l.kind, number: l.number, title: l.title }));
   const summary = {

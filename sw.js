@@ -22,6 +22,7 @@ const SHELL = [
   './src/sw-client.js',
   './src/db.js',
   './src/course-import.js',
+  './src/zip.js',
   './src/screens/courses.js',
   './src/screens/course.js',
   './src/screens/reader.js',

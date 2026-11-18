@@ -295,8 +295,8 @@ test.describe('T-008 ZIP shapes', () => {
 // ---------------------------------------------------------------------------
 test.describe('T-008 broken and hostile files (Bulgarian errors, nothing stored)', () => {
   const cases = [
-    ['an empty ZIP (no entries)', () => zipOf('LRN-DEMO.zip', EMPTY_ZIP), 'Избраното е празно.'],
-    ['a ZIP with directories only', () => zipOf('LRN-DEMO.zip', rawZip([{ name: 'LRN-DEMO/' }, { name: 'LRN-DEMO/lessons/' }])), 'Избраното е празно.'],
+    ['an empty ZIP (no entries)', () => zipOf('LRN-DEMO.zip', EMPTY_ZIP), 'ZIP архивът е празен.'],
+    ['a ZIP with directories only', () => zipOf('LRN-DEMO.zip', rawZip([{ name: 'LRN-DEMO/' }, { name: 'LRN-DEMO/lessons/' }])), 'ZIP архивът е празен.'],
     ['a RAR renamed to .zip', () => zipOf('LRN-DEMO.zip', Buffer.from('Rar!\x1a\x07\x00 ...')), 'Файлът „LRN-DEMO.zip“ не е ZIP архив.'],
     ['a ZIP cut before the end record', () => { const z = makeZip(FILES); return zipOf('LRN-DEMO.zip', z.subarray(0, Math.floor(z.length / 2))); }, 'Файлът „LRN-DEMO.zip“ не може да се отвори: ZIP архивът е повреден или непълен.'],
     ['a ZIP cut by one byte', () => { const z = makeZip(FILES); return zipOf('LRN-DEMO.zip', z.subarray(0, z.length - 1)); }, 'Файлът „LRN-DEMO.zip“ не може да се отвори: ZIP архивът е повреден или непълен.'],
@@ -340,9 +340,8 @@ test.describe('T-008 broken and hostile files (Bulgarian errors, nothing stored)
     });
   });
 
-  test('T008-D3: the 200 MB limit is checked only after unpacking (a 1 MB ZIP unpacks ~1 GB first)', async ({ page }, info) => {
+  test('FIXED T008-D3: the 200 MB limit is checked from the headers, before unpacking (a 1 MB ZIP of ~1 GB)', async ({ page }, info) => {
     test.skip(info.project.name !== 'tablet-landscape', 'memory-heavy, once');
-    test.fail(true, 'T008-D3: total size is summed after unzipSync, not from the headers in the filter');
     const r = await page.evaluate(async () => {
       const m = await import('./src/course-import.js');
       const { zipSync } = await import('./vendor/fflate.js');
@@ -359,8 +358,7 @@ test.describe('T-008 broken and hostile files (Bulgarian errors, nothing stored)
     expect(r.ms).toBeLessThan(500);
   });
 
-  test('T008-D2: a ZIP whose data does not match its CRC-32 is imported silently', async ({ page }) => {
-    test.fail(true, 'T008-D2: fflate unzipSync does not verify CRC-32 and course-import does not either');
+  test('FIXED T008-D2: a ZIP whose data does not match its CRC-32 is refused', async ({ page }) => {
     const r = await imp(page, zipOf('LRN-DEMO.zip', rawZip([
       { name: `LRN-DEMO/${LESSON_PATH}`, data: LESSON, crc: 0x12345678 },
     ])));
@@ -439,8 +437,7 @@ test.describe('T-008 re-import keeps everything', () => {
     expect(await userData(page)).toEqual(before);
   });
 
-  test('T008-D4: a split part without INDEX.md wipes artifactId of the lessons in it', async ({ page }) => {
-    test.fail(true, 'T008-D4: lessons in a part without INDEX.md are rewritten with artifactId/indexTitle = null');
+  test('FIXED T008-D4: a split part without INDEX.md keeps artifactId of the lessons in it', async ({ page }) => {
     await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
     const part2 = splitZips(FILES, 2)[1]; // MISSION, RESOURCES, quiz.js, style.css, lesson 0001 (no INDEX.md)
     const r = await imp(page, [part2]);
@@ -448,22 +445,21 @@ test.describe('T-008 re-import keeps everything', () => {
     expect(r.lessons.find((l) => l.number === '0001').artifactId).toBe('DemoArtifact0001');
   });
 
-  test('T008-D1: a loose lesson downloaded twice ("… (1).html") becomes a second lesson 0001', async ({ page }) => {
-    test.fail(true, 'T008-D1: the " (1)" suffix from Chrome/Drive downloads is not stripped; duplicate lesson');
+  test('FIXED T008-D1: a loose lesson downloaded twice ("… (1).html") is the same lesson 0001', async ({ page }) => {
     await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
     const r = await imp(page, [asFile('0001-vidove-chay (1).html', Buffer.from(LESSON), 'text/html')]);
     expect(r.lessons.map((l) => l.number)).toEqual(['0001', 'R01']);
     expect(r.stored['LRN-DEMO']).toHaveLength(IMPORTED);
   });
 
-  test('observation: "Без промени" still rewrites the course record (updatedAt moves)', async ({ page }) => {
+  test('FIXED observation: "Без промени" does not rewrite the course record (updatedAt stays)', async ({ page }) => {
     await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
     const t1 = await page.evaluate(async () => (await (await import('./src/db.js')).getCourse('LRN-DEMO')).updatedAt);
     await page.waitForTimeout(20);
     const r = await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
     const t2 = await page.evaluate(async () => (await (await import('./src/db.js')).getCourse('LRN-DEMO')).updatedAt);
     expect(r.s.status).toBe('unchanged');
-    expect(t2).not.toBe(t1); // documented behaviour today; relevant for the backup merge by updatedAt (D-014)
+    expect(t2).toBe(t1); // relevant for the backup merge by updatedAt (D-014)
   });
 });
 
