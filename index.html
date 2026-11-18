@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <!--
     App shell CSP. connect-src allows the future Claude API client (D-015).
-    Lesson files get their own, stricter CSP from the Service Worker (D-011, T-009).
+    frame-src 'self': only the lesson frames at ./c/… (D-029). Lesson files get
+    their own CSP from the Service Worker, with `sandbox allow-scripts` (T-045).
     frame-ancestors cannot be set from a meta tag; it is not needed for the shell.
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.anthropic.com; frame-src 'self' blob:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.anthropic.com; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fffff8" media="(prefers-color-scheme: light)">

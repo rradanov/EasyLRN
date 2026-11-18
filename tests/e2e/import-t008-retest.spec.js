@@ -61,7 +61,6 @@ test.describe('T008-D1 retest', () => {
   });
 
   test('[T010-D1] "0001-….HTML" (upper-case extension) replaces lesson 0001 instead of adding a second 0001', async ({ page }) => {
-    test.fail(true, 'T010-D1: lesson names match case-insensitively, but the path keeps the case → a second lesson 0001');
     const first = await imp(page, full());
     const r = await imp(page, [asFile('0001-vidove-chay.HTML', Buffer.from(FILES[LESSON_PATH]), 'text/html')]);
     expect(r.paths).toEqual(first.paths);

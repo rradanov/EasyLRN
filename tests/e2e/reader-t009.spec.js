@@ -1,5 +1,8 @@
 // T-009 (developer): a lesson in a sandboxed iframe, served by the Service
 // Worker from IndexedDB at ./c/<course>/<path> (D-011, ARCHITECTURE §5).
+// T-045: adapted to the isolated lesson (D-029): opaque origin, sandbox
+// "allow-scripts" only, the stricter lesson CSP. Playwright reaches the
+// cross-origin frame through page.frames()/frameLocator (never contentDocument).
 // Uses the synthetic course tests/fixtures/LRN-DEMO (D-026).
 // Optional: T009_REAL_DIR=/path/to/LRN-<topic> opens lesson 0001 of a real
 // course kept outside the repository and checks its own quiz/reflect scripts.
@@ -70,7 +73,8 @@ test.describe('T-009 opening lessons', () => {
     await expect(lessonFrame(page).locator('h1')).toHaveText('Какви видове чай има?');
 
     const frame = page.locator('iframe.lesson-frame');
-    await expect(frame).toHaveAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    await expect(frame).toHaveAttribute('allow', 'clipboard-write *');
     expect(await frame.getAttribute('src')).toMatch(/\/EasyLRN\/c\/LRN-DEMO\/lessons\/0001-vidove-chay\.html$/);
     // The lesson's own CSS (relative ../assets/style.css) and inline script ran.
     const f = frameOf(page, LESSON_PATH);
@@ -230,7 +234,7 @@ test.describe('T-009 security', () => {
       return { status: r.status, type: r.headers.get('content-type'), csp: r.headers.get('content-security-policy'), nosniff: r.headers.get('x-content-type-options') };
     });
     expect(h).toMatchObject({ status: 200, type: 'text/html; charset=utf-8', nosniff: 'nosniff' });
-    for (const d of ["connect-src 'none'", "worker-src 'none'", "form-action 'none'", "object-src 'none'", "frame-ancestors 'self'", "img-src 'self' data: blob:"]) {
+    for (const d of ['sandbox allow-scripts', "default-src 'none'", "connect-src 'none'", "worker-src 'none'", "frame-src 'none'", "form-action 'none'", "object-src 'none'", "frame-ancestors 'self'", 'img-src data: blob:']) {
       expect(h.csp).toContain(d);
     }
   });
@@ -260,7 +264,8 @@ test.describe('T-009 security', () => {
       return { out, violations: [...new Set(violations)].sort() };
     });
     expect(r.out).toEqual({ fetchExternal: 'blocked', fetchSelf: 'blocked', fetchApi: 'blocked', xhr: 'blocked', beacon: 'sent', ws: 'blocked', worker: 'blocked', img: 'blocked' });
-    expect(r.violations).toEqual(expect.arrayContaining(['connect-src', 'img-src', 'worker-src']));
+    // The worker from ../assets is refused even before the CSP: the lesson's origin is opaque (cross-origin script URL).
+    expect(r.violations).toEqual(expect.arrayContaining(['connect-src', 'img-src']));
     // sendBeacon() returns true even when the CSP drops it: what counts is that no request left.
     await page.waitForTimeout(300);
     expect(leaked).toEqual([]);

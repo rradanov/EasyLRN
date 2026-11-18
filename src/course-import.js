@@ -13,6 +13,7 @@
 import { strFromU8 } from '../vendor/fflate.js';
 import { listZip, readEntry } from './zip.js';
 import { listCourseFiles, listLessons, getCourse, listCourses, saveCourseImport } from './db.js';
+import { renderCourse } from './lesson-render.js';
 
 /** Error with a message for the user (Bulgarian). */
 export class ImportError extends Error {
@@ -51,6 +52,17 @@ function cleanPath(raw) {
   const parts = String(raw).replace(/\\/g, '/').split('/').filter((p) => p && p !== '.');
   if (!parts.length || parts.some((p) => p === '..')) return null;
   return parts.join('/');
+}
+
+/**
+ * The extension of the file name in lower case: "0001-a.HTML" → "0001-a.html",
+ * "INDEX.MD" → "INDEX.md" (T010-D1). Done before the path is used anywhere, so
+ * a file with an upper-case extension replaces the same file instead of
+ * becoming a second one. Lessons that point to "x.CSS" still find "x.css"
+ * (src/lesson-render.js tries the lower-case extension too).
+ */
+export function lowerExtension(path) {
+  return String(path).replace(/(\.[A-Za-z0-9]{1,8})$/, (ext) => ext.toLowerCase());
 }
 
 /**
@@ -114,14 +126,15 @@ async function collect(inputs) {
         throw broken(err);
       }
       for (const entry of listing) {
-        const path = cleanPath(entry.name);
+        const cleaned = cleanPath(entry.name);
+        const path = cleaned && lowerExtension(cleaned);
         if (!path || entry.dir || IGNORED.test(path)) continue;
         if (isPdf(path)) { skippedPdf++; continue; }
         take({ path, size: entry.size, source: file.name, zip: { data, entry, broken } }, `Файлът „${path}“ в архива е твърде голям.`);
       }
     } else {
       const rel = file.webkitRelativePath && file.webkitRelativePath.includes('/') ? cleanPath(file.webkitRelativePath) : null;
-      const path = rel || pathForLooseFile(stripDownloadSuffix(file.name));
+      const path = rel ? lowerExtension(rel) : pathForLooseFile(lowerExtension(stripDownloadSuffix(file.name)));
       if (!path || IGNORED.test(path)) continue;
       if (isPdf(path)) { skippedPdf++; continue; }
       take({ path, size: file.size, source: file.name, file }, `Файлът „${path}“ е твърде голям (${Math.round(file.size / 1048576)} MB).`);
@@ -394,6 +407,16 @@ export async function importCourse(files, { onProgress } = {}) {
       files: filesToWrite,
       lessons: lessonsToWrite,
     });
+  }
+
+  // Self-contained versions of the lessons for the isolated reader (T-045,
+  // LESSON-ISOLATION §4.2): only new or stale ones (also after an app update
+  // with a new renderer, even when the course itself is unchanged). A failure
+  // here does not fail the import: the reader renders lazily when it opens.
+  try {
+    await renderCourse(courseId);
+  } catch (err) {
+    console.warn('EasyLRN: lessons not prepared at import (done when opened):', err);
   }
 
   const items = all.map((l) => ({ kind: l.kind, number: l.number, title: l.title }));

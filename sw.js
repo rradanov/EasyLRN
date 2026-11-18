@@ -3,12 +3,17 @@
 // - Serves the shell cache-first, so the app opens offline.
 // - A new version installs in the background and waits until the page
 //   sends {type: 'SKIP_WAITING'} (the user pressed "Презареди").
-// - Serves course files from IndexedDB at ./c/<courseId>/<path> (T-009, D-011)
-//   with a strict CSP: lessons may run their own JS but make no network
-//   requests (connect-src 'none'), so a lesson script cannot send anything away.
-// - Caches the lesson fonts (Google Fonts) so lessons look the same offline.
+// - Serves course files from IndexedDB at ./c/<courseId>/<path> (T-009, T-045,
+//   D-029). Every such response carries a CSP with `sandbox allow-scripts`:
+//   the lesson gets an opaque origin and cannot reach the app (IndexedDB,
+//   caches, DOM, window), the network, popups or the top window.
+// - For HTML files it serves the self-contained version assembled by the app
+//   (src/lesson-render.js) and appends the bridge (src/anchor.js +
+//   src/lesson-bridge.js, read from the shell cache) before </body>.
+// - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.4.0'; // keep in sync with src/config.js
+const VERSION = '0.5.0'; // keep in sync with src/config.js
+const RENDER_VERSION = 1; // keep in sync with src/lesson-render.js
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 
@@ -30,6 +35,9 @@ const SHELL = [
   './src/screens/course.js',
   './src/screens/reader.js',
   './src/lesson-frame.js',
+  './src/lesson-render.js',
+  './src/lesson-bridge.js',
+  './src/anchor.js',
   './src/screens/settings.js',
   './src/screens/not-found.js',
   './vendor/idb.js',
@@ -47,22 +55,24 @@ const SCOPE_URL = new URL('./', self.location).href;
 const INDEX_URL = new URL('./index.html', self.location).href;
 const COURSE_URL = new URL('./c/', self.location).href;
 
-const FONT_CACHE = 'easylrn-fonts'; // not versioned: kept across app updates
-const FONT_HOSTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com']);
+const OLD_FONT_CACHE = 'easylrn-fonts'; // 0.4.0 cached Google Fonts here (D-031: removed)
 
-// Headers of every course response (ARCHITECTURE §5, D-011). Lessons are
-// self-contained HTML with inline CSS/JS; fonts may come from Google Fonts.
-// No fetch/XHR/WebSocket/beacon (connect-src 'none'), no workers, no forms,
-// no plugins; images and frames only from the app itself, data: and blob:.
+// Headers of every course response (D-029, LESSON-ISOLATION §3.2). `sandbox
+// allow-scripts` (no allow-same-origin) gives the document an opaque origin;
+// it is in the response itself, so a lesson can never remove it. Lessons are
+// self-contained HTML (inline CSS/JS, data: images); no network at all, no
+// workers, no frames, no forms, no plugins, no web fonts.
 const COURSE_CSP = [
-  "default-src 'self' 'unsafe-inline' data: blob:",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob:",
-  "media-src 'self' data: blob:",
+  'sandbox allow-scripts',
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  'img-src data: blob:',
+  'media-src data: blob:',
+  'font-src data:',
   "connect-src 'none'",
   "worker-src 'none'",
+  "frame-src 'none'",
   "object-src 'none'",
   "form-action 'none'",
   "base-uri 'none'",
@@ -91,7 +101,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys
-      .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+      .filter((key) => (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME) || key === OLD_FONT_CACHE)
       .map((key) => caches.delete(key)));
     await self.clients.claim();
   })());
@@ -105,10 +115,6 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (FONT_HOSTS.has(url.hostname) && url.protocol === 'https:') {
-    event.respondWith(fontStaleWhileRevalidate(event, request, url));
-    return;
-  }
   if (url.origin !== self.location.origin || !url.href.startsWith(SCOPE_URL)) return;
 
   // Course files: always from IndexedDB, never from the network or the shell cache.
@@ -225,31 +231,58 @@ async function serveCourseFile(url) {
   if (!file || file.deleted || file.courseId !== target.courseId || file.path !== target.path || !file.blob) {
     return courseError(404, 'Файлът не е намерен в курса. Импортирай курса отново.');
   }
+  if (/\.html?$/i.test(target.path)) {
+    // Only the assembled version, with the bridge (LESSON-ISOLATION §3.2, §4.2).
+    if (!file.rendered || file.renderVersion !== RENDER_VERSION || file.renderSha !== file.sha256) {
+      return courseError(404, 'Урокът още не е подготвен за показване. Отвори урока отново.');
+    }
+    let html;
+    let bridge;
+    try {
+      [html, bridge] = await Promise.all([file.rendered.text(), bridgeScript()]);
+    } catch {
+      return courseError(404, 'Урокът не може да се покаже. Презареди приложението.');
+    }
+    return new Response(withBridge(html, bridge), {
+      status: 200,
+      headers: { ...COURSE_HEADERS, 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
   return new Response(file.blob, {
     status: 200,
     headers: { ...COURSE_HEADERS, 'Content-Type': file.mime || file.blob.type || 'application/octet-stream' },
   });
 }
 
-// --- Fonts of the lessons ---------------------------------------------------
+// --- The bridge in every lesson (D-029) --------------------------------------
 
-async function fontStaleWhileRevalidate(event, request, url) {
-  const cache = await caches.open(FONT_CACHE);
-  const cached = await cache.match(request);
-  const network = fetch(request)
-    .then((response) => {
-      if (response.ok || response.type === 'opaque') cache.put(request, response.clone()).catch(() => {});
-      return response;
-    })
-    .catch(() => null);
-  if (cached) {
-    event.waitUntil(network);
-    return cached;
+let bridgePromise = null;
+
+/** anchor.js + lesson-bridge.js from the shell cache, as one inline module. */
+function bridgeScript() {
+  if (!bridgePromise) {
+    bridgePromise = (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const read = async (path) => {
+        const url = new URL(path, self.location).href;
+        const response = (await cache.match(url, { ignoreSearch: true })) || (await fetch(url));
+        if (!response.ok) throw new Error(`${path}: ${response.status}`);
+        return response.text();
+      };
+      const [anchor, bridge] = await Promise.all([read('./src/anchor.js'), read('./src/lesson-bridge.js')]);
+      // Neither file may close the script element early.
+      const safe = (text) => text.replace(/<\/(script)/gi, '<\\/$1');
+      return `<script type="module" data-easylrn="bridge">\n${safe(anchor)}\n${safe(bridge)}\n</script>`;
+    })().catch((err) => {
+      bridgePromise = null;
+      throw err;
+    });
   }
-  const response = await network;
-  if (response) return response;
-  // Offline and never cached: the lesson falls back to its system fonts.
-  return url.hostname === 'fonts.googleapis.com'
-    ? new Response('/* offline: font CSS not cached */', { headers: { 'Content-Type': 'text/css; charset=utf-8' } })
-    : new Response(null, { status: 504 });
+  return bridgePromise;
+}
+
+/** Put the bridge right before the last </body> (or at the end). */
+function withBridge(html, bridge) {
+  const at = html.toLowerCase().lastIndexOf('</body');
+  return at === -1 ? `${html}\n${bridge}` : `${html.slice(0, at)}${bridge}\n${html.slice(at)}`;
 }

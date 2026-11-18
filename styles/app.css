@@ -285,4 +285,7 @@ a.card:active { background: var(--paper); }
 }
 .lesson-frame[hidden] { display: none; }
 .lesson-frame__status { margin: 0 max(24px, env(safe-area-inset-left)); }
+.lesson-frame__note { margin: 0 max(24px, env(safe-area-inset-left)) 8px; font-family: var(--font-sans); font-size: 0.9rem; }
+.lesson-frame__note[hidden] { display: none; }
+.lesson-frame__status[hidden] { display: none; }
 .lesson-frame__status--error { color: var(--ink); padding: 8px 12px; border-left: 3px solid #b3261e; background: var(--paper-2); }

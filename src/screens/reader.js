@@ -1,6 +1,7 @@
 // Screen "Четец" (#/c/<courseId>/read/<lesson>?path=a/b). <lesson> is the
-// number ("0001", "R01") or the lesson id. T-009: the lesson or reference in
-// a sandboxed iframe served from IndexedDB; columns come in T-027.
+// number ("0001", "R01") or the lesson id. The lesson or reference is shown in
+// an isolated iframe (T-045, D-029: opaque origin, postMessage bridge); columns
+// come in T-027.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
 import { getCourse, listLessons, getSettings, setLessonProgress } from '../db.js';

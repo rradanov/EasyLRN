@@ -481,6 +481,28 @@ export function putFile(file) {
 }
 
 export const getFile = (courseId, path, opts) => get(STORES.files, fileKey(courseId, path), opts);
+
+/**
+ * Store the assembled (self-contained) version of a lesson file next to its
+ * original (T-045, LESSON-ISOLATION §4.2): { sha256, rendered, renderVersion,
+ * renderDeps, links }. Written only if the file still has that `sha256` (a
+ * newer import wins). Derived data: `updatedAt` is kept, so a render never
+ * looks like a change of the course. The original `blob`/`sha256` are not touched.
+ * @returns {Promise<object|null>} the updated record, or null if the file changed or is gone
+ */
+export async function setFileRender(courseId, path, { sha256, rendered, renderVersion, renderDeps = {}, links = [] }) {
+  const db = await openDb();
+  const tx = db.transaction(STORES.files, 'readwrite');
+  const record = await tx.store.get(fileKey(courseId, path));
+  if (!record || record.deleted || record.sha256 !== sha256) {
+    await tx.done;
+    return null;
+  }
+  const next = { ...record, rendered, renderVersion, renderSha: sha256, renderDeps, links };
+  await tx.store.put(next);
+  await tx.done;
+  return next;
+}
 export const listCourseFiles = (courseId, opts) => byIndex(STORES.files, 'by_course', courseId, opts);
 
 const NEW_PROGRESS = Object.freeze({ status: 'new', lastOpenedAt: null, scrollY: 0 });
@@ -930,6 +952,8 @@ export async function saveSettings(patch) {
   };
   await tx.store.put(record);
   await tx.done;
+  // Open screens follow a change at once (e.g. the text size of an open lesson, T-045).
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('easylrn:settings', { detail: record }));
   return record;
 }
 
