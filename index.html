@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <!--
+    App shell CSP. connect-src allows the future Claude API client (D-015).
+    Lesson files get their own, stricter CSP from the Service Worker (D-011, T-009).
+    frame-ancestors cannot be set from a meta tag; it is not needed for the shell.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.anthropic.com; frame-src 'self' blob:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fffff8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151513" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Четец на учебни курсове с маркиране, бележки и AI учител.">
+  <title>EasyLRN</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles/app.css">
+  <script type="module" src="src/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Към съдържанието</a>
+  <header class="app-bar">
+    <div class="app-bar__start" id="app-bar-start"></div>
+    <h1 class="app-bar__title" id="app-bar-title">EasyLRN</h1>
+    <nav class="app-bar__end" aria-label="Основна навигация">
+      <a class="icon-button" id="nav-settings" href="#/settings" aria-label="Настройки" title="Настройки">⚙</a>
+    </nav>
+  </header>
+  <main id="main" class="app-main" tabindex="-1">
+    <noscript><p class="empty">EasyLRN изисква JavaScript.</p></noscript>
+  </main>
+  <div class="update-banner" id="update-banner" role="status" aria-live="polite" hidden>
+    <span>Има нова версия</span>
+    <button type="button" class="button button--primary" id="update-button">Обнови</button>
+  </div>
+</body>
+</html>

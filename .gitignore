@@ -1,0 +1,27 @@
+# Dependencies and tooling (vendor/ is committed on purpose)
+node_modules/
+package-lock.json
+
+# Test output
+test-results/
+playwright-report/
+.lighthouse/
+
+# Never commit secrets, courses or personal data
+.env
+.env.*
+*.key
+*.pem
+secrets/
+courses/
+LRN-*/
+*.zip
+backup*.json
+easylrn-backup*.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
