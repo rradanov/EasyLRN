@@ -1,8 +1,9 @@
-// Screen "Курс" (#/c/<courseId>). For now only the imported lessons and
-// references in course order (T-007); status, "Продължи" and the reader
-// links come in T-011.
+// Screen "Курс" (#/c/<courseId>). The imported lessons and references in
+// course order (T-007), each a link to the reader (T-009); status and
+// "Продължи" come in T-011.
 import { h, mount } from '../dom.js';
 import { getCourse, listLessons } from '../db.js';
+import { readerLink } from './reader.js';
 
 export function courseScreen({ params }) {
   const { courseId } = params;
@@ -21,7 +22,9 @@ export function courseScreen({ params }) {
       return items.length ? [
         h('h3', { class: 'card__eyebrow', text: label }),
         h('ul', { class: 'import__items' }, items.map((l) =>
-          h('li', { 'data-lesson': l.id }, h('span', { class: 'import__num', text: l.number }), ' ', l.title))),
+          h('li', { 'data-lesson': l.id },
+            h('a', { class: 'lesson-link', href: readerLink(courseId, l) },
+              h('span', { class: 'import__num', text: l.number }), ' ', l.title)))),
       ] : [];
     };
     mount(lessonsBox, ...group('lesson', 'Уроци'), ...group('reference', 'Справочници'));

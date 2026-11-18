@@ -21,8 +21,15 @@ const barTitle = document.getElementById('app-bar-title');
 const settingsLink = document.getElementById('nav-settings');
 
 let firstRender = true;
+let currentScreen = null;
 
 function render(resolved) {
+  // Let the old screen save its state (e.g. the reading position) before it goes.
+  try {
+    currentScreen?.destroy?.();
+  } catch (err) {
+    console.error(err);
+  }
   let screen;
   try {
     screen = resolved ? resolved.handler(resolved.match) : notFoundScreen();
@@ -38,6 +45,7 @@ function render(resolved) {
     : null);
   settingsLink.hidden = resolved?.match.path === '/settings';
   mount(main, screen.body);
+  currentScreen = screen;
   document.title = screen.title === APP_NAME ? APP_NAME : `${screen.title} · ${APP_NAME}`;
 
   // Move focus to the content on navigation (not on first load) for keyboard/screen-reader users.

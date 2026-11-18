@@ -501,15 +501,19 @@ test.describe('T-008 security: nothing from the course runs in the app', () => {
     expect(requests.filter((u) => /evil\.js|track\.png|\/c\//.test(u))).toEqual([]);
   });
 
-  test('before T-009 the app does not serve course files at all (no ./c/<course>/… URL)', async ({ page }) => {
+  // Updated in T-009: course files are now served at ./c/<course>/…, but only
+  // by the Service Worker from IndexedDB and always with the lesson CSP.
+  test('since T-009 ./c/<course>/… is served only from IndexedDB, with the lesson CSP', async ({ page }) => {
     await imp(page, zipOf(DRIVE_ZIP_NAME, makeZip(FILES)));
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload();
     const r = await page.evaluate(async () => {
       const res = await fetch('./c/LRN-DEMO/assets/quiz.js');
-      return { status: res.status, body: (await res.text()).slice(0, 40) };
+      return { status: res.status, csp: res.headers.get('content-security-policy'), body: (await res.text()).slice(0, 40) };
     });
-    consoleErrors.length = 0; // the expected 404 of this fetch is logged by Chrome
-    expect(r.status).toBe(404);
-    expect(r.body).not.toContain('quiz');
+    expect(r.status).toBe(200);
+    expect(r.csp).toContain("connect-src 'none'");
+    expect(r.body).toContain('quiz');
   });
 });
 

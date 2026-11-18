@@ -1,19 +1,77 @@
-// Screen "Четец" (#/c/<courseId>/read/<lessonId>?path=a/b). Placeholder until T-009/T-027.
-import { h } from '../dom.js';
+// Screen "Четец" (#/c/<courseId>/read/<lesson>?path=a/b). <lesson> is the
+// number ("0001", "R01") or the lesson id. T-009: the lesson or reference in
+// a sandboxed iframe served from IndexedDB; columns come in T-027.
+import { h, mount } from '../dom.js';
 import { link } from '../router.js';
+import { getCourse, listLessons, getSettings, setLessonProgress } from '../db.js';
+import { createLessonFrame } from '../lesson-frame.js';
+
+/** Find a lesson by number (case-insensitive), id or path. */
+export function findLesson(lessons, key) {
+  const k = String(key);
+  return lessons.find((l) => l.id === k)
+    || lessons.find((l) => String(l.number).toUpperCase() === k.toUpperCase())
+    || lessons.find((l) => l.path === k)
+    || null;
+}
+
+const label = (key) => (/^R\d/i.test(key) ? `Справочник ${key}` : `Урок ${key}`);
+
+/** Hash link of the reader for a lesson (by number). */
+export const readerLink = (courseId, lesson) => link('c', courseId, 'read', lesson.number || lesson.id);
 
 export function readerScreen({ params, query }) {
   const { courseId, lessonId } = params;
   const path = (query.get('path') || '').split('/').filter(Boolean);
+  const hash = query.get('at') ? `#${query.get('at')}` : '';
+  const content = h('div', { class: 'reader__content', 'data-field': 'reader-content' },
+    h('p', { class: 'muted', text: 'Зареждам…' }));
+  let frame = null;
+  let destroyed = false;
+
+  (async () => {
+    const [course, lessons, settings] = await Promise.all([getCourse(courseId), listLessons(courseId), getSettings()]);
+    if (destroyed) return;
+    const lesson = course && findLesson(lessons, lessonId);
+    if (!course || !lesson) {
+      mount(content, h('p', { class: 'empty', 'data-field': 'reader-missing',
+        text: course ? 'Урокът не е намерен в курса. Импортирай курса отново.' : 'Курсът още не е импортиран.' }));
+      return;
+    }
+    frame = createLessonFrame({
+      course,
+      lesson,
+      lessons,
+      fontScale: settings.fontScale,
+      initialScroll: lesson.progress?.scrollY || 0,
+      hash,
+      onNavigate: (other, otherHash) => {
+        const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
+        location.hash = `${readerLink(courseId, other)}${at}`;
+      },
+      onScroll: (y) => {
+        setLessonProgress(lesson.id, { scrollY: y }).catch((err) => console.warn('Cannot save the position:', err));
+      },
+    });
+    mount(content, frame.element);
+  })().catch((err) => {
+    console.warn('Cannot open the lesson:', err);
+    mount(content, h('p', { class: 'empty', text: 'Урокът не може да се отвори.' }));
+  });
+
   return {
-    title: `Урок ${lessonId}`,
+    title: label(lessonId),
     back: { href: link('c', courseId), label: courseId },
+    destroy() {
+      destroyed = true;
+      frame?.destroy();
+    },
     body: h('section', { class: 'screen screen--reader', 'data-screen': 'reader' },
       h('nav', { class: 'breadcrumb', 'aria-label': 'Път' },
-        h('span', { text: `Урок ${lessonId}` }),
+        h('span', { text: label(lessonId) }),
         ...path.map((id) => h('span', { text: ` › ${id}` })),
       ),
-      h('p', { class: 'empty', text: 'Четецът с колони ще се появи в следващите версии.' }),
+      content,
     ),
   };
 }
