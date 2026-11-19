@@ -327,8 +327,12 @@ test.describe('T-051 the key field', () => {
     const msg = field(page, 'key-message');
     const tryKey = async (v) => {
       await field(page, 'api-key').fill(v);
+      // T-012: was a fixed 250 ms wait ("a valid key is saved asynchronously"), which failed once
+      // under load (the message of the previous attempt was still there). Now the old message is
+      // cleared first and the test waits for the app's new one — the same checks, no timing guess.
+      await msg.evaluate((el) => { el.textContent = ''; });
       await field(page, 'key-save').click();
-      await page.waitForTimeout(250); // a valid key is saved asynchronously
+      await expect(msg).not.toHaveText('', { timeout: 10000 });
       return (await msg.textContent()).trim();
     };
     expect(await tryKey('')).toBe('Въведи ключа.');
