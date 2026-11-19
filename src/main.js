@@ -43,7 +43,7 @@ function startApp() {
 
   const main = document.getElementById('main');
   const barStart = document.getElementById('app-bar-start');
-  const barTitle = document.getElementById('app-bar-title');
+  let barTitle = document.getElementById('app-bar-title');
   const settingsLink = document.getElementById('nav-settings');
 
   let firstRender = true;
@@ -64,6 +64,16 @@ function startApp() {
       screen = notFoundScreen();
     }
 
+    // A screen with its own h1 (the course screen, T012-I5) gets the app bar
+    // title as plain text, so the page has exactly one h1.
+    const barTag = screen.ownHeading ? 'p' : 'h1';
+    if (barTitle.tagName.toLowerCase() !== barTag) {
+      const el = document.createElement(barTag);
+      el.className = barTitle.className;
+      el.id = barTitle.id;
+      barTitle.replaceWith(el);
+      barTitle = el;
+    }
     barTitle.textContent = screen.title;
     mount(barStart, screen.back
       ? h('a', { class: 'back-link', href: screen.back.href, 'aria-label': `Назад към ${screen.back.label}` },

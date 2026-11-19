@@ -1,7 +1,8 @@
 // T-011 (developer, 0.8.0): the course screen and the progress (UI-DESIGN §3, F1).
 // - one heading per section ("Уроци" once — the T-008 user check saw it twice);
-// - the mission is the text of MISSION.md (rendered Markdown, collapsible),
-//   resources and course notes are there too (collapsed);
+// - T-011-fix (0.8.1, D-038): no mission (MISSION.md) and no course notes
+//   (NOTES.md) on the screen; the resources (RESOURCES.md, rendered Markdown,
+//   collapsed) stay; the h1 is the course name;
 // - the layout uses the width of the tablet: two columns at 1920×1200,
 //   1280×800 and 1200×1920, one column at 800×1280; never a horizontal scroll;
 // - status ○ / ◐ / ●, "скоро" for planned lessons, counters, "Продължи",
@@ -45,7 +46,7 @@ const importDemo = (page, files = FILES) => importFiles(page, [asFile(DRIVE_ZIP_
 const course = (page) => page.locator('[data-screen="course"]');
 async function openCourse(page, id = 'LRN-DEMO') {
   await page.goto(`./#/c/${id}`);
-  await expect(course(page).locator('[data-section="mission"]')).toBeVisible();
+  await expect(course(page).locator('[data-section="activity"]')).toBeVisible();
 }
 const item = (page, number) => course(page).locator('.course-item', { has: page.locator(`[data-lesson] .import__num:text-is("${number}")`) });
 const progress = (page) => page.evaluate(async (id) => (await (await import('./src/db.js')).getLesson(id)).progress, LESSON_ID);
@@ -61,7 +62,8 @@ test.describe('T-011 the course screen: structure', () => {
     await importDemo(page);
     await openCourse(page);
     const h2 = await course(page).locator('h2').allTextContents();
-    expect(h2).toEqual(['Уроци', 'Справочници', 'Тестове', 'Мисия', 'Последни дейности', 'Ресурси', 'Бележки на курса']);
+    // The side column comes first in the DOM (on a narrow screen it is on top); D-038: no "Мисия", no "Бележки на курса".
+    expect(h2).toEqual(['Последни дейности', 'Ресурси', 'Уроци', 'Справочници', 'Тестове']);
     // "Уроци" exactly once, in any case (was an h2 and an uppercase h3 eyebrow).
     expect(await course(page).getByText(/^уроци$/i).count()).toBe(1);
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Какви видове чай има?', 'R01 Температура и време за запарване']);
@@ -74,34 +76,30 @@ test.describe('T-011 the course screen: structure', () => {
     await expect(planned.first()).toContainText('зелен чай');
     await expect(planned.first()).toContainText('Скоро');
     await expect(planned.locator('a')).toHaveCount(0);
-    await expect(course(page).locator('[data-field="course-title"]')).toHaveText('Основи на чая');
+    await expect(course(page).locator('h1[data-field="course-title"]')).toHaveText('Основи на чая');
   });
 
-  test('the mission shows the text of MISSION.md (Markdown, without its title) and folds; resources and notes unfold', async ({ page }) => {
+  test('D-038: no mission and no course notes on the screen; the resources unfold', async ({ page }) => {
     await importDemo(page);
     await openCourse(page);
-    const mission = course(page).locator('[data-section="mission"]');
-    await expect(mission).toHaveAttribute('open', '');
-    const text = mission.locator('[data-field="mission-text"]');
-    await expect(text).toBeVisible();
-    await expect(text.locator('h3')).toHaveText(['Защо', 'Успехът изглежда така', 'Ниво']);
-    await expect(text).toContainText('Да различавам основните видове чай и да ги запарвам правилно.');
-    await expect(text.locator('li')).toHaveCount(3);
-    await expect(text).not.toContainText('Мисия: Основи на чая');
-    // Fold and unfold with the heading (keyboard too).
-    await mission.locator('summary').click();
-    await expect(text).toBeHidden();
-    await mission.locator('summary').focus();
+    await expect(course(page).locator('[data-section="mission"], [data-section="notes"], [data-field="mission-text"], [data-field="notes-text"]')).toHaveCount(0);
+    // Nothing of MISSION.md (besides the course name) and of NOTES.md is shown.
+    await expect(course(page)).not.toContainText('Да различавам основните видове чай');
+    await expect(course(page)).not.toContainText('кратки обяснения с примери от кухнята');
+    // The files are still in the course (for the AI teacher, D-016).
+    const meta = await page.evaluate(async () => (await (await import('./src/db.js')).getCourse('LRN-DEMO')).meta);
+    expect(meta.mission).toContain('Да различавам основните видове чай');
+    expect(meta.notes).toContain('кратки обяснения с примери от кухнята');
+    // Resources: collapsed; they open on a tap and with the keyboard.
+    const box = course(page).locator('[data-section="resources"]');
+    await expect(box).not.toHaveAttribute('open', /.*/);
+    await expect(box.locator('[data-field="resources-text"]')).toBeHidden();
+    await box.locator('summary').click();
+    await expect(box.locator('[data-field="resources-text"]')).toContainText('Измислена таблица с температури');
+    await box.locator('summary').focus();
     await page.keyboard.press('Enter');
-    await expect(text).toBeVisible();
-    // Resources and notes are collapsed; they open on a tap.
-    for (const [id, snippet] of [['resources', 'Измислена таблица с температури'], ['notes', 'кратки обяснения с примери от кухнята']]) {
-      const box = course(page).locator(`[data-section="${id}"]`);
-      await expect(box).not.toHaveAttribute('open', /.*/);
-      await expect(box.locator(`[data-field="${id}-text"]`)).toBeHidden();
-      await box.locator('summary').click();
-      await expect(box.locator(`[data-field="${id}-text"]`)).toContainText(snippet);
-    }
+    await expect(box.locator('[data-field="resources-text"]')).toBeHidden();
+    await page.keyboard.press('Enter');
     // An https link in RESOURCES.md opens outside the app.
     const ext = course(page).locator('[data-section="resources"] a[href="https://example.org/tea"]');
     await expect(ext).toHaveAttribute('target', '_blank');
@@ -112,8 +110,8 @@ test.describe('T-011 the course screen: structure', () => {
     await page.evaluate(() => { window.__xss = []; });
     const files = {
       'INDEX.md': strToU8('# LRN-MDX: индекс\n## Уроци\n| # | Заглавие |\n|---|---|\n| 0001 | Урок |\n'),
-      'MISSION.md': strToU8([
-        '# Мисия: Тест',
+      'RESOURCES.md': strToU8([
+        '# Ресурси',
         '<img src=x onerror="__xss.push(1)"> <script>__xss.push(2)</script>',
         '',
         '<div style="color:red" onclick="__xss.push(3)">блок</div>',
@@ -129,7 +127,8 @@ test.describe('T-011 the course screen: structure', () => {
     };
     await importFiles(page, [asFile('LRN-MDX.zip', makeZip(files, { root: 'LRN-MDX' }))]);
     await openCourse(page, 'LRN-MDX');
-    const text = course(page).locator('[data-field="mission-text"]');
+    await course(page).locator('[data-section="resources"] summary').click();
+    const text = course(page).locator('[data-field="resources-text"]');
     await expect(text).toContainText('<img src=x onerror="__xss.push(1)">');
     await expect(text).toContainText('<div style="color:red"');
     await expect(text).toContainText('картинка');
@@ -143,15 +142,15 @@ test.describe('T-011 the course screen: structure', () => {
     expect(await page.evaluate(() => window.__xss)).toEqual([]);
   });
 
-  test('a course without MISSION/RESOURCES/NOTES: the mission says so, the other two are not shown', async ({ page }) => {
+  test('a course without MISSION/RESOURCES/NOTES: no document blocks, the h1 is the course id', async ({ page }) => {
     const files = {
       'INDEX.md': strToU8('# LRN-MIN: индекс\n'),
       'lessons/0001-a.html': strToU8('<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8"><title>А</title></head><body><h1>А</h1></body></html>'),
     };
     await importFiles(page, [asFile('LRN-MIN.zip', makeZip(files, { root: 'LRN-MIN' }))]);
     await openCourse(page, 'LRN-MIN');
-    await expect(course(page).locator('[data-field="mission-text"]')).toHaveText('Курсът няма MISSION.md.');
-    await expect(course(page).locator('[data-section="resources"], [data-section="notes"], [data-section="references"], [data-list="quizzes"] h2')).toHaveCount(0);
+    await expect(course(page).locator('h1[data-field="course-title"]')).toHaveText('LRN-MIN');
+    await expect(course(page).locator('[data-section="mission"], [data-section="resources"], [data-section="notes"], [data-section="references"], [data-list="quizzes"] h2')).toHaveCount(0);
     await expect(course(page).locator('[data-field="activity-empty"]')).toBeVisible();
   });
 });
@@ -188,12 +187,14 @@ test.describe('T-011 layout: the width of the tablet is used, no horizontal scro
       // The screen uses (almost) the whole width — at most 1680 px of content (long lines).
       expect(box.screen.width, `${size.name}: width used`).toBeGreaterThanOrEqual(Math.min(size.width, 1680) - 60);
       if (size.columns === 2) {
-        expect(box.side.left, `${size.name}: the mission is to the right`).toBeGreaterThanOrEqual(box.main.right);
+        expect(box.side.left, `${size.name}: the side column is to the right`).toBeGreaterThanOrEqual(box.main.right);
         expect(Math.abs(box.side.top - box.main.top), `${size.name}: side by side`).toBeLessThan(2);
         expect(box.main.width, `${size.name}: the lessons get the wider column`).toBeGreaterThan(box.side.width);
       } else {
-        expect(box.side.top, `${size.name}: one column`).toBeGreaterThanOrEqual(box.main.bottom);
+        // One column: progress, "Продължи", activity and resources on top, then the lessons.
+        expect(box.main.top, `${size.name}: one column`).toBeGreaterThanOrEqual(box.side.bottom);
         expect(box.side.width).toBeGreaterThan(size.width - 80);
+        expect(box.main.width).toBeGreaterThan(size.width - 80);
       }
     }
   });
@@ -222,17 +223,19 @@ test.describe('T-011 layout: the width of the tablet is used, no horizontal scro
       await page.evaluate(async (t) => (await import('./src/db.js')).saveSettings({ theme: t }), theme);
       await openCourse(page);
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await course(page).locator('[data-section="resources"] summary').click();
       const c = await page.evaluate(() => {
         const color = (sel, prop = 'color') => getComputedStyle(document.querySelector(sel))[prop];
         return {
           bg: getComputedStyle(document.body).backgroundColor,
-          mission: color('[data-field="mission-text"] p'),
+          resources: color('[data-field="resources-text"] li'),
+          title: color('[data-field="course-title"]'),
           meta: color('.course-item__meta'),
           link: color('a.lesson-link'),
-          heading: color('[data-section="mission"] h2'),
+          heading: color('[data-section="resources"] h2'),
         };
       });
-      for (const k of ['mission', 'meta', 'link', 'heading']) expect(contrast(c[k], c.bg), `${theme} ${k}`).toBeGreaterThanOrEqual(4.5);
+      for (const k of ['resources', 'title', 'meta', 'link', 'heading']) expect(contrast(c[k], c.bg), `${theme} ${k}`).toBeGreaterThanOrEqual(4.5);
       if (theme === 'dark') expect(lum(c.bg)).toBeLessThan(0.05);
       else expect(lum(c.bg)).toBeGreaterThan(0.8);
     }

@@ -139,34 +139,56 @@ test.describe('T-012 / T-054 the threshold field', () => {
     await budget.press('ArrowDown');
     await expect(budget).toHaveValue('2.5');
     await expect.poll(() => saved(page)).toBe(2.5);
-    // 30 presses in a row (a held key): what the field shows is what is stored (steps may be lost: T012-D4).
+    // 30 presses in a row (a held key): what the field shows is what is stored, and
+    // (T-011-fix, T012-D4 fixed in 0.8.1) no step is lost: exactly 2.8.
     for (let i = 0; i < 30; i++) await budget.press('ArrowUp');
     await page.waitForTimeout(500);
     const shown = Number(await budget.inputValue());
     expect(await saved(page)).toBe(shown);
-    expect(shown).toBeGreaterThan(2.5);
-    expect(shown).toBeLessThanOrEqual(2.8);
+    expect(shown).toBe(2.8);
     console.log(`T012-D4 30 × ArrowUp from 2.5 → ${shown} (expected 2.8)`);
   });
 
-  test('T012-D4: an arrow pressed while an earlier step is still being saved is lost (the late save writes the older value into the field)', async ({ page }) => {
-    test.fail(true, 'T012-D4: commitBudget() sets the field from the result of ITS save; a slower earlier save overwrites a newer step, and the next arrow steps from that older value');
+  test('T012-D4 (fixed in 0.8.1): an arrow pressed while an earlier step is still being saved is not lost', async ({ page }) => {
+    // T-011-fix (developer): test.fail removed. The trigger of the third press was only
+    // "the first save writes 2.51 back into the field" — exactly what the fix stops, so
+    // with the fix it never fired and the test could not pass. A second trigger is added:
+    // the same moment seen from the store (the transaction of the first save, 2.51, is
+    // complete and its commit has handled the result, while the second save is in
+    // flight). Whichever comes first presses, once; with the old code the first one
+    // still fires first, so the test still catches the defect.
+    // The checks are unchanged: three presses from 2.5 → 2.53 in the field and the store.
     const budget = field(page, 'budget');
     await base(page, '2.5');
     // Deterministic: two presses at once (two saves in flight), then a third press exactly when
-    // the first save has written its value back into the field (a user pressing between two saves).
+    // the first save has finished (a user pressing between two saves).
     const final = await budget.evaluate(async (el) => {
       const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
       let armed = false;
       const press = () => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      const fire = () => { if (armed) { armed = false; queueMicrotask(press); } };
       Object.defineProperty(el, 'value', {
         configurable: true,
         get() { return proto.get.call(this); },
         set(v) {
           proto.set.call(this, v);
-          if (armed && v === '2.51') { armed = false; queueMicrotask(press); }
+          if (v === '2.51') fire();
         },
       });
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, ...rest) {
+        const req = put.call(this, value, ...rest);
+        if (this.name === 'settings' && value?.monthlyBudgetUSD === 2.51) {
+          // After the transaction: let the first commit run its continuation (a few
+          // microtasks), but stay before the next task (the second save's "complete").
+          this.transaction.addEventListener('complete', () => {
+            let p = Promise.resolve();
+            for (let i = 0; i < 50; i++) p = p.then(() => {});
+            p.then(fire);
+          });
+        }
+        return req;
+      };
       press();
       press();
       armed = true;

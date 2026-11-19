@@ -1,5 +1,6 @@
-// Markdown of the course files (MISSION.md, RESOURCES.md, NOTES.md) → DOM,
-// for the app's own documents (ARCHITECTURE §5: marked → DOMPurify → DOM).
+// Markdown of the course files (RESOURCES.md on the course screen; MISSION.md
+// and NOTES.md are not shown there since D-038) → DOM, for the app's own
+// documents (ARCHITECTURE §5: marked → DOMPurify → DOM).
 //
 // Safety: the course is the user's own (D-037), but its text is still treated
 // as untrusted:
@@ -12,6 +13,9 @@
 //   a link to a lesson or reference of the course opens the reader; anything
 //   else (relative files such as sources/*.pdf, mailto:, javascript:…) loses
 //   its href and stays as text.
+// Robustness (T012-D1/D2): a document never breaks the screen it is shown on.
+// Quote nesting is capped before marked (it recurses once per level), and any
+// error while rendering gives a short note plus the file as plain text.
 import { Marked } from '../vendor/marked.js';
 import DOMPurify from '../vendor/purify.js';
 
@@ -38,6 +42,42 @@ function makeParser(headingOffset) {
   });
 }
 
+/** Deepest blockquote nesting passed to marked (T012-D2: thousands of ">" overflow its stack). */
+export const MAX_QUOTE_DEPTH = 50;
+/**
+ * Widest leading indentation passed to marked, in characters: list nesting by
+ * indentation costs marked far more than linear time (1000 levels ≈ 6 s, 3000
+ * would freeze the screen); 120 is 60 levels of 2 spaces, 30 of 4.
+ */
+export const MAX_INDENT = 120;
+
+/**
+ * Cap the nesting of every line before marked: at most MAX_QUOTE_DEPTH ">"
+ * markers (the deeper ones are dropped) and at most MAX_INDENT characters of
+ * leading spaces/tabs (deeper lines stay at that depth). Text is never dropped.
+ */
+export function limitNesting(md) {
+  const quotes = new RegExp(`^([ \\t]*)(?:>[ \\t]*){${MAX_QUOTE_DEPTH + 1},}`, 'gm');
+  const indent = new RegExp(`^[ \\t]{${MAX_INDENT + 1},}`, 'gm');
+  return md
+    .replace(quotes, (_, lead) => `${lead}${'> '.repeat(MAX_QUOTE_DEPTH)}`)
+    .replace(indent, ' '.repeat(MAX_INDENT));
+}
+
+/**
+ * Decode a %-encoded path; null when it is malformed (T012-D1: "100%.pdf",
+ * "%zz" make decodeURIComponent throw a URIError).
+ * @param {string} s
+ * @returns {string|null}
+ */
+export function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Drop the first level-1 heading (the title of MISSION.md, shown elsewhere).
  * @param {string} md
@@ -53,8 +93,26 @@ export function withoutTitle(md) {
  *   headingOffset: added to every heading level (min h2), so the document fits under the
  *   section heading; resolveLink: maps a relative href to an app hash link (or null).
  */
-export function renderMarkdown(md, { headingOffset = 2, resolveLink = () => null } = {}) {
-  const html = makeParser(headingOffset).parse(String(md ?? ''), { async: false });
+export function renderMarkdown(md, options = {}) {
+  try {
+    return renderUnsafe(md, options);
+  } catch (err) {
+    // T012-D1/D2: one bad document is a note in its own block, never a broken screen.
+    console.warn('EasyLRN: Markdown not rendered, shown as plain text:', err);
+    const fragment = document.createDocumentFragment();
+    const note = document.createElement('p');
+    note.className = 'muted md__fallback-note';
+    note.textContent = 'Този текст не може да се покаже форматиран; показан е като обикновен текст.';
+    const plain = document.createElement('div');
+    plain.className = 'md__plain';
+    plain.textContent = String(md ?? '');
+    fragment.append(note, plain);
+    return fragment;
+  }
+}
+
+function renderUnsafe(md, { headingOffset = 2, resolveLink = () => null } = {}) {
+  const html = makeParser(headingOffset).parse(limitNesting(String(md ?? '')), { async: false });
   const fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
@@ -77,7 +135,11 @@ export function renderMarkdown(md, { headingOffset = 2, resolveLink = () => null
       a.classList.add('md__external');
       continue;
     }
-    const local = /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') ? null : resolveLink(href);
+    let local = null;
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('//')) {
+      // A link resolver that throws (e.g. on a malformed %-escape) only kills this link.
+      try { local = resolveLink(href); } catch { local = null; }
+    }
     if (local) {
       a.setAttribute('href', local);
       continue;

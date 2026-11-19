@@ -2,7 +2,7 @@
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
 import { listCourses, listLessons } from '../db.js';
-import { importCourse, describeSummary, errorMessage, plural } from '../course-import.js';
+import { importCourse, describeSummary, errorMessage, plural, courseName } from '../course-import.js';
 
 const PHASES = {
   read: 'Чета файловете…',
@@ -27,7 +27,7 @@ async function courseCard(course) {
   const nRefs = lessons.length - nLessons;
   return h('a', { class: 'card card--course', href: link('c', course.id), 'data-course': course.id },
     h('p', { class: 'card__eyebrow', text: course.id }),
-    h('p', { class: 'card__title', text: course.title || course.id }),
+    h('p', { class: 'card__title', text: courseName(course) }),
     h('p', { class: 'card__meta', text: `${plural(nLessons, 'урок', 'урока')} · ${plural(nRefs, 'справочник', 'справочника')}` }),
     // T-011: the progress of the course.
     nLessons ? h('p', { class: 'card__meta card__progress', 'data-field': 'course-progress', text: progressText(lessons) }) : null,

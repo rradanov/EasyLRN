@@ -5,6 +5,10 @@
 //   style with url(), form, meta refresh, entity tricks, reference links,
 //   autolinks, protocol-relative links, path traversal);
 // - T012-D*: defects (with test.fail, so the suite stays green);
+// T-011-fix (developer, 0.8.1, D-038): the course screen no longer shows
+// MISSION.md and NOTES.md. The tests that read the mission/notes now check
+// that nothing of them is shown or runs; the Markdown checks moved to
+// RESOURCES.md (still shown). T012-D1..D3 are fixed: their test.fail is gone.
 // - T012-I*: information.
 // - layout at 1920×1200, 1280×800, 1200×1920, 800×1280, 360×800 with long
 //   titles, long words/URLs, wide tables, 200 lessons, text at 160 %;
@@ -165,15 +169,19 @@ test.describe('T012-S security of the course screen', () => {
     await page.evaluate(() => { window.__xss = []; });
     await importCourse(page, 'LRN-XSS', {
       'INDEX.md': indexMd('LRN-XSS', ['0001']),
-      'MISSION.md': HOSTILE_MD,
+      'MISSION.md': `${HOSTILE_MD}\n\nМАРКЕР-НА-МИСИЯТА`,
       'RESOURCES.md': HOSTILE_MD.replace('# Мисия', '# Ресурси'),
-      'NOTES.md': HOSTILE_MD.replace('# Мисия', '# Бележки'),
+      'NOTES.md': `${HOSTILE_MD.replace('# Мисия', '# Бележки')}\n\nМАРКЕР-НА-БЕЛЕЖКИТЕ`,
       'lessons/0001-a.html': lessonHtml('Урок А'),
     });
     await openCourse(page, 'LRN-XSS');
     const url = page.url();
-    for (const id of ['resources', 'notes']) await course(page).locator(`[data-section="${id}"] summary`).click();
-    for (const id of ['mission', 'resources', 'notes']) await expect(course(page).locator(`[data-field="${id}-text"]`)).toBeVisible();
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"]')).toBeVisible();
+    // D-038: the mission and the notes are not on the screen at all (only the course name, from MISSION's heading).
+    await expect(course(page).locator('[data-section="mission"], [data-section="notes"], [data-field="mission-text"], [data-field="notes-text"]')).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('МАРКЕР-НА-МИСИЯТА');
+    await expect(page.locator('body')).not.toContainText('МАРКЕР-НА-БЕЛЕЖКИТЕ');
     // Hover and focus everything, then wait for a refresh/redirect that should not come.
     for (const el of (await course(page).locator('.md *').all()).slice(0, 150)) await el.hover({ force: true, timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(1500);
@@ -181,7 +189,7 @@ test.describe('T012-S security of the course screen', () => {
     expect(await page.evaluate(() => window.__xss)).toEqual([]);
 
     const audit = await mdAudit(page);
-    expect(audit.docs).toBe(3);
+    expect(audit.docs).toBe(1); // RESOURCES only (D-038)
     expect(audit.tags.filter((t) => !ALLOWED.has(t))).toEqual([]);
     // Attributes: only href/title/start/type/checked/disabled from DOMPurify + what the app adds.
     expect(audit.attrs.filter((a) => !['href', 'start', 'type', 'checked', 'disabled', 'target', 'rel', 'referrerpolicy', 'class'].includes(a))).toEqual([]);
@@ -198,14 +206,14 @@ test.describe('T012-S security of the course screen', () => {
     await expect(page.locator('body img, body svg:not([aria-hidden]) script, body iframe, body form, body style, body meta, body base, body object, body embed, body link')).toHaveCount(0);
     await expect(page.locator('[style], [onerror], [onload], [onclick], [onmouseover], [ontoggle], [onfocus]')).toHaveCount(0);
     // The raw HTML is shown as text (the user sees what is in the file).
-    await expect(course(page).locator('[data-field="mission-text"]')).toContainText('<script>__xss.push("script")</script>');
+    await expect(course(page).locator('[data-field="resources-text"]')).toContainText('<script>__xss.push("script")</script>');
     // The title (from the first heading) is text too.
     await expect(course(page).locator('[data-field="course-title"]')).toContainText('<img src=x onerror=');
     // The page still looks like the app (the <style> did not hide everything).
     await expect(course(page).locator('[data-section="lessons"]')).toBeVisible();
     // Clicking every link that stays: https opens a new page (aborted by the route), the course link opens the reader.
     const popup = page.waitForEvent('popup', { timeout: 5000 });
-    await course(page).locator('[data-field="mission-text"] a[href="https://example.org/ref"]').click();
+    await course(page).locator('[data-field="resources-text"] a[href="https://example.org/ref"]').click();
     const p = await popup;
     // The new page is aborted by the test route (no network to example.org): an error page, never the app.
     expect(p.url()).not.toContain('localhost');
@@ -268,8 +276,9 @@ test.describe('T012-S security of the course screen', () => {
     await importCourse(page, 'LRN-OTHER', { 'INDEX.md': indexMd('LRN-OTHER', ['0001']), 'lessons/0001-a.html': lessonHtml('Чужд урок') });
     await importCourse(page, 'LRN-LNK', {
       'INDEX.md': indexMd('LRN-LNK', ['0001']),
-      'MISSION.md': [
-        '# Мисия: Линкове',
+      // T-011-fix: in RESOURCES.md (MISSION.md is not shown since D-038); the same links.
+      'RESOURCES.md': [
+        '# Ресурси: Линкове',
         '[1](lessons/0001-a.html) [2](./lessons/0001-a.html) [3](lessons/0001-a.html#sec) [4](lessons/0001-a.html?x=1)',
         '[5](lessons/0001%2Da.html) [6](LESSONS/0001-a.html) [7](../LRN-OTHER/lessons/0001-a.html) [8](/lessons/0001-a.html)',
         '[9](lessons/./0001-a.html) [10](lessons/x/../0001-a.html) [11](lessons/0001-a.html/) [12](%2E%2E/LRN-OTHER/lessons/0001-a.html)',
@@ -277,51 +286,67 @@ test.describe('T012-S security of the course screen', () => {
       'lessons/0001-a.html': lessonHtml('Свой урок'),
     });
     await openCourse(page, 'LRN-LNK');
-    const links = await course(page).locator('[data-field="mission-text"] a').evaluateAll((as) => as.map((a) => [a.textContent, a.getAttribute('href')]));
+    await course(page).locator('[data-section="resources"] summary').click();
+    const links = await course(page).locator('[data-field="resources-text"] a').evaluateAll((as) => as.map((a) => [a.textContent, a.getAttribute('href')]));
     console.log(`T012-S3 links: ${JSON.stringify(links)}`);
     for (const [, href] of links) expect(href).toBe('#/c/LRN-LNK/read/0001');
     const texts = links.map(([t]) => t);
     for (const t of ['1', '2', '3', '4']) expect(texts).toContain(t);
     for (const t of ['7', '8', '12']) expect(texts).not.toContain(t);
-    await course(page).locator('[data-field="mission-text"] a', { hasText: /^1$/ }).click();
+    await course(page).locator('[data-field="resources-text"] a', { hasText: /^1$/ }).click();
     await expect(page).toHaveURL(/#\/c\/LRN-LNK\/read\/0001$/);
     await waitReady(page);
     await expect(page.frameLocator('iframe.lesson-frame').locator('h1')).toHaveText('Свой урок');
   });
 
-  test('T012-D1: one malformed %-escape in a relative link of MISSION/RESOURCES/NOTES breaks the whole course screen', async ({ page }) => {
-    test.fail(true, 'T012-D1: resolveLink() in src/screens/course.js calls decodeURIComponent() on the href without try/catch; "[x](%zz)" throws URIError and the screen shows "Курсът не може да се зареди." (no lessons, no mission)');
+  test('T012-D1 (fixed in 0.8.1): a malformed %-escape in a relative link of MISSION/RESOURCES/NOTES does not break the course screen', async ({ page }) => {
+    const md = (title) => `# ${title}\n\nВиж [източника](sources/100%.pdf), [x](%zz) и [урока](lessons/0001-a.html).`;
     await importCourse(page, 'LRN-PCT', {
       'INDEX.md': indexMd('LRN-PCT', ['0001']),
-      'MISSION.md': '# Мисия: Процент\n\nВиж [източника](sources/100%.pdf) и [урока](lessons/0001-a.html).',
+      'MISSION.md': md('Мисия: Процент'),
+      'RESOURCES.md': md('Ресурси'),
+      'NOTES.md': md('Бележки'),
       'lessons/0001-a.html': lessonHtml('Урок А'),
     });
     await page.goto('./#/c/LRN-PCT');
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Урок А'], { timeout: 5000 });
-    await expect(course(page).locator('[data-field="mission-text"]')).toContainText('източника');
+    // RESOURCES is shown: the broken links are dead text, the good course link stays a link.
+    const res = course(page).locator('[data-field="resources-text"]');
+    await expect(res).toContainText('източника');
+    await expect(res.locator('a')).toHaveCount(1);
+    await expect(res.locator('a')).toHaveAttribute('href', '#/c/LRN-PCT/read/0001');
+    await expect(res.locator('.md__dead-link')).toHaveText(['източника', 'x']);
+    // MISSION/NOTES: not shown (D-038); the screen works.
+    await expect(course(page).locator('[data-section="mission"], [data-section="notes"]')).toHaveCount(0);
+    await expect(course(page).locator('[data-action="continue"]')).toBeVisible();
   });
 
-  test('T012-D2: a very deep blockquote (3000 ">") in MISSION.md breaks the whole course screen (stack overflow in marked)', async ({ page }) => {
-    test.fail(true, 'T012-D2: marked recurses once per ">" level; at ~3000 levels it throws RangeError and the screen shows "Курсът не може да се зареди." 800 levels still work (DOMPurify cuts the depth at 511)');
+  test('T012-D2 (fixed in 0.8.1): a very deep blockquote (3000 ">") in MISSION.md or RESOURCES.md does not break the course screen', async ({ page }) => {
     await importCourse(page, 'LRN-DEEP', {
       'INDEX.md': indexMd('LRN-DEEP', ['0001']),
       'MISSION.md': `# Мисия: Дълбоко\n\n${'> '.repeat(3000)}дълбоко`,
+      'RESOURCES.md': `# Ресурси\n\n${'> '.repeat(3000)}дълбоко в ресурсите`,
       'lessons/0001-a.html': lessonHtml('Урок А'),
     });
     await page.goto('./#/c/LRN-DEEP');
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Урок А'], { timeout: 5000 });
+    // The resources still show their text (the nesting is capped).
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"]')).toContainText('дълбоко в ресурсите');
   });
 
   test('T012-I6 absurd nesting (800 quotes, 300 list levels) renders and the screen stays usable (it scrolls sideways — information)', async ({ page }) => {
     await importCourse(page, 'LRN-NEST', {
       'INDEX.md': indexMd('LRN-NEST', ['0001']),
-      'MISSION.md': `# Мисия: Вложено\n\n${'> '.repeat(800)}цитат\n\n${Array.from({ length: 300 }, (_, i) => `${'  '.repeat(i)}- ниво ${i}`).join('\n')}`,
+      // T-011-fix: in RESOURCES.md (MISSION.md is not shown since D-038).
+      'RESOURCES.md': `# Ресурси: Вложено\n\n${'> '.repeat(800)}цитат\n\n${Array.from({ length: 300 }, (_, i) => `${'  '.repeat(i)}- ниво ${i}`).join('\n')}`,
       'NOTES.md': `# Бележки\n\n${'> '.repeat(800)}x`,
       'lessons/0001-a.html': lessonHtml('Урок А'),
     });
     await openCourse(page, 'LRN-NEST');
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Урок А']);
-    await expect(course(page).locator('[data-field="mission-text"]')).toContainText('цитат');
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"]')).toContainText('цитат');
     const sw = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     // Every level indents a little; hundreds of levels are wider than any screen. Information only.
     console.log(`T012-I6 scrollWidth ${sw[0]} / clientWidth ${sw[1]}`);
@@ -333,10 +358,13 @@ test.describe('T012-S security of the course screen', () => {
     const list = Array.from({ length: 8 }, (_, i) => `${'   '.repeat(i)}- ниво ${i} с малко текст за пренасяне на реда`).join('\n');
     await importCourse(page, 'LRN-NEST8', {
       'INDEX.md': indexMd('LRN-NEST8', ['0001']),
-      'MISSION.md': `# Мисия: Вложено\n\n${list}\n\n${'> '.repeat(5)}цитат с текст, който се пренася на няколко реда\n\n1. точка\n   1. подточка\n      - [ ] задача\n      - [x] готова`,
+      // T-011-fix: in RESOURCES.md (MISSION.md is not shown since D-038); opened before measuring.
+      'RESOURCES.md': `# Ресурси: Вложено\n\n${list}\n\n${'> '.repeat(5)}цитат с текст, който се пренася на няколко реда\n\n1. точка\n   1. подточка\n      - [ ] задача\n      - [x] готова`,
       'lessons/0001-a.html': lessonHtml('Урок А'),
     });
     await openCourse(page, 'LRN-NEST8');
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"]')).toContainText('готова');
     const box = await layoutBox(page);
     expect(box.scrollW).toBeLessThanOrEqual(box.clientW);
     expect(box.wide).toEqual([]);
@@ -373,13 +401,16 @@ async function layoutBox(page) {
 }
 
 test.describe('T-012 layout: two columns from 900 px, one below, never a horizontal scroll', () => {
-  test('long titles, long words and URLs, wide table and code in the mission; 5 sizes; text at 160 %', async ({ page }) => {
+  test('long titles, long words and URLs, wide table and code in the resources; 5 sizes; text at 160 %', async ({ page }) => {
     test.setTimeout(90000);
     const many = Array.from({ length: 12 }, (_, i) => pad4(i + 1));
     const files = {
       'INDEX.md': indexMd('LRN-WIDE', many, `\n## План\n- 0013: ${LONG_WORD}\n`),
-      'MISSION.md': [
-        `# Мисия: ${LONG_WORD}`,
+      // The long course name comes from MISSION.md (the h1); the wide Markdown is in
+      // RESOURCES.md since T-011-fix (MISSION.md is not shown, D-038).
+      'MISSION.md': `# Мисия: ${LONG_WORD}\n\nТекст.`,
+      'RESOURCES.md': [
+        `# Ресурси`,
         `## ${LONG_WORD}`,
         `Дума: ${LONG_WORD}`,
         `Адрес: ${LONG_URL} и [линк](${LONG_URL})`,
@@ -390,8 +421,8 @@ test.describe('T-012 layout: two columns from 900 px, one below, never a horizon
         `| ${Array.from({ length: 30 }, () => 'стойност').join(' | ')} |`,
         `- ${LONG_WORD}`,
         `> ${LONG_WORD}`,
+        LONG_URL,
       ].join('\n\n'),
-      'RESOURCES.md': `# Ресурси\n\n${LONG_URL}\n`,
     };
     for (const n of many) files[`lessons/${n}-urok.html`] = lessonHtml(n === '0001' ? LONG_WORD : `Урок ${n} с дълго заглавие, което се пренася на няколко реда при тесен екран`);
     await importCourse(page, 'LRN-WIDE', files);
@@ -411,7 +442,8 @@ test.describe('T-012 layout: two columns from 900 px, one below, never a horizon
           expect(box.side.left, `${tag}: side column to the right`).toBeGreaterThanOrEqual(box.main.right);
           expect(Math.abs(box.side.top - box.main.top), `${tag}: side by side`).toBeLessThan(2);
         } else if (size.columns === 1) {
-          expect(box.side.top, `${tag}: one column`).toBeGreaterThanOrEqual(box.main.bottom - 1);
+          // T-011-fix: one column puts the side (progress, "Продължи", activity, resources) above the lessons.
+          expect(box.main.top, `${tag}: one column`).toBeGreaterThanOrEqual(box.side.bottom - 1);
         }
         if (scale === '160%' && size.width >= 900) console.log(`T012 ${tag}: columns ${box.side.left >= box.main.right ? 2 : 1}`);
       }
@@ -458,22 +490,24 @@ test.describe('T-012 layout: two columns from 900 px, one below, never a horizon
     await expect(page.locator('[data-course="LRN-BIG"] [data-field="course-progress"]')).toHaveText('Завършени: 0 от 200');
   });
 
-  test('a 100 KB MISSION.md renders in reasonable time and does not widen the page', async ({ page }) => {
+  test('a 100 KB RESOURCES.md (and MISSION.md, not shown) renders in reasonable time and does not widen the page', async ({ page }) => {
     const para = 'Измислен абзац за мисията на курса, който се повтаря много пъти, за да стане файлът голям. ';
     const md = `# Мисия: Голяма\n\n${Array.from({ length: 900 }, (_, i) => `${i % 50 === 0 ? `## Раздел ${i}\n\n` : ''}${para}${i % 7 === 0 ? `**${LONG_WORD.slice(0, 200)}**` : ''}`).join('\n\n')}`;
     expect(md.length).toBeGreaterThan(100000);
-    await importCourse(page, 'LRN-HUGE', { 'INDEX.md': indexMd('LRN-HUGE', ['0001']), 'MISSION.md': md, 'lessons/0001-a.html': lessonHtml('Урок А') });
+    // T-011-fix: the big document is RESOURCES.md (MISSION.md is not shown since D-038).
+    await importCourse(page, 'LRN-HUGE', { 'INDEX.md': indexMd('LRN-HUGE', ['0001']), 'MISSION.md': md, 'RESOURCES.md': md.replace('# Мисия: Голяма', '# Ресурси'), 'lessons/0001-a.html': lessonHtml('Урок А') });
     const t0 = Date.now();
     await openCourse(page, 'LRN-HUGE');
-    await expect(course(page).locator('[data-field="mission-text"] h3').first()).toHaveText('Раздел 0');
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"] h3').first()).toHaveText('Раздел 0');
     const ms = Date.now() - t0;
-    console.log(`T012 100 KB mission: ${ms} ms`);
+    console.log(`T012 100 KB resources: ${ms} ms`);
     expect(ms).toBeLessThan(5000);
     const box = await layoutBox(page);
     expect(box.scrollW).toBeLessThanOrEqual(box.clientW);
     // Folding a huge block works.
-    await course(page).locator('[data-section="mission"] summary').click();
-    await expect(course(page).locator('[data-field="mission-text"]')).toBeHidden();
+    await course(page).locator('[data-section="resources"] summary').click();
+    await expect(course(page).locator('[data-field="resources-text"]')).toBeHidden();
   });
 });
 
@@ -491,7 +525,9 @@ test.describe('T-012 edge courses', () => {
     await expect(course(page).locator('[data-list="lessons"]')).toHaveText('В курса няма уроци.');
     await expect(course(page).locator('progress, [data-action="continue"], [data-section="lessons"], [data-section="references"]')).toHaveCount(0);
     await expect(course(page).locator('[data-list="quizzes"] [data-quiz]')).toHaveCount(1);
-    await expect(course(page).locator('[data-field="mission-text"]')).toHaveText('Курсът няма MISSION.md.');
+    // D-038: no mission block at all (before: "Курсът няма MISSION.md."); the h1 is the course id.
+    await expect(course(page).locator('[data-section="mission"]')).toHaveCount(0);
+    await expect(course(page).locator('h1[data-field="course-title"]')).toHaveText('LRN-QONLY');
     await expect(course(page).locator('[data-field="activity-empty"]')).toBeVisible();
     // The quiz still works from here; its activity is listed.
     await course(page).locator('a.quiz-list__link').click();
@@ -543,7 +579,7 @@ test.describe('T-012 edge courses', () => {
     expect(await course(page).getByText(/^уроци$/i).count()).toBe(1);
   });
 
-  test('re-import: an unchanged and a CHANGED lesson keep "завършен"; a renamed lesson file is a new lesson (T012-I4)', async ({ page }) => {
+  test('re-import: an unchanged and a CHANGED lesson keep "завършен"; a renamed lesson file is the same lesson (T012-I4, 0.8.1)', async ({ page }) => {
     await importDemo(page);
     await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: '2026-11-18T10:00:00.000Z', lastOpenedAt: '2026-11-18T09:00:00.000Z', scrollY: 321 }), DEMO_LESSON);
     const path = 'lessons/0001-vidove-chay.html';
@@ -553,7 +589,7 @@ test.describe('T-012 edge courses', () => {
     expect(await progressOf(page, DEMO_LESSON)).toMatchObject({ status: 'done', completedAt: '2026-11-18T10:00:00.000Z', scrollY: 321 });
     await openCourse(page);
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
-    // A renamed file (same number) is another lesson: the old one stays (with its progress), the new one is "нов".
+    // T-011-fix: a renamed file (same number) is the same lesson: one "0001", with its progress.
     const renamed = { ...FILES };
     delete renamed[path];
     renamed['lessons/0001-vidove-chay-v2.html'] = changed;
@@ -561,7 +597,9 @@ test.describe('T-012 edge courses', () => {
     await openCourse(page);
     const zeros = course(page).locator('[data-section="lessons"] [data-lesson] .import__num', { hasText: '0001' });
     console.log(`T012-I4 after renaming the file of 0001: ${await zeros.count()} entries "0001"`);
-    expect(await zeros.count()).toBeGreaterThanOrEqual(1);
+    expect(await zeros.count()).toBe(1);
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    expect(await progressOf(page, 'LRN-DEMO/lessons/0001-vidove-chay-v2.html')).toMatchObject({ status: 'done', completedAt: '2026-11-18T10:00:00.000Z', scrollY: 321 });
     // "Продължи" never points to nothing.
     const href = await course(page).locator('[data-action="continue"]').getAttribute('href');
     await page.goto(`./${href}`);
@@ -700,12 +738,13 @@ test.describe('T-012 progress and navigation', () => {
     const has = (re) => seen.some((s) => re.test(s));
     expect(has(/\|continue$/), seen.join('\n')).toBe(true);
     expect(has(/^A\|0001 Какви видове чай/)).toBe(true);
-    expect(has(/^SUMMARY\|Мисия/)).toBe(true);
+    expect(has(/^SUMMARY\|Мисия/)).toBe(false); // D-038: no mission block
     expect(has(/^SUMMARY\|Ресурси/)).toBe(true);
-    // "Продължи" comes before the lesson list, the lessons before the side column (reading order).
+    // T-011-fix: the side column (progress, "Продължи", activity, resources) comes first in
+    // the DOM — on a narrow screen it is on top — so: "Продължи", then "Ресурси", then the lessons.
     const idx = (re) => seen.findIndex((s) => re.test(s));
-    expect(idx(/\|continue$/)).toBeLessThan(idx(/^A\|0001 Какви/));
-    expect(idx(/^A\|0001 Какви/)).toBeLessThan(idx(/^SUMMARY\|Мисия/));
+    expect(idx(/\|continue$/)).toBeLessThan(idx(/^SUMMARY\|Ресурси/));
+    expect(idx(/^SUMMARY\|Ресурси/)).toBeLessThan(idx(/^A\|0001 Какви/));
     // Space and Enter fold/unfold the resources.
     const res = course(page).locator('[data-section="resources"]');
     await res.locator('summary').focus();
@@ -725,7 +764,7 @@ test.describe('T-012 progress and navigation', () => {
     await expect(page.getByRole('button', { name: '✓ Завършен', pressed: true })).toBeVisible();
   });
 
-  test('headings: h1 then h2 per section, h3 inside the mission (no skipped level); the fold headings are named buttons with their state', async ({ page }) => {
+  test('headings: h1 (the course name) then h2 per section (no skipped level); the fold headings are named buttons with their state', async ({ page }) => {
     await importDemo(page);
     await openCourse(page);
     const levels = await page.evaluate(() => [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')]
@@ -735,15 +774,18 @@ test.describe('T-012 progress and navigation', () => {
     expect(levels[0][0]).toBe(1);
     expect(levels.filter(([l]) => l === 1)).toHaveLength(1);
     for (let i = 1; i < levels.length; i++) expect(levels[i][0] - levels[i - 1][0], JSON.stringify(levels[i])).toBeLessThanOrEqual(1);
-    // T012-I5 (information): the h1 is the course id (app bar), the course title is a <p>.
-    console.log(`T012-I5 h1 = "${levels[0][1]}", title paragraph = "${await course(page).locator('[data-field="course-title"]').textContent()}"`);
+    // T012-I5 (fixed in 0.8.1): the h1 is the course name (from MISSION.md), the app bar shows the id as text.
+    console.log(`T012-I5 h1 = "${levels[0][1]}", title = "${await course(page).locator('[data-field="course-title"]').textContent()}"`);
+    expect(levels[0][1]).toBe('Основи на чая');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Основи на чая');
     // Headings are exposed to assistive technology (also those inside <summary>).
-    for (const name of ['Уроци', 'Мисия', 'Последни дейности', 'Ресурси', 'Бележки на курса']) {
+    for (const name of ['Уроци', 'Последни дейности', 'Ресурси']) {
       await expect(page.getByRole('heading', { name, exact: true })).toHaveCount(1);
     }
+    for (const name of ['Мисия', 'Бележки на курса']) await expect(page.getByRole('heading', { name, exact: true })).toHaveCount(0); // D-038
     // The <summary> elements carry the expanded state (Chromium maps <details open> natively).
     const states = await page.evaluate(() => [...document.querySelectorAll('[data-screen="course"] details')].map((d) => [d.dataset.section, d.open]));
-    expect(states).toEqual([['mission', true], ['resources', false], ['notes', false]]);
+    expect(states).toEqual([['resources', false]]);
     // What Chromium gives to assistive technology: the <summary> is a disclosure button with "expanded".
     const cdp = await page.context().newCDPSession(page);
     const triangles = async () => (await cdp.send('Accessibility.getFullAXTree')).nodes
@@ -751,10 +793,11 @@ test.describe('T-012 progress and navigation', () => {
       .map((n) => [n.name?.value, (n.properties || []).find((p) => p.name === 'expanded')?.value?.value]);
     const before = await triangles();
     console.log(`T012-I7 disclosure buttons: ${JSON.stringify(before)}`);
-    expect(before.map(([, e]) => e)).toEqual([true, false, false]);
-    for (const [name] of before) expect(name).toMatch(/Мисия|Ресурси|Бележки на курса/);
+    expect(before.map(([, e]) => e)).toEqual([false]);
+    // T012-I7 (fixed in 0.8.1): the name is the heading only, without the "▸" of the CSS.
+    for (const [name] of before) expect(name).toBe('Ресурси');
     await course(page).locator('[data-section="resources"] summary').click();
-    expect((await triangles()).map(([, e]) => e)).toEqual([true, true, false]);
+    expect((await triangles()).map(([, e]) => e)).toEqual([true]);
   });
 
   test('recent activity: at most 6, newest first, with "днес"/"вчера"/date; links open the right thing', async ({ page }) => {
@@ -787,7 +830,7 @@ test.describe('T-012 progress and navigation', () => {
     await expect(course(page).locator('[data-action="continue"]')).toHaveText('Продължи: урок 0003 — Урок 0003');
   });
 
-  test('offline: the course screen with the rendered mission, status and "Продължи" works without network (markdown.js in the shell)', async ({ page, context }) => {
+  test('offline: the course screen with the rendered resources, status and "Продължи" works without network (markdown.js in the shell)', async ({ page, context }) => {
     await importDemo(page);
     const cached = await page.evaluate(async () => {
       const out = [];
@@ -798,7 +841,8 @@ test.describe('T-012 progress and navigation', () => {
     await context.setOffline(true);
     await page.goto('./#/c/LRN-DEMO');
     await page.reload();
-    await expect(course(page).locator('[data-field="mission-text"] h3').first()).toHaveText('Защо');
+    // T-011-fix: the resources (MISSION.md is not shown since D-038).
+    await expect(course(page).locator('[data-field="resources-text"] h3').first()).toHaveText('Основни');
     await course(page).locator('a.lesson-link', { hasText: 'Какви видове чай' }).click();
     await waitReady(page);
     await page.locator('[data-action="complete"]').click();
@@ -883,14 +927,14 @@ test.describe('T-012 themes', () => {
       for (const k of ['status', 'progress', 'activity', 'summary', 'external']) expect(contrast(c[k], c.bg), `${theme} ${k}`).toBeGreaterThanOrEqual(4.5);
     });
 
-    test(`T012-D3 ${theme}: the "Скоро — още не е импортиран" line of a planned lesson has contrast below 4.5`, async ({ page }) => {
-      test.fail(true, 'T012-D3: .course-item--planned { opacity: 0.6 } over the muted meta color gives ~2.7:1 (light) / ~3.3:1 (dark) for the "Скоро" line — below WCAG 1.4.3 (4.5:1) for 14 px text');
+    test(`T012-D3 ${theme} (fixed in 0.8.1): the "Скоро — още не е импортиран" line of a planned lesson has contrast ≥ 4.5`, async ({ page }) => {
       await importDemo(page);
       await page.evaluate(async (t) => (await import('./src/db.js')).saveSettings({ theme: t }), theme);
       await openCourse(page);
       const c = await colors(page);
       console.log(`T012-D3 ${theme}: planned title ${contrast(c.plannedTitle, c.bg).toFixed(2)}, planned meta ${contrast(c.plannedMeta, c.bg).toFixed(2)}`);
       expect(contrast(c.plannedMeta, c.bg)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(c.plannedTitle, c.bg)).toBeGreaterThanOrEqual(4.5);
     });
   }
 });

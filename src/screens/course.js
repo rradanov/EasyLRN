@@ -1,13 +1,17 @@
-// Screen "Курс" (#/c/<courseId>), T-011 (UI-DESIGN §3, F1).
+// Screen "Курс" (#/c/<courseId>), T-011 (UI-DESIGN §3, F1), T-011-fix (D-038).
 //
-// Two columns on a wide screen (tablet landscape 1280/1920 px and portrait
-// 1200 px), one below 900 px:
-// - main: the progress of the course and "Продължи"; "Уроци" and
-//   "Справочници" in INDEX order with their status (○ нов, ◐ започнат,
-//   ● завършен), counters and the lessons planned in INDEX.md that are not
-//   imported yet ("скоро"); "Тестове" (D-032) with their status and "Нулирай";
-// - side: "Мисия" (the text of MISSION.md, rendered Markdown, collapsible),
-//   "Последни дейности", "Ресурси" and "Бележки на курса" (collapsed).
+// The course name is the h1 (T012-I5); the app bar shows the course id as
+// plain text on this screen. Two columns on a wide screen (tablet landscape
+// 1280/1920 px and portrait 1200 px), one below 900 px:
+// - side (right; first when narrow, so "Продължи" is at the top): the
+//   progress of the course and "Продължи", "Последни дейности", "Ресурси"
+//   (RESOURCES.md, rendered Markdown, collapsed);
+// - main (left, wider): "Уроци" and "Справочници" in INDEX order with their
+//   status (○ нов, ◐ започнат, ● завършен), counters and the lessons planned
+//   in INDEX.md that are not imported yet ("скоро"); "Тестове" (D-032) with
+//   their status and "Нулирай".
+// D-038: MISSION.md and NOTES.md are not shown here; they stay in the course
+// (imported as before) as context for the AI teacher (D-016).
 // Every heading of a section is there once (the T-008 user check saw
 // "Уроци" twice).
 import { h, mount } from '../dom.js';
@@ -15,11 +19,12 @@ import {
   getCourse, listLessons, listQuizzes, getQuizAnswers, scoreQuiz, resetQuizAnswers,
   annotationsOfCourse, threadsFor, byIndex, STORES,
 } from '../db.js';
-import { parseIndex, plural } from '../course-import.js';
-import { renderMarkdown, withoutTitle } from '../markdown.js';
+import { parseIndex, plural, courseName } from '../course-import.js';
+import { renderMarkdown, withoutTitle, safeDecode } from '../markdown.js';
 import { confirmBox } from './confirm.js';
 import { readerLink } from './reader.js';
 import { quizLink } from './quiz-link.js';
+import { APP_NAME } from '../config.js';
 
 /** Status line of a quiz: "не е започнат" / "x от n" / "резултат: c от n верни". */
 function quizStatus(score) {
@@ -132,6 +137,7 @@ function section(id, title, ...content) {
 /** A collapsible section of the side column: the heading is the summary. */
 function docSection(id, title, md, { open = false, resolveLink, emptyText } = {}) {
   const body = h('div', { class: 'course__doc md', 'data-field': `${id}-text` });
+  // renderMarkdown never throws (T012-D1/D2): a bad file is a note in this block only.
   const fragment = md ? renderMarkdown(md, { headingOffset: 1, resolveLink }) : null;
   if (fragment && fragment.textContent.trim()) body.append(fragment);
   else body.append(h('p', { class: 'muted', text: emptyText || 'Няма текст.' }));
@@ -142,7 +148,9 @@ function docSection(id, title, md, { open = false, resolveLink, emptyText } = {}
 
 export function courseScreen({ params }) {
   const { courseId } = params;
-  const head = h('div', { class: 'course__head', 'data-field': 'course-head' });
+  const head = h('div', { class: 'course__head', 'data-field': 'course-head' },
+    h('h1', { class: 'course__title', 'data-field': 'course-title', text: courseId }));
+  const statusBox = h('div', { class: 'course__status', 'data-field': 'course-status' });
   const lessonsBox = h('div', { class: 'course__lists', 'data-list': 'lessons' }, h('p', { class: 'muted', text: 'Зареждам…' }));
   const quizzesBox = h('div', { 'data-list': 'quizzes' });
   const sideBox = h('div', { class: 'course__side-inner' });
@@ -169,8 +177,10 @@ export function courseScreen({ params }) {
     const main = only('lesson');
     const done = main.filter((l) => statusOf(l) === 'done').length;
     const target = continueTarget(lessons);
-    mount(head,
-      h('p', { class: 'course__title', 'data-field': 'course-title', text: course.title || courseId }),
+    const name = courseName(course);
+    mount(head, h('h1', { class: 'course__title', 'data-field': 'course-title', text: name }));
+    if (name !== courseId) document.title = `${name} · ${APP_NAME}`;
+    mount(statusBox,
       main.length ? h('div', { class: 'course__progress' },
         h('progress', { class: 'course__bar', max: String(main.length), value: String(done), 'aria-labelledby': 'course-progress-text' }),
         h('p', { class: 'course__progress-text', id: 'course-progress-text', 'data-field': 'course-progress', text: `Завършени: ${done} от ${plural(main.length, 'урок', 'урока')}` })) : null,
@@ -241,21 +251,19 @@ export function courseScreen({ params }) {
       mount(quizzesBox, section('quizzes', 'Тестове', h('ul', { class: 'import__items quiz-list' }, items)));
     }
 
-    // --- Side: mission, recent activity, resources, notes ----------------------
+    // --- Side: recent activity, resources (D-038: no mission, no notes) -------
     const byPath = new Map(lessons.map((l) => [l.path, l]));
     const resolveLink = (href) => {
       const path = href.replace(/^\.\//, '').replace(/[?#].*$/, '');
-      const l = byPath.get(path) || byPath.get(decodeURIComponent(path));
+      // T012-D1: a malformed %-escape ("100%.pdf") is no course link: dead text.
+      const decoded = safeDecode(path);
+      const l = byPath.get(path) || (decoded !== null ? byPath.get(decoded) : undefined);
       return l ? readerLink(courseId, l) : null;
     };
     const meta = course.meta || {};
     mount(sideBox,
-      docSection('mission', 'Мисия', withoutTitle(meta.mission), {
-        open: true, resolveLink, emptyText: meta.mission ? 'MISSION.md няма текст освен заглавието.' : 'Курсът няма MISSION.md.',
-      }),
       section('activity', 'Последни дейности', activityList(courseId, lessons, quizzes, answers, scores, subtopics)),
-      meta.resources ? docSection('resources', 'Ресурси', withoutTitle(meta.resources), { resolveLink }) : null,
-      meta.notes ? docSection('notes', 'Бележки на курса', withoutTitle(meta.notes), { resolveLink }) : null);
+      meta.resources ? docSection('resources', 'Ресурси', withoutTitle(meta.resources), { resolveLink }) : null);
   })().catch((err) => {
     console.warn('Cannot load course:', err);
     mount(lessonsBox, h('p', { class: 'empty', text: 'Курсът не може да се зареди.' }));
@@ -263,13 +271,18 @@ export function courseScreen({ params }) {
 
   return {
     title: courseId,
+    // The h1 of this screen is the course name (T012-I5): the app bar title is plain text here.
+    ownHeading: true,
     back: { href: '#/', label: 'Курсове' },
     destroy() { destroyed = true; },
     body: h('section', { class: 'screen screen--course', 'data-screen': 'course' },
       head,
       h('div', { class: 'course__layout' },
+        // The side comes first in the DOM: on a narrow screen "Продължи" is at the top
+        // (and the reading order is the visual order); on a wide one CSS puts it right.
+        h('aside', { class: 'course__side', 'aria-label': 'За курса' },
+          h('div', { class: 'course__side-body' }, statusBox, sideBox)),
         h('div', { class: 'course__main' }, lessonsBox, quizzesBox),
-        h('aside', { class: 'course__side', 'aria-label': 'За курса' }, sideBox),
       ),
     ),
   };

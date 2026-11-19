@@ -246,7 +246,34 @@ function htmlTitle(html) {
 /** Course title from MISSION.md: first heading without "Мисия:". */
 function missionTitle(md) {
   const h = /^#\s+(.+)$/m.exec(md || '')?.[1];
-  return h ? h.replace(/^(мисия|mission)\s*[:—–-]\s*/i, '').trim() : null;
+  return h ? h.replace(/^(мисия|mission)\s*[:—–-]\s*/i, '').trim() || null : null;
+}
+
+/**
+ * Course title from INDEX.md: its first "# " heading without the course id
+ * and the word "индекс"/"index" ("# LRN-CRA: индекс" names no course → null).
+ */
+function indexTitle(md, courseId) {
+  const h = /^#\s+(.+)$/m.exec(md || '')?.[1];
+  if (!h) return null;
+  const t = h.trim()
+    .replace(new RegExp(`^${String(courseId || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), '')
+    .replace(/^\s*[:—–-]?\s*/, '')
+    .replace(/^(индекс|index)(?![\p{L}\p{N}])\s*[:—–-]?\s*/iu, '')
+    .trim();
+  return t || null;
+}
+
+/**
+ * Name of a course for the screens (T012-I5): the first "# " heading of
+ * MISSION.md (without "Мисия:"), else that of INDEX.md (without the id and
+ * "индекс"), else the stored title, else the id. Read from the stored files,
+ * so courses imported by an older version get it too.
+ * @param {{ id: string, title?: string, meta?: { mission?: string, index?: string } }} course
+ */
+export function courseName(course) {
+  const meta = course?.meta || {};
+  return missionTitle(meta.mission) || indexTitle(meta.index, course?.id) || course?.title || course?.id || '';
 }
 
 async function sha256(u8) {
@@ -483,8 +510,28 @@ export async function importCourse(files, { onProgress } = {}) {
       indexPos: row ? index.rows.indexOf(row) : Infinity,
     };
   });
+  // T012-I4: a lesson is its number. A stored lesson whose file is not in this
+  // import, replaced by exactly one NEW file with the same kind and number
+  // (the file was renamed), is that lesson: the new record takes over its
+  // progress and the user's data that points at it (saveCourseImport, one
+  // transaction), and the old record is soft-deleted. Ambiguous cases (two
+  // stored or two new files with one number) are left as before.
+  const importedIds = new Set(lessons.map((l) => l.id));
+  const numberKey = (l) => `${l.kind}:${String(l.number).toUpperCase()}`;
+  const liveOld = oldLessons.filter((l) => !l.deleted);
+  const renames = [];
+  for (const l of lessons) {
+    if (oldLessonById.get(l.id) && !oldLessonById.get(l.id).deleted) continue;
+    const key = numberKey(l);
+    const gone = liveOld.filter((o) => numberKey(o) === key && !importedIds.has(o.id));
+    const fresh = lessons.filter((n) => numberKey(n) === key && !(oldLessonById.get(n.id) && !oldLessonById.get(n.id).deleted));
+    if (gone.length === 1 && fresh.length === 1) renames.push({ from: gone[0].id, to: l.id, fromPath: gone[0].path });
+  }
+  const renamedFrom = new Set(renames.map((r) => r.from));
+  const renamedTo = new Set(renames.map((r) => r.to));
   // Lessons already stored but not in this (partial) import keep their place in the order.
-  const all = [...lessons, ...oldLessons.filter((l) => !lessons.some((n) => n.id === l.id))
+  // A record replaced by a renamed file earlier (soft-deleted, `renamedTo`) is not one of them.
+  const all = [...lessons, ...oldLessons.filter((l) => !renamedFrom.has(l.id) && !(l.deleted && l.renamedTo) && !lessons.some((n) => n.id === l.id))
     .map((l) => ({ ...l, indexPos: index.rows.findIndex((r) => r.path === l.path), keep: true }))];
   const kindRank = { lesson: 0, reference: 1 };
   all.sort((a, b) => (kindRank[a.kind] - kindRank[b.kind])
@@ -502,6 +549,7 @@ export async function importCourse(files, { onProgress } = {}) {
       continue;
     }
     const label = `${l.number} ${l.title}`;
+    if (renamedTo.has(l.id)) { lessonStats.changed.push(label); lessonsToWrite.push(record); continue; }
     if (!old) { lessonStats.added.push(label); lessonsToWrite.push(record); continue; }
     const same = !old.deleted && old.sha256 === l.sha256 && old.title === l.title && old.order === l.order
       && old.kind === l.kind && (old.indexTitle ?? null) === l.indexTitle && (old.artifactId ?? null) === l.artifactId;
@@ -562,7 +610,7 @@ export async function importCourse(files, { onProgress } = {}) {
   const title = missionTitle(meta.mission ?? oldCourse?.meta?.mission) || oldCourse?.title || courseId;
   const fileCount = new Set([...oldFiles.filter((f) => !f.deleted).map((f) => f.path), ...list.map((e) => e.path)]).size;
   const isNew = !oldCourse || oldCourse.deleted;
-  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length && !quizzesToWrite.length;
+  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length && !quizzesToWrite.length && !renames.length;
   const contentChanged = fileStats.added || fileStats.changed || lessonStats.added.length || lessonStats.changed.length
     || quizStats.added || quizStats.changed;
   const status = isNew ? 'new' : contentChanged ? 'updated' : 'unchanged';
@@ -575,7 +623,9 @@ export async function importCourse(files, { onProgress } = {}) {
       files: filesToWrite,
       lessons: lessonsToWrite,
       quizzes: quizzesToWrite,
+      renames,
     });
+    if (renames.length) console.info(`EasyLRN ${courseId}: renamed lesson files:`, renames.map((r) => `${r.fromPath} → ${r.to.slice(courseId.length + 1)}`).join('; '));
   }
 
   // Self-contained versions of the lessons for the isolated reader (T-045,

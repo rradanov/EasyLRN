@@ -214,8 +214,18 @@ export function settingsScreen() {
   // field shows: a value with more cents is rounded and the field shows the
   // rounded value (and says so); a value above 0 that would round to 0 (which
   // means "no warning") is refused instead of silently turning the warning off.
+  // T012-D4: every commit has a generation; when a save comes back after a
+  // newer commit started (a held arrow key, Enter then Tab), it leaves the field
+  // and the message to that newer commit, so no step and no refusal is lost.
+  let budgetGen = 0;
+  let lastSaveGen = 0;
+  let restoredText = null;
   const commitBudget = async () => {
-    const restore = () => { budgetInput.value = String(settings?.monthlyBudgetUSD ?? 5); };
+    const gen = ++budgetGen;
+    const restore = () => {
+      budgetInput.value = String(settings?.monthlyBudgetUSD ?? 5);
+      restoredText = budgetInput.value;
+    };
     const parsed = parseBudget(budgetInput.value);
     if (parsed.error) {
       budgetMessage.textContent = parsed.error;
@@ -232,7 +242,16 @@ export function settingsScreen() {
       return;
     }
     budgetInput.removeAttribute('aria-invalid');
-    settings = await saveSettings({ monthlyBudgetUSD: cents });
+    lastSaveGen = gen;
+    const saved = await saveSettings({ monthlyBudgetUSD: cents });
+    // Saves finish in the order they started (one store), so this is what is stored now.
+    settings = saved;
+    if (gen !== budgetGen) {
+      // Only refusals came after this save: they restored the field to the value
+      // before it; show what is stored now (the refusal message stays).
+      if (gen === lastSaveGen && budgetInput.value === restoredText) budgetInput.value = String(saved.monthlyBudgetUSD);
+      return;
+    }
     budgetInput.value = String(settings.monthlyBudgetUSD);
     budgetMessage.textContent = cents === v ? 'Запазено.' : `Запазено като ${budgetInput.value} (закръглено до цент).`;
     showSpend();

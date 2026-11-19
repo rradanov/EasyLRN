@@ -620,9 +620,15 @@ export const getLesson = (id, opts) => get(STORES.lessons, id, opts);
  * - files: inserted or replaced (`createdAt` kept);
  * - lessons: inserted or replaced; the user's `progress` is always kept.
  * Re-importing undeletes a soft-deleted course, file or lesson.
- * User data (annotations, notes, threads, messages, subtopics) is not touched.
+ * - renames (T012-I4, a lesson file renamed, same number): `[{ from, to }]`
+ *   lesson ids. The lesson `to` (in `lessons`) takes the progress of `from`,
+ *   `from` is soft-deleted (`renamedTo`), and the user's data that names
+ *   `from` is moved to `to`: annotations on the lesson (`target`), subtopics
+ *   born on it (`parent`) or in its tree (`rootLessonId`). Notes, threads and
+ *   messages hang on annotations (by annotation id), so they follow.
+ * Otherwise user data (annotations, notes, threads, messages, subtopics) is not touched.
  */
-export async function saveCourseImport({ course, files = [], lessons = [], quizzes = [] }) {
+export async function saveCourseImport({ course, files = [], lessons = [], quizzes = [], renames = [] }) {
   requireString(course?.id, 'course.id');
   for (const f of files) {
     if (f.courseId !== course.id) throw new TypeError('file.courseId must match course.id');
@@ -637,19 +643,30 @@ export async function saveCourseImport({ course, files = [], lessons = [], quizz
     if (q.courseId !== course.id) throw new TypeError('quiz.courseId must match course.id');
     requireString(q.id, 'quiz.id');
   }
+  for (const r of renames) {
+    requireString(r?.from, 'rename.from');
+    requireString(r?.to, 'rename.to');
+    if (!lessons.some((l) => l.id === r.to)) throw new TypeError('rename.to must be one of the lessons');
+  }
   const db = await openDb();
-  const tx = db.transaction([STORES.courses, STORES.files, STORES.lessons, STORES.quizzes], 'readwrite');
+  const tx = db.transaction(
+    [STORES.courses, STORES.files, STORES.lessons, STORES.quizzes, ...(renames.length ? [STORES.annotations, STORES.subtopics] : [])],
+    'readwrite');
   const courses = tx.objectStore(STORES.courses);
   const fileStore = tx.objectStore(STORES.files);
   const lessonStore = tx.objectStore(STORES.lessons);
   const quizStore = tx.objectStore(STORES.quizzes);
   const keys = files.map((f) => fileKey(f.courseId, f.path));
-  const [oldCourse, oldFiles, oldLessons, oldQuizzes] = await Promise.all([
+  const [oldCourse, oldFiles, oldLessons, oldQuizzes, renamedOld] = await Promise.all([
     courses.get(course.id),
     Promise.all(keys.map((k) => fileStore.get(k))),
     Promise.all(lessons.map((l) => lessonStore.get(l.id))),
     Promise.all(quizzes.map((q) => quizStore.get(q.id))),
+    Promise.all(renames.map((r) => lessonStore.get(r.from))),
   ]);
+  // Read in this transaction, so a setLessonProgress() of the old lesson is never lost.
+  const inherited = new Map();
+  renames.forEach((r, i) => { if (renamedOld[i] && !renamedOld[i].deleted) inherited.set(r.to, renamedOld[i]); });
   const courseRecord = stamp(STORES.courses, {
     ...oldCourse,
     ...course,
@@ -663,14 +680,37 @@ export async function saveCourseImport({ course, files = [], lessons = [], quizz
   });
   lessons.forEach((l, i) => {
     const old = oldLessons[i];
+    const from = inherited.get(l.id);
     writes.push(lessonStore.put(stamp(STORES.lessons, {
       kind: 'lesson',
       ...l,
-      createdAt: old?.createdAt,
+      createdAt: from?.createdAt ?? old?.createdAt,
       deleted: false,
-      progress: old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
+      progress: from ? { ...NEW_PROGRESS, ...from.progress } : old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
     })));
   });
+  if (inherited.size) {
+    const annStore = tx.objectStore(STORES.annotations);
+    const subStore = tx.objectStore(STORES.subtopics);
+    for (const [to, from] of inherited) {
+      writes.push(lessonStore.put(stamp(STORES.lessons, { ...from, deleted: true, renamedTo: to })));
+      const [anns, children, tree] = await Promise.all([
+        annStore.index('by_target').getAll(['lesson', from.id]),
+        subStore.index('by_parent').getAll(['lesson', from.id]),
+        subStore.index('by_root').getAll(from.id),
+      ]);
+      for (const a of anns) writes.push(annStore.put(stamp(STORES.annotations, { ...a, target: { ...a.target, id: to } })));
+      const subs = new Map();
+      for (const s of [...children, ...tree]) subs.set(s.id, subs.get(s.id) ?? s);
+      for (const s of subs.values()) {
+        writes.push(subStore.put(stamp(STORES.subtopics, {
+          ...s,
+          parent: s.parent?.type === 'lesson' && s.parent.id === from.id ? { ...s.parent, id: to } : s.parent,
+          rootLessonId: s.rootLessonId === from.id ? to : s.rootLessonId,
+        })));
+      }
+    }
+  }
   // Quiz definitions are replaced; the answers (a separate store, keyed by
   // question text) are never touched here, so they survive a re-import.
   quizzes.forEach((q, i) => {
