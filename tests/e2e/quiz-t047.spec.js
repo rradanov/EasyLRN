@@ -50,13 +50,14 @@ test.describe('T-047 import and validation', () => {
     const line = await importDemo(page);
     expect(line).toContain('2 теста');
     await openCourse(page, 'LRN-DEMO');
-    const list = page.locator('[data-list="quizzes"]');
-    await expect(list.locator('h2')).toHaveText('Тестове');
+    // D-040 (T-057): no "Тестове" section; the quizzes are listed under their lesson.
+    const list = page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-list="quizzes"]');
+    await expect(page.locator('[data-section="quizzes"]')).toHaveCount(0);
     await expect(list.locator('[data-quiz]')).toHaveCount(2);
     await expect(list.locator('[data-field="quiz-status"]').first()).toHaveText('не е започнат');
     await expect(list).toContainText('Видове чай');
     await expect(list).toContainText('Температура на запарване');
-    await expect(list).toContainText('урок 0001');
+    await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-meta"]')).toContainText('Тестове 0 от 2');
   });
 
   test('validation and limits: bad JSON, no questions, bad answer index, too few options, HTML kept as text, long text', async ({ page }) => {

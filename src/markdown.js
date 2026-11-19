@@ -52,15 +52,57 @@ export const MAX_QUOTE_DEPTH = 50;
 export const MAX_INDENT = 120;
 
 /**
+ * Deepest nesting of a line that MIXES quotes and list markers (T011F-D7):
+ * interleaved "> - > - …" escaped the quote cap and the indentation cap, and
+ * 1000 such lines (up to 30 pairs, 120 spaces) took ~8 s on the tablet. The
+ * depth of such a line is its markers plus its indentation (2 spaces = one
+ * level); beyond this the deeper markers and the extra indentation are
+ * dropped. Real course files have a few levels. Lines with only ">" keep
+ * MAX_QUOTE_DEPTH, lines with only indentation/list markers MAX_INDENT.
+ */
+export const MAX_MIXED_DEPTH = 4;
+
+// One block marker with the space before it: ">" (space optional after it) or
+// a list marker followed by a space or tab.
+const MARKER = /^[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t]))[ \t]?/;
+const indentWidth = (ws) => [...ws].reduce((w, c) => w + (c === '\t' ? 4 : 1), 0);
+
+/** Cap the depth of a line that mixes ">" and list markers; the text stays. */
+function capMixed(line) {
+  const lead = /^[ \t]*/.exec(line)[0];
+  let rest = line.slice(lead.length);
+  const markers = [];
+  let quotes = 0;
+  for (;;) {
+    const m = MARKER.exec(rest);
+    if (!m) break;
+    markers.push(m[0]);
+    if (m[0].trim() === '>') quotes++;
+    rest = rest.slice(m[0].length);
+  }
+  if (!quotes || quotes === markers.length) return line; // not mixed
+  const levels = Math.floor(indentWidth(lead) / 2) + markers.length;
+  if (levels <= MAX_MIXED_DEPTH) return line;
+  const kept = markers.slice(0, MAX_MIXED_DEPTH);
+  const room = Math.max(0, MAX_MIXED_DEPTH - kept.length);
+  const indent = ' '.repeat(Math.min(indentWidth(lead), room * 2));
+  return `${indent}${kept.join('').replace(/^[ \t]+/, '')}${rest.replace(/^[ \t]+/, '')}`;
+}
+
+/**
  * Cap the nesting of every line before marked: at most MAX_QUOTE_DEPTH ">"
- * markers (the deeper ones are dropped) and at most MAX_INDENT characters of
- * leading spaces/tabs (deeper lines stay at that depth). Text is never dropped.
+ * markers (the deeper ones are dropped), at most MAX_MIXED_DEPTH levels on a
+ * line that mixes ">" and list markers, and at most MAX_INDENT characters of leading
+ * spaces/tabs (deeper lines stay at that depth). Text is never dropped.
  */
 export function limitNesting(md) {
   const quotes = new RegExp(`^([ \\t]*)(?:>[ \\t]*){${MAX_QUOTE_DEPTH + 1},}`, 'gm');
   const indent = new RegExp(`^[ \\t]{${MAX_INDENT + 1},}`, 'gm');
+  // Only lines that start with a marker and hold a ">" are looked at (cheap test first).
+  const mixed = /^[ \t]*(?:>|[-*+][ \t]|\d{1,9}[.)][ \t])[^\n]*$/gm;
   return md
     .replace(quotes, (_, lead) => `${lead}${'> '.repeat(MAX_QUOTE_DEPTH)}`)
+    .replace(mixed, (line) => (line.includes('>') ? capMixed(line) : line))
     .replace(indent, ' '.repeat(MAX_INDENT));
 }
 
@@ -83,7 +125,8 @@ export function safeDecode(s) {
  * @param {string} md
  */
 export function withoutTitle(md) {
-  return String(md ?? '').replace(/^﻿?\s*#\s+[^\n]*(\n|$)/, '');
+  // T011F-D4: the heading is one line ("# " + an empty line does not eat the next one).
+  return String(md ?? '').replace(/^﻿?\s*#(?:[ \t][^\n]*)?(\n|$)/, '');
 }
 
 /**

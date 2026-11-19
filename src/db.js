@@ -327,6 +327,15 @@ let current = { name: DB_NAME, version: SCHEMA_VERSION, migrations: MIGRATIONS, 
  * @param {{ name?: string, version?: number, migrations?: Record<number, Function>,
  *           onVersionChange?: () => void }} [options]
  */
+/** A DOM event about the database for the page (no-op where there is no window, e.g. tests in Node). */
+function dbEvent(type, detail) {
+  try {
+    if (typeof globalThis.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      globalThis.dispatchEvent(new CustomEvent(type, { detail }));
+    }
+  } catch { /* never fails the database */ }
+}
+
 export function openDb(options) {
   if (dbPromise && !options) return dbPromise;
   if (options) {
@@ -347,6 +356,7 @@ export function openDb(options) {
   }
   let migrationError = null;
   let upgradeTx = null;
+  let wasBlocked = false;
   const promise = openDB(name, version, {
     upgrade(db, oldVersion, newVersion, tx) {
       upgradeTx = unwrap(tx);
@@ -371,6 +381,13 @@ export function openDb(options) {
         try { tx.abort(); } catch { /* already finished */ }
       }
     },
+    blocked() {
+      // T056-D3: another tab (an old version that does not let go, a frozen
+      // tab) keeps the database open, so the upgrade waits. Tell the page:
+      // the screens would otherwise just stay empty.
+      wasBlocked = true;
+      dbEvent('easylrn:db-blocked', { blocked: true });
+    },
     blocking() {
       // A newer version was opened in another tab: let it upgrade.
       if (dbPromise === promise) closeDb();
@@ -379,7 +396,11 @@ export function openDb(options) {
     terminated() {
       if (dbPromise === promise) dbPromise = null;
     },
-  }).catch((err) => {
+  }).then((db) => {
+    if (wasBlocked) dbEvent('easylrn:db-blocked', { blocked: false });
+    return db;
+  }, (err) => {
+    if (wasBlocked) dbEvent('easylrn:db-blocked', { blocked: false });
     if (dbPromise === promise) dbPromise = null;
     migrationError ??= upgradeTx && upgradeErrors.get(upgradeTx);
     if (migrationError) {

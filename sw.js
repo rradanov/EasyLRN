@@ -14,7 +14,7 @@
 //   the shell cache) before </body>.
 // - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.9.0'; // keep in sync with src/config.js
+const VERSION = '0.10.0'; // keep in sync with src/config.js
 const RENDER_VERSION = 4; // keep in sync with src/lesson-render.js
 const BRIDGE_MARKER = '<!--easylrn:bridge-->'; // the renderer's last child of <body> (T050-D1)
 const CACHE_PREFIX = 'easylrn-shell-';
@@ -34,6 +34,7 @@ const SHELL = [
   './src/sw-client.js',
   './src/db.js',
   './src/lesson-id.js',
+  './src/lesson-status.js',
   './src/course-import.js',
   './src/zip.js',
   './src/screens/courses.js',
@@ -180,9 +181,13 @@ function coursePath(url) {
     } catch {
       /* not double-encoded */
     }
-    for (const s of [once, twice]) {
-      if (!s || s === '.' || s === '..' || /[\/\\\u0000]/.test(s)) return null;
-    }
+    // The path is looked up as it is (once decoded) in IndexedDB, never on a
+    // file system: a "/" there would be a separator and is refused. The
+    // second decoding may hold a "/" (T011F-D2: a file literally named
+    // "0001-a%2Fb.html" is one segment and must open), but none of its parts
+    // may be empty, "." or ".." (double-encoded "../" is still refused).
+    if (!once || once === '.' || once === '..' || /[\/\\\u0000]/.test(once)) return null;
+    if (/\u0000/.test(twice) || twice.split(/[\/\\]/).some((p) => !p || p === '.' || p === '..')) return null;
     decoded.push(once);
   }
   const [courseId, ...parts] = decoded;

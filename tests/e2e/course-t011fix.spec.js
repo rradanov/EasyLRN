@@ -106,7 +106,9 @@ test.describe('D-038: no mission and no notes; the side column', () => {
           main: box('.course__main'), side: box('.course__side'),
           progress: box('[data-field="course-progress"]'), go: box('[data-action="continue"]'),
           activity: box('[data-section="activity"]'), resources: box('[data-section="resources"]'),
-          lessons: box('[data-section="lessons"]'), quizzes: box('[data-list="quizzes"]'),
+          lessons: box('[data-section="lessons"]'), quizzes: box('[data-section="references"]'),
+          // D-040 (T-057): the quizzes are under their lesson (no "Тестове" section): the arrow is in "Уроци".
+          toggleInLessons: !!document.querySelector('[data-field="lesson-toggle"]').closest('[data-section="lessons"]'),
           inSide: ['[data-action="continue"]', '[data-field="course-progress"]', '[data-section="activity"]', '[data-section="resources"]']
             .map((s) => !!document.querySelector(s).closest('.course__side')),
           scrollW: document.documentElement.scrollWidth, clientW: document.documentElement.clientWidth,
@@ -121,6 +123,7 @@ test.describe('D-038: no mission and no notes; the side column', () => {
       expect(r.go.bottom, tag).toBeLessThanOrEqual(r.activity.top);
       expect(r.activity.bottom, tag).toBeLessThanOrEqual(r.resources.top);
       expect(r.lessons.bottom, tag).toBeLessThanOrEqual(r.quizzes.top);
+      expect(r.toggleInLessons, tag).toBe(true);
       // "Продължи" is visible without scrolling, next to the first lessons.
       expect(r.go.bottom, tag).toBeLessThan(hgt);
       expect(r.scrollW, tag).toBeLessThanOrEqual(r.clientW);
@@ -133,7 +136,7 @@ test.describe('D-038: no mission and no notes; the side column', () => {
     await openCourse(page);
     const r = await page.evaluate(() => {
       const top = (sel) => document.querySelector(sel).getBoundingClientRect().top;
-      return [top('[data-action="continue"]'), top('[data-section="activity"]'), top('[data-section="resources"]'), top('[data-section="lessons"]'), top('[data-list="quizzes"]')];
+      return [top('[data-action="continue"]'), top('[data-section="activity"]'), top('[data-section="resources"]'), top('[data-section="lessons"]'), top('[data-section="references"]')]; // D-040: no "Тестове" section
     });
     for (let i = 1; i < r.length; i++) expect(r[i], JSON.stringify(r)).toBeGreaterThan(r[i - 1]);
     // DOM order = visual order (keyboard): "Продължи" is the first focusable thing of the screen.
@@ -372,8 +375,10 @@ test.describe('T012-I4: a renamed lesson file is the same lesson', () => {
     expect(after.onNew).toEqual([ids.a]);
     await openCourse(page);
     await expect(course(page).locator('[data-section="lessons"] [data-lesson]')).toHaveText(['0001 Какви видове чай има?']);
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText('1 маркировка · 1 въпрос · 1 тема');
+    // D-040 (T-057): marked as finished, but its two quizzes are not answered → ◐ with "Завършен".
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText('Завършен · ');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText('1 маркировка · 1 въпрос · 1 тема · Тестове 0 от 2');
     // "Продължи" opens the renamed file at the same place.
     await course(page).locator('[data-action="continue"]').click();
     await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });

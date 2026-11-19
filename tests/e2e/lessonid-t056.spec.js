@@ -624,7 +624,7 @@ test.describe('T056-S migration v4 → v5', () => {
     expect(d.stores.lessons.map((l) => [l.id, l.progress.status])).toEqual([['LRN-BL/lesson:0001', 'done']]);
     await holder.close();
     // While blocked, the course list was simply empty, without any hint.
-    test.fail(true, 'T056-D3: while the upgrade is blocked by another open connection (openDB has no `blocked` handler) the course list is empty and the screen says nothing (no "Затвори другите раздели с EasyLRN")');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     expect(shown.error || /друг|раздел|Зареждам/.test(shown.main)).toBe(true);
   });
 
@@ -662,7 +662,9 @@ test.describe('T056-S migration v4 → v5', () => {
       expect(JSON.stringify(back.stores.lessons)).toBe(JSON.stringify(v5.stores.lessons));
       expect(JSON.stringify(back.stores.quizAnswers)).toBe(JSON.stringify(v5.stores.quizAnswers));
       await page.goto(`${old.url}#/c/LRN-DEMO`);
-      await expect(page.locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
+      // D-040 (T-057, 0.10.0): 0001 is marked, but its two quizzes are not answered → ◐ "Завършен", not counted.
+      await expect(page.locator('[data-field="course-progress"]')).toHaveText('Завършени: 0 от 1 урок');
+      await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-meta"]')).toContainText('Завършен · ');
     } finally { await stop(); }
     rmSync(old.dir, { recursive: true, force: true });
     test.info().annotations.push({ type: 'T056-I3', description: JSON.stringify(seen) });
@@ -737,7 +739,7 @@ test.describe('T056-I re-import by number', () => {
     await waitReady(page);
     await expect(lf(page).locator('h1')).toHaveText('Главни букви');
     // Five files in lessons/ look like lessons but are not imported as lessons: the summary should name them.
-    test.fail(true, 'T056-D1: files in lessons/ outside the NNNN-<slug>.html pattern (00031-…, 003-…, 0004.html, 0005-.html, Arabic digits) are silently not lessons — the summary does not mention them');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     expect(r.text).toMatch(/00031-pet|0004\.html|003-tri/);
   });
 
@@ -867,7 +869,7 @@ test.describe('T056-I re-import by number', () => {
     await page.goto(`./#/c/${C}/quiz/0009-1-nyama`);
     await expect(page.locator('[data-screen="quiz"]')).toContainText('Тест без урок');
     // D-039 §А.2.5: "тест, чийто lesson сочи несъществуващ номер → тестът се импортира, бележка в резюмето".
-    test.fail(true, 'T056-D2: a quiz whose "lesson" is a number that is not in the course (0009), or whose file number (0002-1) differs from its "lesson" (0001), is imported without any note in the summary');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     expect(r.text).toMatch(/0009/);
   });
 

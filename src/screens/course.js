@@ -6,10 +6,15 @@
 // - side (right; first when narrow, so "Продължи" is at the top): the
 //   progress of the course and "Продължи", "Последни дейности", "Ресурси"
 //   (RESOURCES.md, rendered Markdown, collapsed);
-// - main (left, wider): "Уроци" and "Справочници" in INDEX order with their
-//   status (○ нов, ◐ започнат, ● завършен), counters and the lessons planned
-//   in INDEX.md that are not imported yet ("скоро"); "Тестове" (D-032) with
-//   their status and "Нулирай".
+// - main (left, wider): "Уроци" and "Справочници" in INDEX order and the
+//   lessons planned in INDEX.md that are not imported yet ("скоро").
+//   D-040 (T-057): every lesson carries its quizzes (by `lesson`): the folded
+//   line has the status (○ нов, ◐ започнат, ● завършен = marked AND all its
+//   quizzes answered), number, title (opens the lesson) and a short progress
+//   line ("Започнат · Тестове 1 от 2 · 7/9 верни"); an arrow button unfolds the
+//   quizzes with "Отвори" and "Нулирай". There is no separate "Тестове"
+//   section any more; quizzes of no lesson of the course are in "Други
+//   тестове" at the bottom.
 // D-039 (T-055): lessons no longer in the course (`retired`) are only in a
 // collapsed "Вече не са в курса" (if there are any), not in the progress and
 // never the target of "Продължи".
@@ -29,6 +34,7 @@ import { readerLink } from './reader.js';
 import { quizLink } from './quiz-link.js';
 import { APP_NAME } from '../config.js';
 import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
+import { groupQuizzes, lessonState, countDone } from '../lesson-status.js';
 
 /** Status line of a quiz: "не е започнат" / "x от n" / "резултат: c от n верни". */
 function quizStatus(score) {
@@ -64,14 +70,17 @@ export function whenText(when, now = new Date()) {
 
 const lessonLabel = (l) => (l.kind === 'reference' ? `справочник ${l.number}` : `урок ${l.number}`);
 
-/** The lesson to continue: the last opened one; else the first lesson not done. */
-export function continueTarget(all) {
+/**
+ * The lesson to continue: the last opened one; else the first lesson not done
+ * (D-040: done = marked and all its quizzes answered, `stateOf`).
+ */
+export function continueTarget(all, stateOf = (l) => ({ status: statusOf(l) })) {
   // D-039: never to a lesson that is no longer in the course.
   const lessons = all.filter((l) => !l.retired);
   const opened = lessons.filter((l) => l.progress?.lastOpenedAt)
     .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)));
   if (opened.length) return { lesson: opened[0], resume: true };
-  const first = lessons.find((l) => l.kind === 'lesson' && statusOf(l) !== 'done') || lessons[0];
+  const first = lessons.find((l) => l.kind === 'lesson' && stateOf(l).status !== 'done') || lessons[0];
   return first ? { lesson: first, resume: false } : null;
 }
 
@@ -106,22 +115,128 @@ function countersText(c) {
   ].filter(Boolean).join(' · ');
 }
 
-/** One lesson or reference of the list. */
-function lessonItem(courseId, lesson, counters, quizCount) {
-  const status = statusOf(lesson);
-  const { mark, label } = STATUS[status];
-  const meta = [label[0].toUpperCase() + label.slice(1)];
-  if (lesson.progress?.lastOpenedAt) meta.push(`отворен ${whenText(lesson.progress.lastOpenedAt)}`);
-  const counts = countersText(counters);
-  if (counts) meta.push(counts);
-  if (quizCount) meta.push(plural(quizCount, 'тест', 'теста'));
-  return h('li', { class: 'course-item', 'data-status': status, 'data-item': lesson.id },
-    h('span', { class: 'course-item__mark', 'aria-hidden': 'true', text: mark }),
+/** Session memory of the unfolded lessons (D-040: "може да се помни в сесията"). */
+const OPEN_KEY = (courseId) => `easylrn:course-open:${courseId}`;
+function openSet(courseId) {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(OPEN_KEY(courseId)) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+function rememberOpen(courseId, id, open) {
+  const set = openSet(courseId);
+  if (open) set.add(id); else set.delete(id);
+  try { sessionStorage.setItem(OPEN_KEY(courseId), JSON.stringify([...set])); } catch { /* private mode: not remembered */ }
+}
+
+/**
+ * One quiz of a lesson (or of "Други тестове"): title, answered/total, correct,
+ * "Отвори" and "Нулирай" (with a confirmation, T-049). `onChange` runs after a
+ * reset so the lesson line and the course progress follow.
+ */
+function quizRow(courseId, quiz, entry, { onChange, note } = {}) {
+  const statusEl = h('span', { class: 'quiz-list__status', 'data-field': 'quiz-status' });
+  const correctEl = h('span', { class: 'quiz-list__correct', 'data-field': 'quiz-correct' });
+  const li = h('li', { class: 'quiz-list__item', 'data-quiz': quiz.id });
+  const reset = h('button', {
+    type: 'button', class: 'button quiz-list__reset', 'data-field': 'quiz-reset',
+    'aria-label': `Нулирай отговорите: ${quiz.title}`,
+  }, 'Нулирай');
+  const show = () => {
+    const s = entry.score;
+    statusEl.textContent = quizStatus(s);
+    // While a quiz is not finished its line says how many of the answers are right.
+    correctEl.textContent = s.started && !s.done ? ` · ${s.correct} ${s.correct === 1 ? 'верен' : 'верни'}` : '';
+    reset.disabled = !s.started;
+  };
+  show();
+  reset.addEventListener('click', () => {
+    if (li.querySelector('.quiz__confirm')) return;
+    const box = confirmBox({
+      text: `Да изтрия ли отговорите на „${quiz.title}“? Тестът ще започне отначало.`,
+      yes: 'Изтрий',
+      label: 'Нулиране на отговорите',
+      onNo: () => { box.remove(); reset.focus(); },
+      onYes: async () => {
+        try { await resetQuizAnswers(quiz.id); } catch (err) { console.warn('Cannot reset the answers:', err); }
+        box.remove();
+        entry.score = scoreQuiz(quiz, { choices: {} });
+        show();
+        onChange?.();
+      },
+    });
+    li.append(box);
+    box.focusCancel();
+  });
+  li.append(
+    h('div', { class: 'quiz-list__row' },
+      h('div', { class: 'quiz-list__info' },
+        h('span', { class: 'quiz-list__title', text: quiz.title }),
+        note ? h('span', { class: 'quiz-list__lesson', text: note }) : null,
+        h('span', { class: 'quiz-list__line' }, statusEl, correctEl)),
+      h('div', { class: 'quiz-list__actions' },
+        h('a', { class: 'button quiz-list__link', href: quizLink(courseId, quiz) },
+          'Отвори', h('span', { class: 'visually-hidden', text: ` теста „${quiz.title}“` })),
+        reset)));
+  return li;
+}
+
+/**
+ * One lesson or reference of the list (D-040): mark, number and title (opens
+ * the lesson), a short progress line and — if it has quizzes — an arrow that
+ * unfolds them. `entries` are this lesson's quizzes with their live scores.
+ * @returns {{ el: HTMLElement, update: () => void }}
+ */
+function lessonItem(courseId, lesson, counters, entries, { onChange } = {}) {
+  const markEl = h('span', { class: 'course-item__mark', 'aria-hidden': 'true' });
+  const metaText = h('span', { 'data-field': 'lesson-meta-text' });
+  const li = h('li', { class: 'course-item', 'data-item': lesson.id });
+  const update = () => {
+    const state = lessonState(lesson, entries.map((e) => e.score));
+    li.dataset.status = state.status;
+    markEl.textContent = STATUS[state.status].mark;
+    const meta = [state.label];
+    if (lesson.progress?.lastOpenedAt) meta.push(`отворен ${whenText(lesson.progress.lastOpenedAt)}`);
+    const counts = countersText(counters);
+    if (counts) meta.push(counts);
+    if (state.quizText) meta.push(state.quizText);
+    metaText.textContent = meta.join(' · ');
+  };
+  update();
+  const titleRow = h('div', { class: 'course-item__row' },
+    h('a', { class: 'lesson-link', href: readerLink(courseId, lesson), 'data-lesson': lesson.id },
+      h('span', { class: 'import__num', text: lesson.number }), ' ', lesson.title));
+  let panel = null;
+  if (entries.length) {
+    // Stable per lesson (a number is unique in a course): the same id after Back.
+    const panelId = `course-quizzes-${lesson.kind === 'reference' ? 'r' : 'l'}-${String(lesson.number).replace(/[^A-Za-z0-9]/g, '')}`;
+    const open = openSet(courseId).has(lesson.id);
+    const what = lesson.kind === 'reference' ? 'справочник' : 'урок';
+    const toggle = h('button', {
+      type: 'button', class: 'course-item__toggle', 'data-field': 'lesson-toggle',
+      'aria-expanded': String(open), 'aria-controls': panelId,
+      'aria-label': `Тестове към ${what} ${lesson.number}`,
+    }, h('span', { class: 'course-item__chevron', 'aria-hidden': 'true' }));
+    panel = h('div', { class: 'course-item__quizzes', id: panelId, 'data-field': 'lesson-quiz-panel', hidden: open ? null : true },
+      h('ul', { class: 'quiz-list', 'data-list': 'quizzes' },
+        entries.map((e) => quizRow(courseId, e.quiz, e, { onChange: () => { update(); onChange?.(); } }))));
+    toggle.addEventListener('click', () => {
+      const now = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', String(now));
+      panel.hidden = !now;
+      rememberOpen(courseId, lesson.id, now);
+    });
+    titleRow.append(toggle);
+  }
+  li.append(markEl,
     h('div', { class: 'course-item__body' },
-      h('a', { class: 'lesson-link', href: readerLink(courseId, lesson), 'data-lesson': lesson.id },
-        h('span', { class: 'import__num', text: lesson.number }), ' ', lesson.title),
+      titleRow,
       h('p', { class: 'course-item__meta', 'data-field': 'lesson-meta' },
-        h('span', { class: 'visually-hidden', text: 'Статус: ' }), meta.join(' · '))));
+        h('span', { class: 'visually-hidden', text: 'Статус: ' }), metaText),
+      panel));
+  return { el: li, update };
 }
 
 /** A planned lesson from INDEX.md that is not imported yet. */
@@ -158,7 +273,6 @@ export function courseScreen({ params }) {
     h('h1', { class: 'course__title', 'data-field': 'course-title', text: courseId }));
   const statusBox = h('div', { class: 'course__status', 'data-field': 'course-status' });
   const lessonsBox = h('div', { class: 'course__lists', 'data-list': 'lessons' }, h('p', { class: 'muted', text: 'Зареждам…' }));
-  const quizzesBox = h('div', { 'data-list': 'quizzes' });
   const sideBox = h('div', { class: 'course__side-inner' });
   let destroyed = false;
 
@@ -175,29 +289,36 @@ export function courseScreen({ params }) {
     ]);
     if (destroyed) return;
     const scores = quizzes.map((q, i) => scoreQuiz(q, answers[i]));
-    const quizCount = new Map();
-    for (const q of quizzes) if (q.lesson) quizCount.set(q.lesson, (quizCount.get(q.lesson) || 0) + 1);
+    // D-040: every quiz under its lesson (by `lesson`); live scores, so a reset
+    // updates the lesson line and the progress of the course.
+    const entryOf = new Map(quizzes.map((q, i) => [q.id, { quiz: q, score: scores[i] }]));
+    const { byLesson, others } = groupQuizzes(lessons, quizzes);
+    const entriesOf = (l) => (byLesson.get(l.id) || []).map((q) => entryOf.get(q.id));
+    const stateOf = (l) => lessonState(l, entriesOf(l).map((e) => e.score));
 
     // --- Head: title, progress, "Продължи" ---------------------------------------
     // D-039: retired lessons are only in "Вече не са в курса" (not counted).
     const current = lessons.filter((l) => !l.retired);
     const retired = lessons.filter((l) => l.retired);
     const only = (kind) => current.filter((l) => l.kind === kind);
-    const main = only('lesson');
-    const done = main.filter((l) => statusOf(l) === 'done').length;
-    const target = continueTarget(lessons);
     const name = courseName(course);
     mount(head, h('h1', { class: 'course__title', 'data-field': 'course-title', text: name }));
     if (name !== courseId) document.title = `${name} · ${APP_NAME}`;
-    mount(statusBox,
-      main.length ? h('div', { class: 'course__progress' },
-        h('progress', { class: 'course__bar', max: String(main.length), value: String(done), 'aria-labelledby': 'course-progress-text' }),
-        h('p', { class: 'course__progress-text', id: 'course-progress-text', 'data-field': 'course-progress', text: `Завършени: ${done} от ${plural(main.length, 'урок', 'урока')}` })) : null,
-      target ? h('a', {
-        class: 'button button--primary course__continue', 'data-action': 'continue', href: readerLink(courseId, target.lesson),
-      }, `${target.resume ? 'Продължи' : 'Започни'}: ${lessonLabel(target.lesson)} — ${target.lesson.title}`) : null);
+    const renderStatus = () => {
+      // D-040: a lesson is done when it is marked AND all its quizzes are answered.
+      const { done, total } = countDone(lessons, stateOf);
+      const target = continueTarget(lessons, stateOf);
+      mount(statusBox,
+        total ? h('div', { class: 'course__progress' },
+          h('progress', { class: 'course__bar', max: String(total), value: String(done), 'aria-labelledby': 'course-progress-text' }),
+          h('p', { class: 'course__progress-text', id: 'course-progress-text', 'data-field': 'course-progress', text: `Завършени: ${done} от ${plural(total, 'урок', 'урока')}` })) : null,
+        target ? h('a', {
+          class: 'button button--primary course__continue', 'data-action': 'continue', href: readerLink(courseId, target.lesson),
+        }, `${target.resume ? 'Продължи' : 'Започни'}: ${lessonLabel(target.lesson)} — ${target.lesson.title}`) : null);
+    };
+    renderStatus();
 
-    // --- Lessons, references, planned ------------------------------------------
+    // --- Lessons with their quizzes, references, planned ------------------------
     const index = parseIndex(course.meta?.index);
     const numKey = (n) => normalizeNumber(n) ?? String(n).toUpperCase();
     const have = new Set(lessons.map((l) => numKey(l.number)));
@@ -209,9 +330,10 @@ export function courseScreen({ params }) {
         seen.add(k);
         return true;
       });
+    const item = (l) => lessonItem(courseId, l, counters.get(l.id), entriesOf(l), { onChange: renderStatus }).el;
     const list = (kind) => {
       const items = [
-        ...only(kind).map((l) => lessonItem(courseId, l, counters.get(l.id), kind === 'lesson' ? quizCount.get(l.number) : 0)),
+        ...only(kind).map(item),
         ...planned.filter((p) => p.kind === kind).map(plannedItem),
       ];
       return items.length ? h('ul', { class: 'course-list', 'data-kind': kind }, items) : null;
@@ -219,54 +341,22 @@ export function courseScreen({ params }) {
     const lessonList = list('lesson');
     const refList = list('reference');
     // "Вече не са в курса" (D-039): collapsed, only if there are such lessons.
+    // The quizzes of a retired lesson stay under it there (D-040).
     const retiredBox = retired.length ? h('details', { class: 'course__details course__retired', 'data-section': 'retired' },
       h('summary', { class: 'course__summary' }, h('h2', { class: 'screen__heading', text: 'Вече не са в курса' })),
       h('p', { class: 'muted', text: 'Тези уроци са махнати от курса. Можеш да ги отвориш; данните ти за тях са запазени и не се броят в прогреса.' }),
-      h('ul', { class: 'course-list', 'data-kind': 'retired' },
-        retired.map((l) => lessonItem(courseId, l, counters.get(l.id), 0)))) : null;
+      h('ul', { class: 'course-list', 'data-kind': 'retired' }, retired.map(item))) : null;
+    // "Други тестове" (D-040): quizzes without a lesson of this course, at the bottom.
+    const otherBox = others.length ? section('other-quizzes', 'Други тестове',
+      h('ul', { class: 'quiz-list quiz-list--other', 'data-list': 'quizzes' }, others.map((q) => quizRow(courseId, q, entryOf.get(q.id), {
+        note: q.lesson ? `към урок ${q.lesson} — няма го в курса` : 'без урок',
+      })))) : null;
     mount(lessonsBox,
       lessonList ? section('lessons', 'Уроци', lessonList) : null,
       refList ? section('references', 'Справочници', refList) : null,
       !lessonList && !refList ? h('p', { class: 'empty', text: 'В курса няма уроци.' }) : null,
-      retiredBox);
-
-    // --- "Тестове" (D-032): status and "Нулирай" (T-049, D-035) ---------------
-    if (quizzes.length) {
-      const items = quizzes.map((q, i) => {
-        const statusEl = h('span', { class: 'quiz-list__status', 'data-field': 'quiz-status', text: quizStatus(scores[i]) });
-        const li = h('li', { class: 'quiz-list__item', 'data-quiz': q.id });
-        const reset = h('button', {
-          type: 'button', class: 'button quiz-list__reset', 'data-field': 'quiz-reset',
-          'aria-label': `Нулирай отговорите: ${q.title}`, disabled: scores[i].started ? undefined : true,
-        }, 'Нулирай');
-        reset.addEventListener('click', () => {
-          if (li.querySelector('.quiz__confirm')) return;
-          const box = confirmBox({
-            text: `Да изтрия ли отговорите на „${q.title}“? Тестът ще започне отначало.`,
-            yes: 'Изтрий',
-            label: 'Нулиране на отговорите',
-            onNo: () => { box.remove(); reset.focus(); },
-            onYes: async () => {
-              try { await resetQuizAnswers(q.id); } catch (err) { console.warn('Cannot reset the answers:', err); }
-              box.remove();
-              statusEl.textContent = quizStatus(scoreQuiz(q, { choices: {} }));
-              reset.disabled = true;
-            },
-          });
-          li.append(box);
-          box.focusCancel();
-        });
-        li.append(
-          h('div', { class: 'quiz-list__row' },
-            h('a', { class: 'quiz-list__link', href: quizLink(courseId, q) },
-              h('span', { class: 'quiz-list__title', text: q.title }),
-              q.lesson ? h('span', { class: 'quiz-list__lesson', text: ` · урок ${q.lesson}` }) : null,
-              statusEl),
-            reset));
-        return li;
-      });
-      mount(quizzesBox, section('quizzes', 'Тестове', h('ul', { class: 'import__items quiz-list' }, items)));
-    }
+      retiredBox,
+      otherBox);
 
     // --- Side: recent activity, resources (D-038: no mission, no notes) -------
     // D-039 §А.3: by path, an earlier path, or the number in the file name.
@@ -300,7 +390,7 @@ export function courseScreen({ params }) {
         // (and the reading order is the visual order); on a wide one CSS puts it right.
         h('aside', { class: 'course__side', 'aria-label': 'За курса' },
           h('div', { class: 'course__side-body' }, statusBox, sideBox)),
-        h('div', { class: 'course__main' }, lessonsBox, quizzesBox),
+        h('div', { class: 'course__main' }, lessonsBox),
       ),
     ),
   };

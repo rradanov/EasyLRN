@@ -71,6 +71,16 @@ function indexMd(id, numbers = [], extra = '') {
   return `# ${id}: индекс\n\n## Уроци\n| # | Заглавие |\n|---|---|\n${rows}\n${extra}`;
 }
 const course = (page) => page.locator('[data-screen="course"]');
+// D-040 (T-057): answer every question of every quiz of a course (the right option).
+const answerAll = (page, courseId) => page.evaluate(async (courseId) => {
+  const db = await import('./src/db.js');
+  for (const q of await db.listQuizzes(courseId)) {
+    const keys = db.questionKeys(q.questions);
+    for (const [i, question] of q.questions.entries()) {
+      await db.saveQuizChoice(q.id, { courseId, qKey: keys[i], choice: question.options[question.answer], cursor: i });
+    }
+  }
+}, courseId);
 async function openCourse(page, id = 'LRN-DEMO') {
   // The same hash again is no navigation: reload then, so the screen reads the store anew.
   if (new URL(page.url()).hash === `#/c/${id}`) await page.reload();
@@ -523,7 +533,9 @@ test.describe('T-012 edge courses', () => {
       'quizzes/0001-1-test.json': JSON.stringify({ lesson: '0001', title: 'Самотен тест', questions: [{ q: 'Да?', options: ['Да', 'Не'], answer: 0 }] }),
     });
     await openCourse(page, 'LRN-QONLY');
-    await expect(course(page).locator('[data-list="lessons"]')).toHaveText('В курса няма уроци.');
+    // D-040 (T-057): the quiz without a lesson is in "Други тестове", in the same column.
+    await expect(course(page).locator('[data-list="lessons"] > .empty')).toHaveText('В курса няма уроци.');
+    await expect(course(page).locator('[data-section="other-quizzes"] h2')).toHaveText('Други тестове');
     await expect(course(page).locator('progress, [data-action="continue"], [data-section="lessons"], [data-section="references"]')).toHaveCount(0);
     await expect(course(page).locator('[data-list="quizzes"] [data-quiz]')).toHaveCount(1);
     // D-038: no mission block at all (before: "Курсът няма MISSION.md."); the h1 is the course id.
@@ -582,6 +594,7 @@ test.describe('T-012 edge courses', () => {
 
   test('re-import: an unchanged and a CHANGED lesson keep "завършен"; a renamed lesson file is the same lesson (T012-I4, 0.8.1)', async ({ page }) => {
     await importDemo(page);
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057): ● = marked AND all quizzes of the lesson answered
     await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: '2026-11-18T10:00:00.000Z', lastOpenedAt: '2026-11-18T09:00:00.000Z', scrollY: 321 }), DEMO_LESSON);
     const path = 'lessons/0001-vidove-chay.html';
     const changed = strToU8(new TextDecoder().decode(FILES[path]).replace('</h1>', '</h1><p>Нов абзац.</p>'));
@@ -609,6 +622,7 @@ test.describe('T-012 edge courses', () => {
 
   test('a deleted course: the course screen and the card say so, a re-import brings it back with its progress', async ({ page }) => {
     await importDemo(page);
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057): ● = marked AND all quizzes of the lesson answered
     await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: new Date().toISOString() }), DEMO_LESSON);
     await page.evaluate(async () => { const db = await import('./src/db.js'); await db.remove(db.STORES.courses, 'LRN-DEMO'); });
     await page.goto('./#/c/LRN-DEMO');
@@ -682,6 +696,7 @@ test.describe('T-012 edge courses', () => {
 test.describe('T-012 progress and navigation', () => {
   test('back and forward: the course screen shows the new status at once; forward reopens the reader in the same state', async ({ page }) => {
     await importDemo(page);
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057): ● = marked AND all quizzes of the lesson answered
     await openCourse(page);
     await course(page).locator('a.lesson-link', { hasText: 'Какви видове чай' }).click();
     await waitReady(page);
@@ -833,6 +848,7 @@ test.describe('T-012 progress and navigation', () => {
 
   test('offline: the course screen with the rendered resources, status and "Продължи" works without network (markdown.js in the shell)', async ({ page, context }) => {
     await importDemo(page);
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057): ● = marked AND all quizzes of the lesson answered
     const cached = await page.evaluate(async () => {
       const out = [];
       for (const k of await caches.keys()) for (const r of await (await caches.open(k)).keys()) out.push(new URL(r.url).pathname);
@@ -855,6 +871,7 @@ test.describe('T-012 progress and navigation', () => {
 
   test('two tabs: a lesson finished in one tab shows as finished in the other after navigating; the other tab does not undo it', async ({ page, context }) => {
     await importDemo(page);
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057): ● = marked AND all quizzes of the lesson answered
     await openCourse(page);
     const other = await context.newPage();
     other.on('pageerror', (e) => problems.push(`other pageerror: ${e}`));

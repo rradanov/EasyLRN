@@ -1,7 +1,8 @@
 // Screen "Курсове" (#/): the imported courses and "Импортирай курс" (T-007).
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
-import { listCourses, listLessons } from '../db.js';
+import { listCourses, listLessons, listQuizzes, getQuizAnswers, scoreQuiz } from '../db.js';
+import { groupQuizzes, lessonState, countDone } from '../lesson-status.js';
 import { importCourse, describeSummary, errorMessage, plural, courseName } from '../course-import.js';
 
 const PHASES = {
@@ -12,18 +13,22 @@ const PHASES = {
 };
 
 /** "Завършени: 1 от 5 · последно: урок 0003" */
-function progressText(lessons) {
+function progressText(lessons, stateOf) {
   // D-039: retired lessons ("Вече не са в курса") are not counted.
-  const main = lessons.filter((l) => l.kind === 'lesson' && !l.retired);
-  const done = main.filter((l) => l.progress?.status === 'done').length;
+  // D-040: done = marked as finished AND all its quizzes answered (as on "Курс").
+  const { done, total } = countDone(lessons, stateOf);
   const last = lessons.filter((l) => l.progress?.lastOpenedAt)
     .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)))[0];
   const lastText = last ? ` · последно: ${last.kind === 'reference' ? 'справочник' : 'урок'} ${last.number}` : '';
-  return `Завършени: ${done} от ${main.length}${lastText}`;
+  return `Завършени: ${done} от ${total}${lastText}`;
 }
 
 async function courseCard(course) {
-  const lessons = (await listLessons(course.id)).filter((l) => !l.retired);
+  const [all, quizzes] = await Promise.all([listLessons(course.id), listQuizzes(course.id).catch(() => [])]);
+  const lessons = all.filter((l) => !l.retired);
+  const scores = new Map(await Promise.all(quizzes.map(async (q) => [q.id, scoreQuiz(q, await getQuizAnswers(q.id).catch(() => null))])));
+  const { byLesson } = groupQuizzes(all, quizzes);
+  const stateOf = (l) => lessonState(l, (byLesson.get(l.id) || []).map((q) => scores.get(q.id)));
   const nLessons = lessons.filter((l) => l.kind === 'lesson').length;
   const nRefs = lessons.length - nLessons;
   return h('a', { class: 'card card--course', href: link('c', course.id), 'data-course': course.id },
@@ -31,7 +36,7 @@ async function courseCard(course) {
     h('p', { class: 'card__title', text: courseName(course) }),
     h('p', { class: 'card__meta', text: `${plural(nLessons, 'урок', 'урока')} · ${plural(nRefs, 'справочник', 'справочника')}` }),
     // T-011: the progress of the course.
-    nLessons ? h('p', { class: 'card__meta card__progress', 'data-field': 'course-progress', text: progressText(lessons) }) : null,
+    nLessons ? h('p', { class: 'card__meta card__progress', 'data-field': 'course-progress', text: progressText(lessons, stateOf) }) : null,
   );
 }
 

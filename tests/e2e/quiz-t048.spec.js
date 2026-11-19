@@ -10,6 +10,13 @@ import { join } from 'node:path';
 import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.mjs';
 import { strToU8 } from '../../vendor/fflate.js';
 
+// D-040 (T-057): the quizzes are under their lesson, behind the arrow: unfold every lesson.
+async function unfoldLessons(page) {
+  await expect(page.locator('[data-screen="course"] [data-section="activity"]')).toBeVisible({ timeout: 15000 });
+  const closed = page.locator('[data-field="lesson-toggle"][aria-expanded="false"]');
+  for (let n = await closed.count(); n > 0; n = await closed.count()) await closed.first().click();
+}
+
 const FILES = readFixture();
 
 let problems;
@@ -242,6 +249,7 @@ test.describe('T-048 HTML/script in quiz texts is never run nor rendered (quizze
     await noMarkup('result');
     // The file-name quiz opens by its (encoded) slug.
     await page.goto('./#/c/LRN-XSS');
+    await unfoldLessons(page);
     await page.locator('[data-list="quizzes"] a', { hasText: '<svg' }).click();
     await expect(page.locator('.quiz__question')).toHaveText('файл?');
     await noMarkup('file-name quiz');
@@ -255,6 +263,7 @@ test.describe('T-048 the quiz screen', () => {
     await importCourse(page, 'LRN-Q', BASIC());
     await openCourse(page, 'LRN-Q');
     await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('не е започнат');
+    await unfoldLessons(page);
     await page.locator('[data-list="quizzes"] a.quiz-list__link').first().click();
     await expect(counter(page)).toHaveText('Въпрос 1 от 3 · отговорени 0');
     await expect(page.getByRole('button', { name: 'Назад' })).toBeDisabled();
@@ -485,6 +494,7 @@ test.describe('T-048 layout: screenshots, light/dark, touch targets ≥ 44 px', 
         expect(list, where).toEqual([]);
       };
       await openCourse(page, 'LRN-DEMO');
+      await unfoldLessons(page);
       await page.locator('[data-list="quizzes"]').scrollIntoViewIfNeeded();
       await shot('course');
       const quizLinks = await page.evaluate(() => [...document.querySelectorAll('[data-list="quizzes"] a')].map((e) => Math.round(e.getBoundingClientRect().height)));
