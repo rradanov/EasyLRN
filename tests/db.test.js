@@ -57,14 +57,14 @@ async function seedTree() {
 test('схема v1: всички хранилища и индекси', async () => {
   const conn = await db.openDb();
   eq(conn.version, db.SCHEMA_VERSION, 'version');
-  eq(db.SCHEMA_VERSION, 3, 'SCHEMA_VERSION');
+  eq(db.SCHEMA_VERSION, 4, 'SCHEMA_VERSION'); // v4 (T-019): secrets
   eq([...conn.objectStoreNames].sort(), Object.values(STORES).sort(), 'stores');
   const expected = {
     files: ['by_course'], lessons: ['by_course'], annotations: ['by_course', 'by_target'],
     notes: ['by_annotation'], threads: ['by_annotation'], messages: ['by_thread'],
     subtopics: ['by_annotation', 'by_course', 'by_parent', 'by_root'], usage: ['by_at'],
     quizzes: ['by_course', 'by_lesson'], quizAnswers: [],
-    courses: [], settings: [],
+    courses: [], settings: [], secrets: [],
   };
   const tx = conn.transaction(Object.values(STORES));
   for (const [store, indexes] of Object.entries(expected)) {
@@ -407,7 +407,8 @@ test('T-006 празна база: четенията връщат празно,
   const tree = await db.getLessonTree('няма');
   eq([tree.record, tree.annotations], [undefined, []], 'tree of a missing lesson');
   const s = await db.getSettings();
-  eq([s.model, s.maxTokensAnswer, s.maxTokensSubtopic, s.monthlyBudgetUSD, s.apiKey], ['claude-sonnet-5-5', 1500, 3000, 5, ''], 'default settings');
+  // T-019: the API key is no longer a setting (own `secrets` store); no key by default.
+  eq([s.model, s.maxTokensAnswer, s.maxTokensSubtopic, s.monthlyBudgetUSD, 'apiKey' in s, await db.getApiKey()], ['claude-sonnet-5-5', 1500, 3000, 5, false, ''], 'default settings');
   eq(await db.usageTotals(db.monthStart()), { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estCostUSD: 0 }, 'usage');
 });
 
@@ -640,6 +641,36 @@ test('T-006 миграция v1 → v2 (нов store + преместване н
   eq(conn.version, 3);
   eq((await db.byIndex(STORES.annotations, 'by_color', 'yellow')).length, 0);
   eq((await conn.getAllFromIndex('progress', 'by_status', 'done')).length, 1);
+});
+
+// --- T-019 (developer): the API key in its own store ---------------------------
+test('T-019 миграция v3 → v4: ключ от settings отива в secrets, настройките остават', async (name) => {
+  await db.deleteDatabase(name);
+  const upTo3 = { 1: db.MIGRATIONS[1], 2: db.MIGRATIONS[2], 3: db.MIGRATIONS[3] };
+  let conn = await db.openDb({ name, version: 3, migrations: upTo3 });
+  await conn.put(STORES.settings, { id: 'settings', apiKey: 'sk-ant-test-FAKE-OLD1', fontScale: 1.25, model: 'claude-opus-5-5', updatedAt: '2026-11-01T00:00:00.000Z' });
+  db.closeDb();
+  conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  eq(conn.version, 4, 'version');
+  const s = await conn.get(STORES.settings, 'settings');
+  eq(['apiKey' in s, s.fontScale, s.model], [false, 1.25, 'claude-opus-5-5'], 'settings without the key');
+  eq(await db.getApiKey(), 'sk-ant-test-FAKE-OLD1', 'key moved');
+  eq((await db.getSettings()).apiKey, undefined, 'getSettings has no key');
+});
+
+test('T-019 ключ: запис, четене, изтриване; не е в настройките и не е в BACKUP_STORES', async () => {
+  eq(await db.getApiKey(), '', 'none at first');
+  await db.saveApiKey('sk-ant-test-FAKE-0000');
+  eq(await db.getApiKey(), 'sk-ant-test-FAKE-0000');
+  const s = await db.getSettings();
+  assert(!JSON.stringify(s).includes('FAKE'), 'not in the settings record');
+  eq(db.BACKUP_STORES.includes(STORES.secrets), false, 'secrets never exported');
+  eq(db.PRIVATE_STORES, [STORES.secrets]);
+  eq([...db.BACKUP_STORES, ...db.PRIVATE_STORES, STORES.files].sort(), Object.values(STORES).sort(), 'every store is either exportable, private or the course files');
+  await rejects(() => db.saveApiKey(''), /empty/);
+  await db.deleteApiKey();
+  eq(await db.getApiKey(), '', 'deleted');
+  eq(await (await db.openDb()).count(STORES.secrets), 0, 'nothing left');
 });
 
 // --- runner -------------------------------------------------------------------

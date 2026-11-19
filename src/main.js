@@ -6,7 +6,8 @@ import { APP_NAME } from './config.js';
 import { h, mount } from './dom.js';
 import { addRoute, startRouter } from './router.js';
 import { registerServiceWorker } from './sw-client.js';
-import { initStorage } from './db.js';
+import { initStorage, getSettings } from './db.js';
+import { applyTheme } from './theme.js';
 import { coursesScreen } from './screens/courses.js';
 import { courseScreen } from './screens/course.js';
 import { readerScreen } from './screens/reader.js';
@@ -83,6 +84,10 @@ function startApp() {
 
   // Open/upgrade the database and ask for persistent storage (D-014).
   initStorage().catch((err) => console.error('IndexedDB:', err));
+
+  // Theme (T-019): from the settings at start, then on every change.
+  getSettings().then((s) => applyTheme(s.theme)).catch(() => {});
+  window.addEventListener('easylrn:settings', (event) => applyTheme(event.detail?.theme));
 
   const banner = document.getElementById('update-banner');
   const updateButton = document.getElementById('update-button');

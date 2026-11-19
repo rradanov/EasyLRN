@@ -31,7 +31,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #151513;
     --paper-2: #1f1e1b;
     --ink: #e6e3da;
@@ -49,6 +49,28 @@
     --hl-orange: #5c3a17;
   }
 }
+/* A theme chosen in "Настройки" (T-019, src/theme.js) wins over the system. */
+:root[data-theme="dark"] {
+  --paper: #151513;
+  --paper-2: #1f1e1b;
+  --ink: #e6e3da;
+  --ink-muted: #a4a094;
+  --rule: #34322d;
+  --accent: #e0a27a;
+  --accent-ink: #151513;
+  --focus: #8ab4f8;
+  --shadow: 0 1px 3px rgb(0 0 0 / 0.5);
+
+  --hl-yellow: #5c5216;
+  --hl-green: #2c4a2c;
+  --hl-blue: #23405c;
+  --hl-pink: #5a2a3d;
+  --hl-orange: #5c3a17;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+/* Lessons keep following the SYSTEM theme: Chromium does not pass a chosen
+   theme into the frame's prefers-color-scheme (checked in T-019). */
 
 *,
 *::before,
@@ -403,6 +425,72 @@ a.card:active { background: var(--paper); }
 .quiz-list__reset { flex: 0 0 auto; color: #b3261e; border-color: #b3261e; }
 .quiz-list__item .quiz__confirm { margin: 4px 0 12px; }
 @media (prefers-color-scheme: dark) {
-  .quiz-list__reset, .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
-  .button--danger { color: #fff; background: #b3261e; border-color: #ff8a80; }
+  :root:not([data-theme="light"]) .quiz-list__reset, :root:not([data-theme="light"]) .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
+  :root:not([data-theme="light"]) .button--danger { color: #fff; background: #b3261e; border-color: #ff8a80; }
 }
+:root[data-theme="dark"] .quiz-list__reset, :root[data-theme="dark"] .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
+:root[data-theme="dark"] .button--danger { color: #fff; background: #b3261e; border-color: #ff8a80; }
+
+/* ---- Settings (T-019, UI-DESIGN §8) ---- */
+.screen--settings { max-width: 860px; }
+.screen--settings .screen__heading { margin-top: 28px; }
+.screen--settings .screen__heading:first-child { margin-top: 0; }
+.settings__group { margin: 0 0 8px; border-top: 1px solid var(--rule); }
+.settings__row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 8px 24px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule);
+}
+@media (max-width: 700px) { .settings__row { grid-template-columns: minmax(0, 1fr); } }
+.settings__label { color: var(--ink-muted); font-family: var(--font-sans); padding-top: 10px; }
+.settings__value { min-width: 0; font-family: var(--font-sans); }
+.settings__value > p { margin: 0 0 8px; }
+.settings__input {
+  min-height: var(--touch);
+  padding: 0 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+  max-width: 100%;
+}
+.settings__input:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+.settings__input--key { flex: 1 1 260px; min-width: 0; font-family: ui-monospace, "Roboto Mono", monospace; }
+.settings__input--number { width: 7em; }
+.settings__key-line, .settings__actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.settings__actions { margin-top: 8px; }
+.settings__key-status { font-variant-numeric: tabular-nums; }
+.settings__warning {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--paper-2);
+  font-size: 0.95rem;
+}
+.settings__warning p { margin: 0; }
+.settings__warning-main { font-weight: 600; }
+.settings__warning-tip { color: var(--ink-muted); }
+.settings__message { margin: 8px 0 0; padding: 8px 12px; border-left: 3px solid var(--rule); background: var(--paper-2); }
+.settings__message[data-kind="ok"] { border-left-color: #2e7d32; }
+.settings__message[data-kind="error"] { border-left-color: #b3261e; }
+.settings__danger { color: #b3261e; border-color: #b3261e; }
+.settings__inline-message { display: block; margin-top: 4px; color: var(--ink-muted); font-size: 0.9rem; }
+.settings__budget { display: inline-flex; align-items: center; gap: 6px; }
+.settings__spend-warning { margin: 6px 0 0; color: #b3261e; font-weight: 600; }
+.settings__scale { display: inline-flex; align-items: center; gap: 8px; }
+.settings__step { min-width: var(--touch); padding: 0 12px; }
+.settings__scale-value { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.settings__sample { margin: 8px 0 0; font-family: var(--font-serif); }
+.settings__choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.settings__choice { display: inline-flex; align-items: center; gap: 6px; min-height: var(--touch); }
+.settings__choice input { width: 22px; height: 22px; accent-color: var(--accent); }
+.screen--settings .quiz__confirm { margin: 8px 0 0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .settings__danger, :root:not([data-theme="light"]) .settings__spend-warning { color: #ff8a80; border-color: #ff8a80; }
+}
+:root[data-theme="dark"] .settings__danger, :root[data-theme="dark"] .settings__spend-warning { color: #ff8a80; border-color: #ff8a80; }
+.settings__hint { margin: 4px 0 0; font-size: 0.9rem; }

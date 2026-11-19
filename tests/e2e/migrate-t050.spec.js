@@ -112,7 +112,7 @@ test('T-050 migration v2 → v3 with own old answers and broken records; then a 
       return { v, m: await db.getQuizAnswers('LRN-MIG/quizzes/m.json'), n: await db.getQuizAnswers('LRN-MIG/quizzes/n.json'), gone: await db.getQuizAnswers('LRN-MIG/quizzes/gone.json') };
     });
     console.log(`T-050 migrate after v3: ${JSON.stringify({ v: after.v, m: [after.m.choices, after.m.cursor], n: [after.n.choices, after.n.cursor], gone: after.gone.choices })}`);
-    expect(after.v).toBe(3);
+    expect(after.v).toBe(4); // 0.7.0 (T-019) added schema v4 (secrets) on top of v3
     expect(Object.values(after.m.choices).sort()).toEqual(['А', 'В', 'Да']); // Q1 А, Q2 В, first twin Да; the broken ones dropped
     await page.goto(`${url}#/c/LRN-MIG`);
     await expect(page.locator('.quiz-list__item', { hasText: 'Миграция' }).locator('[data-field="quiz-status"]')).toHaveText('3 от 6 отговорени');
