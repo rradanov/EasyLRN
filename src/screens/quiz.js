@@ -24,8 +24,11 @@ import { confirmBox } from './confirm.js';
 
 function findQuiz(quizzes, key) {
   const k = String(key);
+  // An old link (earlier file name of a renamed quiz, D-039) still finds it.
+  const slugOf = (path) => /^quizzes\/([^/]+)\.json$/i.exec(path)?.[1];
   return quizzes.find((q) => q.slug === k) || quizzes.find((q) => q.id === k)
-    || quizzes.find((q) => q.id.endsWith(`/${k}`)) || null;
+    || quizzes.find((q) => q.id.endsWith(`/${k}`))
+    || quizzes.find((q) => (q.previousPaths || []).some((p) => slugOf(p) === k || p === k)) || null;
 }
 
 /** Only https: links are ever shown (checked at import too, D-035). */

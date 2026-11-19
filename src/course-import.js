@@ -12,8 +12,11 @@
 // User-facing messages are in Bulgarian (ImportError.message).
 import { strFromU8 } from '../vendor/fflate.js';
 import { listZip, readEntry } from './zip.js';
-import { listCourseFiles, listLessons, listQuizzes, getCourse, listCourses, saveCourseImport } from './db.js';
+import {
+  listCourseFiles, listLessons, listQuizzes, getCourse, listCourses, saveCourseImport, annotationsOfCourse, byIndex, STORES,
+} from './db.js';
 import { renderCourse } from './lesson-render.js';
+import { lessonNumberOf, lessonId, quizId, quizNumberOf, normalizeNumber } from './lesson-id.js';
 
 /** Error with a message for the user (Bulgarian). */
 export class ImportError extends Error {
@@ -185,13 +188,22 @@ export function parseIndex(md) {
   const rows = [];
   const artifacts = {};
   const planned = [];
+  const retired = [];
   let section = null;
   for (const line of String(md || '').split(/\r?\n/)) {
     const heading = /^#{1,6}\s+(.*)$/.exec(line);
     if (heading) {
       const t = heading[1].toLowerCase();
-      section = /урок|уроц|lesson/.test(t) ? 'lesson' : /справоч|reference/.test(t) ? 'reference'
+      // D-039: "## Оттеглени номера" lists the numbers taken out of the course.
+      section = /оттеглен|retired/.test(t) ? 'retired' : /урок|уроц|lesson/.test(t) ? 'lesson' : /справоч|reference/.test(t) ? 'reference'
         : /^(план|plan)(\s|\(|:|$)/.test(t) ? 'plan' : null;
+      continue;
+    }
+    if (section === 'retired') {
+      // "- 0007 — слят с 0006 (2026-11-20)" / "- R02 — …"
+      const item = /^\s*[-*]\s+(R?\d{1,4})(?![\d\p{L}])/iu.exec(line);
+      const number = item && normalizeNumber(item[1]);
+      if (number) retired.push({ kind: number.startsWith('R') ? 'reference' : 'lesson', number });
       continue;
     }
     if (section === 'plan') {
@@ -211,7 +223,7 @@ export function parseIndex(md) {
     rows.push({ kind: section, number, title, path: path && cleanPath(path), artifact });
     if (artifact && path) artifacts[artifact] = cleanPath(path);
   }
-  return { rows, artifacts, planned };
+  return { rows, artifacts, planned, retired };
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0' };
@@ -281,13 +293,8 @@ async function sha256(u8) {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function lessonKind(path) {
-  let m = /^lessons\/(\d{4})-[^/]+\.html?$/i.exec(path);
-  if (m) return { kind: 'lesson', number: m[1] };
-  m = /^reference\/(R\d+)[^/]*\.html?$/i.exec(path);
-  if (m) return { kind: 'reference', number: m[1].toUpperCase() };
-  return null;
-}
+/** { kind, number } of a lesson or reference file (D-039: "R1" → "R01"), or null. */
+const lessonKind = lessonNumberOf;
 
 // --- Quizzes (T-047, D-032/D-033): quizzes/<slug>.json ------------------------
 
@@ -343,7 +350,7 @@ export function parseQuizLinks(value, where, notes) {
  * note; limits bound every length and count, and a cut is noted too (the
  * import summary shows the notes, T-048 Н-2).
  */
-export function parseQuiz(courseId, path, bytes, notes = []) {
+export function parseQuiz(courseId, path, bytes, notes = [], info = notes) {
   const slug = quizSlug(path);
   if (!slug) return null;
   let json;
@@ -392,8 +399,13 @@ export function parseQuiz(courseId, path, bytes, notes = []) {
   if (clamped) notes.push(`тест ${path}: ${clamped} твърде дълги текста са съкратени`);
   if (!questions.length) { notes.push(`тест ${path}: няма валидни въпроси — пропуснат`); return null; }
   const lesson = normalizeLessonNumber(json.lesson);
+  // D-039: a quiz is its lesson number + its number in the lesson (NNNN-K);
+  // a file outside that pattern is kept by its path, with a note.
+  if (!quizNumberOf(path)) {
+    info.push(`тест ${path}: името не е във вида NNNN-K-….json — отговорите му са вързани към името на файла`);
+  }
   return {
-    id: `${courseId}/${path}`,
+    id: quizId(courseId, path),
     courseId,
     path,
     slug,
@@ -491,14 +503,17 @@ export async function importCourse(files, { onProgress } = {}) {
   // T008-D4: a partial import without INDEX.md (one part of a split ZIP, a
   // loose lesson) uses the stored INDEX.md, so artifact links and titles stay.
   const index = parseIndex(indexMd ?? oldCourse?.meta?.index);
+  // D-039: a lesson is its course + number. A renamed file is the same
+  // lesson (new path, the old one in `previousPaths`); nothing is moved.
+  const numKey = (kind, number) => `${kind}:${normalizeNumber(number) ?? String(number).toUpperCase()}`;
   const rowByPath = new Map(index.rows.filter((r) => r.path).map((r) => [r.path, r]));
-  const rowByNumber = new Map(index.rows.map((r) => [`${r.kind}:${r.number.toUpperCase()}`, r]));
+  const rowByNumber = new Map(index.rows.map((r) => [numKey(r.kind, r.number), r]));
   const artifactByPath = Object.fromEntries(Object.entries(index.artifacts).map(([id, p]) => [p, id]));
   const lessons = lessonFiles.map((e) => {
     const { kind, number } = lessonKind(e.path);
-    const row = rowByPath.get(e.path) || rowByNumber.get(`${kind}:${number.toUpperCase()}`);
+    const row = rowByPath.get(e.path) || rowByNumber.get(numKey(kind, number));
     return {
-      id: `${courseId}/${e.path}`,
+      id: lessonId(courseId, kind, number),
       courseId,
       kind,
       number,
@@ -510,67 +525,130 @@ export async function importCourse(files, { onProgress } = {}) {
       indexPos: row ? index.rows.indexOf(row) : Infinity,
     };
   });
-  // T012-I4: a lesson is its number. A stored lesson whose file is not in this
-  // import, replaced by exactly one NEW file with the same kind and number
-  // (the file was renamed), is that lesson: the new record takes over its
-  // progress and the user's data that points at it (saveCourseImport, one
-  // transaction), and the old record is soft-deleted. Ambiguous cases (two
-  // stored or two new files with one number) are left as before.
-  const importedIds = new Set(lessons.map((l) => l.id));
-  const numberKey = (l) => `${l.kind}:${String(l.number).toUpperCase()}`;
-  const liveOld = oldLessons.filter((l) => !l.deleted);
-  const renames = [];
-  for (const l of lessons) {
-    if (oldLessonById.get(l.id) && !oldLessonById.get(l.id).deleted) continue;
-    const key = numberKey(l);
-    const gone = liveOld.filter((o) => numberKey(o) === key && !importedIds.has(o.id));
-    const fresh = lessons.filter((n) => numberKey(n) === key && !(oldLessonById.get(n.id) && !oldLessonById.get(n.id).deleted));
-    if (gone.length === 1 && fresh.length === 1) renames.push({ from: gone[0].id, to: l.id, fromPath: gone[0].path });
+  // D-039: one number twice in the import ("0003-a.html" and "0003-b.html",
+  // "R1-…" and "R01-…") → the whole import is refused, nothing is written:
+  // it is not clear which file the user's data belongs to.
+  const pathsById = new Map();
+  for (const l of lessons) pathsById.set(l.id, [...(pathsById.get(l.id) || []), l.path]);
+  for (const [id, paths] of pathsById) {
+    if (paths.length < 2) continue;
+    const l = lessons.find((x) => x.id === id);
+    throw new ImportError(`В курса има ${countWord(paths.length)} ${l.kind === 'reference' ? 'справочника' : 'урока'} с номер ${l.number}: ${paths.join(', ')}. Поправи курса и импортирай отново.`);
   }
-  const renamedFrom = new Set(renames.map((r) => r.from));
-  const renamedTo = new Set(renames.map((r) => r.to));
+  // Retired (D-039 §А.2.3): a number listed under "## Оттеглени номера", or —
+  // in a full import (with INDEX.md) — a stored lesson that is neither in the
+  // import nor anywhere in INDEX.md. Its data and file stay; it is shown under
+  // "Вече не са в курса" and comes back when its number does.
+  const fullImport = indexMd != null;
+  const retiredKeys = new Set(index.retired.map((r) => numKey(r.kind, r.number)));
+  const inIndex = new Set([...index.rows, ...index.planned].map((r) => numKey(r.kind, r.number)));
+  const retiredNow = (l, inImport) => {
+    const k = numKey(l.kind, l.number);
+    if (retiredKeys.has(k)) return true;
+    if (inImport) return false;
+    if (fullImport) return !inIndex.has(k);
+    return Boolean(l.retired);
+  };
+  const importedAt = new Date().toISOString();
+  for (const l of lessons) {
+    const old = oldLessonById.get(l.id);
+    const previous = [...(old?.previousPaths || []), ...(old?.path ? [old.path] : [])].filter((p) => p && p !== l.path);
+    if (previous.length) l.previousPaths = [...new Set(previous)];
+    l.retired = retiredNow(l, true);
+    l.retiredAt = l.retired ? (old?.retired && old.retiredAt) || importedAt : null;
+  }
   // Lessons already stored but not in this (partial) import keep their place in the order.
-  // A record replaced by a renamed file earlier (soft-deleted, `renamedTo`) is not one of them.
-  const all = [...lessons, ...oldLessons.filter((l) => !renamedFrom.has(l.id) && !(l.deleted && l.renamedTo) && !lessons.some((n) => n.id === l.id))
-    .map((l) => ({ ...l, indexPos: index.rows.findIndex((r) => r.path === l.path), keep: true }))];
+  const importedIds = new Set(lessons.map((l) => l.id));
+  const all = [...lessons, ...oldLessons.filter((l) => !importedIds.has(l.id))
+    .map((l) => ({ ...l, indexPos: index.rows.findIndex((r) => r.path === l.path || numKey(r.kind, r.number) === numKey(l.kind, l.number)), keep: true }))];
+  // Retired ones go after the others of their kind.
+  for (const l of all) l.isRetired = l.keep ? (l.deleted ? Boolean(l.retired) : retiredNow(l, false)) : l.retired;
   const kindRank = { lesson: 0, reference: 1 };
+  const pos = (l) => (l.indexPos === -1 ? Infinity : l.indexPos);
   all.sort((a, b) => (kindRank[a.kind] - kindRank[b.kind])
-    || ((a.indexPos === -1 ? Infinity : a.indexPos) - (b.indexPos === -1 ? Infinity : b.indexPos))
+    || (Number(a.isRetired) - Number(b.isRetired))
+    || (pos(a) - pos(b))
     || String(a.number).localeCompare(String(b.number), 'bg', { numeric: true }));
   all.forEach((l, i) => { l.order = i + 1; });
 
-  const lessonStats = { added: [], changed: [], unchanged: [] };
+  // T011F-D1: the same number with a quite different title, on a lesson the
+  // user has worked with (progress, marks, topics): maybe the course was
+  // renumbered. The data stays with the number; the summary warns.
+  const [annotations, subtopics] = await Promise.all([
+    annotationsOfCourse(courseId).catch(() => []),
+    byIndex(STORES.subtopics, 'by_course', courseId).catch(() => []),
+  ]);
+  const userData = new Set([
+    ...annotations.filter((a) => a.target?.type === 'lesson').map((a) => a.target.id),
+    ...subtopics.map((s) => s.rootLessonId),
+  ]);
+  const warnings = [];
+
+  const lessonStats = { added: [], changed: [], unchanged: [], retired: [], restored: [] };
   const lessonsToWrite = [];
   for (const l of all) {
     const old = oldLessonById.get(l.id);
-    const { indexPos, keep, ...record } = l;
+    const { indexPos, keep, isRetired, ...record } = l;
     if (keep) {
-      if (old.order !== l.order) lessonsToWrite.push({ ...old, order: l.order });
+      const patch = {};
+      if (old.order !== l.order) patch.order = l.order;
+      if (!old.deleted) {
+        const retired = retiredNow(old, false);
+        if (retired !== Boolean(old.retired)) {
+          patch.retired = retired;
+          patch.retiredAt = retired ? importedAt : null;
+          (retired ? lessonStats.retired : lessonStats.restored).push(`${old.number} ${old.title}`);
+        }
+      }
+      if (Object.keys(patch).length) lessonsToWrite.push({ ...old, ...patch });
       continue;
     }
     const label = `${l.number} ${l.title}`;
-    if (renamedTo.has(l.id)) { lessonStats.changed.push(label); lessonsToWrite.push(record); continue; }
     if (!old) { lessonStats.added.push(label); lessonsToWrite.push(record); continue; }
+    if (!old.deleted && Boolean(old.retired) !== l.retired) (l.retired ? lessonStats.retired : lessonStats.restored).push(label);
+    const worked = old.progress?.status === 'done' || old.progress?.status === 'started' || old.progress?.lastOpenedAt
+      || userData.has(l.id);
+    if (!old.deleted && worked && titlesDiffer(old.title, l.title)) {
+      warnings.push(`${l.kind === 'reference' ? 'Справочник' : 'Урок'} ${l.number} е с ново заглавие „${l.title}“ (беше „${old.title}“). Прогресът и маркировките остават към номер ${l.number} — ако уроците са преномерирани, провери ги.`);
+    }
     const same = !old.deleted && old.sha256 === l.sha256 && old.title === l.title && old.order === l.order
+      && old.path === l.path && Boolean(old.retired) === l.retired
       && old.kind === l.kind && (old.indexTitle ?? null) === l.indexTitle && (old.artifactId ?? null) === l.artifactId;
     if (same) { lessonStats.unchanged.push(label); continue; }
-    if (old.sha256 !== l.sha256 || old.deleted) lessonStats.changed.push(label); else lessonStats.unchanged.push(label);
+    if (old.sha256 !== l.sha256 || old.deleted || old.path !== l.path) lessonStats.changed.push(label); else lessonStats.unchanged.push(label);
     lessonsToWrite.push(record);
   }
 
-  // Quizzes (T-047, D-032/D-033): quizzes/<slug>.json. Answers live in a
-  // separate store and are never touched here, so a re-import keeps the answers
-  // of unchanged questions (by text). Quizzes stored but absent from this
+  // Quizzes (T-047, D-032/D-033): quizzes/<slug>.json, keyed by NNNN-K (D-039).
+  // Answers live in a separate store under the quiz id and are never touched
+  // here, so a re-import keeps the answers of unchanged questions (by text),
+  // also when the file was renamed. Quizzes stored but absent from this
   // (partial) import are kept, like files and lessons.
-  const quizNotes = [];
-  const quizzes = [];
-  for (const e of list) {
-    if (!quizSlug(e.path)) continue;
-    if (quizzes.length >= QUIZ_LIMITS.quizzes) { quizNotes.push(`над ${QUIZ_LIMITS.quizzes} теста — останалите пропуснати`); break; }
-    const quiz = parseQuiz(courseId, e.path, e.data, quizNotes);
-    if (quiz) { quiz.sha256 = e.sha256; quizzes.push(quiz); }
+  const quizFiles = list.filter((e) => quizSlug(e.path));
+  const quizPaths = new Map();
+  for (const e of quizFiles) {
+    const id = quizId(courseId, e.path);
+    quizPaths.set(id, [...(quizPaths.get(id) || []), e.path]);
   }
-  if (quizNotes.length) console.info(`EasyLRN quizzes ${courseId}:`, quizNotes.join('; '));
+  for (const [id, paths] of quizPaths) {
+    if (paths.length > 1) {
+      throw new ImportError(`В курса има ${countWord(paths.length)} теста с номер ${id.slice(id.lastIndexOf(':') + 1)}: ${paths.join(', ')}. Поправи курса и импортирай отново.`);
+    }
+  }
+  const quizNotes = [];
+  const quizInfo = [];
+  const quizzes = [];
+  for (const e of quizFiles) {
+    if (quizzes.length >= QUIZ_LIMITS.quizzes) { quizNotes.push(`над ${QUIZ_LIMITS.quizzes} теста — останалите пропуснати`); break; }
+    const quiz = parseQuiz(courseId, e.path, e.data, quizNotes, quizInfo);
+    if (!quiz) continue;
+    quiz.sha256 = e.sha256;
+    const old = oldQuizById.get(quiz.id);
+    const previous = [...(old?.previousPaths || []), ...(old?.path ? [old.path] : [])].filter((p) => p && p !== quiz.path);
+    if (previous.length) quiz.previousPaths = [...new Set(previous)];
+    quizzes.push(quiz);
+  }
+  if (quizNotes.length || quizInfo.length) console.info(`EasyLRN quizzes ${courseId}:`, [...quizNotes, ...quizInfo].join('; '));
 
   // Quizzes stored but absent from this (partial) import keep their place in the
   // order, exactly like lessons, so a partial re-import is "Без промени".
@@ -589,13 +667,13 @@ export async function importCourse(files, { onProgress } = {}) {
       if (!old.deleted && old.order !== q.order) quizzesToWrite.push({ ...old, order: q.order });
       continue;
     }
-    if (old && !old.deleted && old.sha256 === q.sha256 && old.order === q.order) {
+    if (old && !old.deleted && old.sha256 === q.sha256 && old.order === q.order && old.path === q.path) {
       quizStats.unchanged++;
       // The same file, read by an older version of parseQuiz (no links…): store it again, silently.
       if (old.format !== QUIZ_FORMAT) quizzesToWrite.push(record);
       continue;
     }
-    if (!old || old.deleted) quizStats.added++; else if (old.sha256 !== q.sha256) quizStats.changed++;
+    if (!old || old.deleted) quizStats.added++; else if (old.sha256 !== q.sha256 || old.path !== q.path) quizStats.changed++;
     quizzesToWrite.push(record);
   }
 
@@ -610,9 +688,9 @@ export async function importCourse(files, { onProgress } = {}) {
   const title = missionTitle(meta.mission ?? oldCourse?.meta?.mission) || oldCourse?.title || courseId;
   const fileCount = new Set([...oldFiles.filter((f) => !f.deleted).map((f) => f.path), ...list.map((e) => e.path)]).size;
   const isNew = !oldCourse || oldCourse.deleted;
-  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length && !quizzesToWrite.length && !renames.length;
+  const nothingToWrite = !isNew && !filesToWrite.length && !lessonsToWrite.length && !quizzesToWrite.length;
   const contentChanged = fileStats.added || fileStats.changed || lessonStats.added.length || lessonStats.changed.length
-    || quizStats.added || quizStats.changed;
+    || quizStats.added || quizStats.changed || lessonStats.retired.length || lessonStats.restored.length;
   const status = isNew ? 'new' : contentChanged ? 'updated' : 'unchanged';
 
   // "Без промени" writes nothing, so the course keeps its updatedAt (backup merge, D-014).
@@ -623,9 +701,7 @@ export async function importCourse(files, { onProgress } = {}) {
       files: filesToWrite,
       lessons: lessonsToWrite,
       quizzes: quizzesToWrite,
-      renames,
     });
-    if (renames.length) console.info(`EasyLRN ${courseId}: renamed lesson files:`, renames.map((r) => `${r.fromPath} → ${r.to.slice(courseId.length + 1)}`).join('; '));
   }
 
   // Self-contained versions of the lessons for the isolated reader (T-045,
@@ -638,7 +714,8 @@ export async function importCourse(files, { onProgress } = {}) {
     console.warn('EasyLRN: lessons not prepared at import (done when opened):', err);
   }
 
-  const items = all.map((l) => ({ kind: l.kind, number: l.number, title: l.title }));
+  const items = all.filter((l) => !l.isRetired && !(l.keep && l.deleted))
+    .map((l) => ({ kind: l.kind, number: l.number, title: l.title }));
   const summary = {
     courseId,
     title,
@@ -649,12 +726,17 @@ export async function importCourse(files, { onProgress } = {}) {
     counts: {
       lessons: items.filter((i) => i.kind === 'lesson').length,
       references: items.filter((i) => i.kind === 'reference').length,
-      quizzes: allQuizzes.length,
+      quizzes: allQuizzes.filter((q) => !q.deleted).length,
+      retired: all.filter((l) => l.isRetired && !(l.keep && l.deleted)).length,
       files: fileCount,
     },
     items,
     skippedPdf,
     quizNotes,
+    // D-039: a quiz file outside the NNNN-K pattern (kept by its path).
+    notes: quizInfo,
+    // T011F-D1: a lesson the user worked with got a quite different title.
+    warnings,
     ms: Math.round(performance.now() - t0),
   };
   progress({ phase: 'done', done: 1, total: 1 });
@@ -662,6 +744,37 @@ export async function importCourse(files, { onProgress } = {}) {
 }
 
 // --- Bulgarian wording for the UI --------------------------------------------
+
+/** "два", "три", or the number (for "В курса има два урока с номер …"). */
+function countWord(n) {
+  return n === 2 ? 'два' : n === 3 ? 'три' : String(n);
+}
+
+/** Letters and digits only, lower case: the words of a title. */
+const titleText = (t) => String(t ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * True if two titles of one lesson number are QUITE different (T011F-D1):
+ * the Dice coefficient of their letter pairs is below 0.5. A fixed typo,
+ * an added word or a changed case are not different.
+ */
+export function titlesDiffer(a, b) {
+  const x = titleText(a).replace(/ /g, '');
+  const y = titleText(b).replace(/ /g, '');
+  if (x === y) return false;
+  if (!x || !y) return false;
+  const pairs = (s) => {
+    const m = new Map();
+    for (let i = 0; i < s.length - 1; i++) m.set(s.slice(i, i + 2), (m.get(s.slice(i, i + 2)) || 0) + 1);
+    return m;
+  };
+  const px = pairs(x);
+  const py = pairs(y);
+  let common = 0;
+  for (const [k, n] of px) common += Math.min(n, py.get(k) || 0);
+  const total = Math.max(1, x.length - 1) + Math.max(1, y.length - 1);
+  return (2 * common) / total < 0.5;
+}
 
 /** "1 урок", "2 урока", "5 урока" (Bulgarian count form). */
 export function plural(n, one, many) {
@@ -675,12 +788,19 @@ export function describeSummary(s) {
   const notes = s.quizNotes?.length
     ? ` Внимание — тестовете не са внесени изцяло (${s.quizNotes.length}): ${s.quizNotes.slice(0, 3).join('; ')}${s.quizNotes.length > 3 ? '; …' : ''}.`
     : '';
-  if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.${notes}`;
-  if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).${notes}`;
+  const retired = [
+    s.lessons?.retired?.length ? ` Вече не са в курса: ${s.lessons.retired.join('; ')} — данните ти за тях са запазени.` : '',
+    s.lessons?.restored?.length ? ` Отново в курса: ${s.lessons.restored.join('; ')}.` : '',
+  ].join('');
+  const warnings = s.warnings?.length ? ` Внимание: ${s.warnings.slice(0, 3).join(' ')}${s.warnings.length > 3 ? ` (и още ${s.warnings.length - 3})` : ''}` : '';
+  const info = s.notes?.length ? ` Бележка: ${s.notes.slice(0, 3).join('; ')}${s.notes.length > 3 ? '; …' : ''}.` : '';
+  const tail = `${retired}${notes}${warnings}${info}`;
+  if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.${tail}`;
+  if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).${tail}`;
   const quizChanges = s.quizzes && (s.quizzes.added || s.quizzes.changed)
     ? ` Тестове — нови: ${s.quizzes.added}, променени: ${s.quizzes.changed}.` : '';
   return `Курсът ${s.courseId} е обновен: нови уроци: ${s.lessons.added.length}, променени: ${s.lessons.changed.length}; `
-    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}.${quizChanges} Бележките, прогресът и отговорите на тестовете са запазени.${notes}`;
+    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}.${quizChanges} Бележките, прогресът и отговорите на тестовете са запазени.${tail}`;
 }
 
 /** Message for any error thrown by importCourse(). */

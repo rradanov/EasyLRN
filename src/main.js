@@ -93,7 +93,15 @@ function startApp() {
   startRouter(render);
 
   // Open/upgrade the database and ask for persistent storage (D-014).
-  initStorage().catch((err) => console.error('IndexedDB:', err));
+  // A failed upgrade (e.g. the v5 migration, D-039) leaves the old database
+  // as it was: the user is told so on the screen, not only in the console.
+  initStorage().catch((err) => {
+    console.error('IndexedDB:', err);
+    const box = document.getElementById('db-error');
+    if (!box) return;
+    box.textContent = 'Базата не може да се обнови; данните са запазени. Затвори другите раздели с EasyLRN и презареди страницата; ако се повтори, не импортирай нищо и съобщи за проблема.';
+    box.hidden = false;
+  });
 
   // Theme (T-019): from the settings at start, then on every change.
   getSettings().then((s) => applyTheme(s.theme)).catch(() => {});

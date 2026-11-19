@@ -13,7 +13,8 @@ const PHASES = {
 
 /** "Завършени: 1 от 5 · последно: урок 0003" */
 function progressText(lessons) {
-  const main = lessons.filter((l) => l.kind === 'lesson');
+  // D-039: retired lessons ("Вече не са в курса") are not counted.
+  const main = lessons.filter((l) => l.kind === 'lesson' && !l.retired);
   const done = main.filter((l) => l.progress?.status === 'done').length;
   const last = lessons.filter((l) => l.progress?.lastOpenedAt)
     .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)))[0];
@@ -22,7 +23,7 @@ function progressText(lessons) {
 }
 
 async function courseCard(course) {
-  const lessons = await listLessons(course.id);
+  const lessons = (await listLessons(course.id)).filter((l) => !l.retired);
   const nLessons = lessons.filter((l) => l.kind === 'lesson').length;
   const nRefs = lessons.length - nLessons;
   return h('a', { class: 'card card--course', href: link('c', course.id), 'data-course': course.id },
