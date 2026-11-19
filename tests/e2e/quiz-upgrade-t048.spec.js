@@ -125,7 +125,7 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
   stop = await serve(trees.now, port);
   try {
     await upgradeTo(NOW_VERSION);
-    expect(await dbInfo()).toMatchObject({ version: 3, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    expect(await dbInfo()).toMatchObject({ version: 4, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
     await page.goto(`${url}#/c/LRN-DEMO`);
     await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
     await page.goto(`${url}#/c/LRN-DEMO/quiz/0001-1-vidove`);
@@ -147,7 +147,7 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
     await page.reload();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     await context.setOffline(false);
-    expect(await dbInfo()).toMatchObject({ version: 3, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    expect(await dbInfo()).toMatchObject({ version: 4, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
   } finally { await stop(); }
   rmSync(base, { recursive: true, force: true });
   expect(problems.filter((p) => !/Failed to fetch|ERR_INTERNET_DISCONNECTED|status of 40/.test(p))).toEqual([]);

@@ -26,7 +26,23 @@ export const STORES = Object.freeze({
   usage: 'usage',
   quizzes: 'quizzes',
   quizAnswers: 'quizAnswers',
+  // v4 (T-019): secrets of the user, only the Claude API key for now (D-037).
+  // Never exported, never sent to a lesson: see BACKUP_STORES below.
+  secrets: 'secrets',
 });
+
+/**
+ * The stores a backup (T-031) may export, as an explicit ALLOW-list: a store
+ * added later is not exported until it is named here. `secrets` (the API key)
+ * is never in it (D-014: "without the API key"); `files` holds course files
+ * that a re-import restores (ARCHITECTURE §7: only with "включи и курсовете").
+ */
+export const BACKUP_STORES = Object.freeze([
+  STORES.courses, STORES.lessons, STORES.annotations, STORES.notes, STORES.threads,
+  STORES.messages, STORES.subtopics, STORES.settings, STORES.usage, STORES.quizzes, STORES.quizAnswers,
+]);
+/** Stores that never leave this browser (not in any export, never posted to a lesson). */
+export const PRIVATE_STORES = Object.freeze([STORES.secrets]);
 
 export const DOC_TYPES = Object.freeze(['lesson', 'subtopic', 'note', 'message']);
 export const COLORS = Object.freeze(['yellow', 'green', 'blue', 'pink', 'orange']);
@@ -41,8 +57,10 @@ export const USAGE_KINDS = Object.freeze(['answer', 'subtopic', 'test']);
 const SETTINGS_ID = 'settings';
 
 /** Defaults for the single settings record (ARCHITECTURE §3.5, D-022). */
+// The API key is NOT a setting (T-019): it lives in the `secrets` store
+// (getApiKey/saveApiKey/deleteApiKey), so the settings record can be shown,
+// exported and sent around without it.
 export const DEFAULT_SETTINGS = Object.freeze({
-  apiKey: '',
   model: 'claude-sonnet-5-5',
   maxTokensAnswer: 1500,
   maxTokensSubtopic: 3000,
@@ -55,6 +73,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     { id: 'orange', label: 'Пример' },
   ],
   fontScale: 1,
+  theme: 'system', // 'system' | 'light' | 'dark' (T-019)
   twoColumnMode: false,
   lastBackupAt: null,
 });
@@ -142,6 +161,20 @@ export const MIGRATIONS = Object.freeze({
         c.update({ ...value, choices: migrateChoicesV2(quizzes.get(value.id), value.choices), choicesV2: value.choices ?? {} });
       });
     };
+  },
+  // v4 (T-019): the `secrets` store for the API key. A key kept in the
+  // settings record by an earlier build (`settings.apiKey`, never set by any
+  // released screen) moves there and leaves the settings record.
+  4(db, tx) {
+    db.createObjectStore(STORES.secrets, { keyPath: 'id' });
+    eachRecord(tx, STORES.settings, (value, c) => {
+      if (!value || !Object.hasOwn(value, 'apiKey')) return;
+      const { apiKey, ...rest } = value;
+      if (typeof apiKey === 'string' && apiKey) {
+        unwrap(tx).objectStore(STORES.secrets).put({ id: API_KEY_ID, value: apiKey, updatedAt: value.updatedAt ?? now() });
+      }
+      c.update(rest);
+    });
   },
 });
 
@@ -1158,6 +1191,34 @@ export async function saveSettings(patch) {
   // Open screens follow a change at once (e.g. the text size of an open lesson, T-045).
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('easylrn:settings', { detail: record }));
   return record;
+}
+
+// ---------------------------------------------------------------------------
+// The API key (T-019, D-037): its own store, never in a settings event
+// ---------------------------------------------------------------------------
+// Rules: the key is never logged (console, errors), never put into a message
+// to a lesson, never into the DOM except the key field of "Настройки" while
+// the user types it, never into localStorage, and never into a backup.
+
+const API_KEY_ID = 'apiKey';
+
+/** The saved API key, or '' if there is none. */
+export async function getApiKey() {
+  const record = await (await openDb()).get(STORES.secrets, API_KEY_ID);
+  return typeof record?.value === 'string' ? record.value : '';
+}
+
+/** Save the API key (already checked by the caller). Fires `easylrn:apikey` (no key in it). */
+export async function saveApiKey(value) {
+  if (typeof value !== 'string' || !value) throw new TypeError('saveApiKey: empty key');
+  await (await openDb()).put(STORES.secrets, { id: API_KEY_ID, value, updatedAt: now() });
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('easylrn:apikey', { detail: { saved: true } }));
+}
+
+/** Delete the API key for real (no soft delete: nothing of it may stay). */
+export async function deleteApiKey() {
+  await (await openDb()).delete(STORES.secrets, API_KEY_ID);
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('easylrn:apikey', { detail: { saved: false } }));
 }
 
 /** Log one API call: { model, kind, input, output, cacheRead, cacheWrite, estCostUSD, at? }. */

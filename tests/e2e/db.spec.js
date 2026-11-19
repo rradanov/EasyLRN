@@ -69,14 +69,14 @@ test.describe('data layer (IndexedDB)', () => {
     await expect.poll(() => page.evaluate(async () => {
       const dbs = await indexedDB.databases();
       return dbs.find((d) => d.name === 'lrn-app')?.version ?? null;
-    })).toBe(3);
+    })).toBe(4); // v4 (T-019): the secrets store
     await expect.poll(() => page.evaluate(() => window.__persistCalls)).toBeGreaterThanOrEqual(1);
     const stores = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('lrn-app');
       req.onsuccess = () => { const names = [...req.result.objectStoreNames].sort(); req.result.close(); resolve(names); };
       req.onerror = () => reject(req.error);
     }));
-    expect(stores).toEqual(['annotations', 'courses', 'files', 'lessons', 'messages', 'notes', 'quizAnswers', 'quizzes', 'settings', 'subtopics', 'threads', 'usage']);
+    expect(stores).toEqual(['annotations', 'courses', 'files', 'lessons', 'messages', 'notes', 'quizAnswers', 'quizzes', 'secrets', 'settings', 'subtopics', 'threads', 'usage']);
     expect(problems).toEqual([]);
   });
 });
