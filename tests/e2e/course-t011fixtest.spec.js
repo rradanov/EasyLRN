@@ -272,7 +272,7 @@ test.describe('T011F-S D-038 and the side column', () => {
   }
 
   test('T011F-S2b at the very end of a long course page, the top of the sticky side ("Завършени", "Продължи") is not under the app bar', async ({ page }) => {
-    test.fail(true, 'T011F-D6: .course__side-body is sticky with max-height 100vh − bar − 32 px, but the page has more padding below the columns than the 16 px left under it; at the end of the page the sticky box is pushed up by its container and the progress line and the top of "Продължи" slide under the app bar (≈ 33 px at 1920×1200)');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     const numbers = Array.from({ length: 60 }, (_, i) => pad4(i + 1));
     const files = { 'INDEX.md': indexMd('LRN-STICKY2', numbers), 'RESOURCES.md': longResources() };
     for (const n of numbers) files[`lessons/${n}-u.html`] = lessonHtml(`Урок ${n}`);
@@ -380,7 +380,7 @@ test.describe('T011F-D1 malformed %-escapes', () => {
   });
 
   test('T011F-D1c a lesson file whose name contains a literal "%2F" opens (the SW must not read it as a "/")', async ({ page }) => {
-    test.fail(true, 'T011F-D2: sw.js coursePath() decodes every segment twice and refuses a "/" after the second decoding, so a file literally named "0001-a%2Fb.html" (stored and listed) is served as 404 and the reader says "Урокът не може да се отвори"/never gets ready');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     await importCourse(page, 'LRN-P2F', { 'INDEX.md': indexMd('LRN-P2F', ['0001']), 'lessons/0001-a%2Fb.html': lessonHtml('Наклонена черта') });
     await openCourse(page, 'LRN-P2F');
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Наклонена черта']);
@@ -514,7 +514,7 @@ test.describe('T011F-D2 deep nesting in RESOURCES.md', () => {
   }
 
   test('T011F-D2-mixed 1000 lines of interleaved quotes and lists ("> - > - …", up to 30 levels) at tablet speed (CPU ×4): shown in < 3 s', async ({ page }) => {
-    test.fail(true, 'T011F-D7: limitNesting() caps only runs of ">" and the leading indentation; interleaved "> - > - " markers are not capped (DOM depth 148, ~700 KB of HTML). marked itself is fast (~120 ms), but sanitising and laying out the tree takes ~2 s on this machine and ~8 s with CPU ×4 (≈ Galaxy Tab A9+), with tasks of ~1.6 s — the screen does not respond meanwhile');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     test.setTimeout(60000);
     const md = Array.from({ length: 1000 }, (_, i) => `${'  '.repeat(i % 60)}${i % 2 ? '> ' : '- '}${'> - '.repeat(i % 30)}ред ${i}`).join('\n');
     await importCourse(page, 'LRN-N-MIXED', { 'INDEX.md': indexMd('LRN-N-MIXED', ['0001']), 'RESOURCES.md': `# Ресурси\n\n${md}\n\nСЛЕД-МАРКЕР`, 'lessons/0001-a.html': lessonHtml('Урок А') });
@@ -947,7 +947,7 @@ test.describe('T011F-I2 the course name (h1) and the fold button', () => {
   });
 
   test('T011F-I2d a very long course name without spaces does not widen "Курсове" (the card wraps it)', async ({ page }) => {
-    test.fail(true, 'T011F-D5: .card__title has no overflow-wrap; a course name of 5000 letters without a space (MISSION.md heading) makes the "Курсове" screen scroll sideways (scrollWidth ≈ 55000 px at 1920); the course screen h1 wraps correctly');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     await importCourse(page, 'LRN-H-LONG2', { 'INDEX.md': indexMd('LRN-H-LONG2', ['0001']), 'MISSION.md': `# Мисия: ${LONG}\n`, 'lessons/0001-a.html': lessonHtml('Урок А') });
     for (const [w, hgt] of [[1920, 1200], [360, 800]]) {
       await page.setViewportSize({ width: w, height: hgt });
@@ -959,7 +959,7 @@ test.describe('T011F-I2 the course name (h1) and the fold button', () => {
   });
 
   test('T011F-I2b an empty "# " heading in MISSION.md is no name: the h1 is not the next line of the file', async ({ page }) => {
-    test.fail(true, 'T011F-D4: missionTitle()/indexTitle() use /^#\\s+(.+)$/m — \\s+ also matches the line break, so "# " followed by an empty line takes the NEXT line of the file ("Първи абзац на мисията…") as the course name (h1, card, tab title)');
+    // Fixed in 0.10.0 (T-057): test.fail removed.
     await importCourse(page, 'LRN-H-EMPTY', {
       'INDEX.md': indexMd('LRN-H-EMPTY', ['0001'], 'индекс'),
       'MISSION.md': '# \n\nПърви абзац на мисията, който не е име на курса.\n',

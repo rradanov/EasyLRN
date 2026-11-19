@@ -52,15 +52,49 @@ export const MAX_QUOTE_DEPTH = 50;
 export const MAX_INDENT = 120;
 
 /**
+ * Most block markers (">", "-", "*", "+", "1." / "1)") at the start of a line
+ * that has list markers among them (T011F-D7): interleaved "> - > - …" are not
+ * runs of ">" and escaped the quote cap; 1000 such lines took ~8 s on the
+ * tablet. Real course files have a few. (Pure ">" runs keep MAX_QUOTE_DEPTH.)
+ */
+export const MAX_LINE_MARKERS = 8;
+
+// One block marker with the space before it: ">" (space optional after it) or
+// a list marker followed by a space or tab.
+const MARKER = /^[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t]))[ \t]?/;
+
+/** Keep at most MAX_LINE_MARKERS block markers at the start of a line; the text stays. */
+function capMarkers(line) {
+  let rest = line;
+  let kept = '';
+  let n = 0;
+  let lists = 0;
+  for (;;) {
+    const m = MARKER.exec(rest);
+    if (!m) break;
+    n++;
+    if (!m[0].trim().startsWith('>')) lists++;
+    if (n <= MAX_LINE_MARKERS) kept += m[0];
+    rest = rest.slice(m[0].length);
+  }
+  // Only quotes: the quote cap (MAX_QUOTE_DEPTH) is enough, they are cheap.
+  return n > MAX_LINE_MARKERS && lists ? kept + rest.replace(/^[ \t]+/, '') : line;
+}
+
+/**
  * Cap the nesting of every line before marked: at most MAX_QUOTE_DEPTH ">"
- * markers (the deeper ones are dropped) and at most MAX_INDENT characters of
- * leading spaces/tabs (deeper lines stay at that depth). Text is never dropped.
+ * markers (the deeper ones are dropped), at most MAX_LINE_MARKERS block
+ * markers of any kind, and at most MAX_INDENT characters of leading
+ * spaces/tabs (deeper lines stay at that depth). Text is never dropped.
  */
 export function limitNesting(md) {
   const quotes = new RegExp(`^([ \\t]*)(?:>[ \\t]*){${MAX_QUOTE_DEPTH + 1},}`, 'gm');
   const indent = new RegExp(`^[ \\t]{${MAX_INDENT + 1},}`, 'gm');
+  // Only lines that start with many markers are rewritten (cheap test first).
+  const many = new RegExp(`^[ \\t]*(?:(?:>|[-*+]|\\d{1,9}[.)])[ \\t]*){${MAX_LINE_MARKERS + 1}}.*$`, 'gm');
   return md
     .replace(quotes, (_, lead) => `${lead}${'> '.repeat(MAX_QUOTE_DEPTH)}`)
+    .replace(many, capMarkers)
     .replace(indent, ' '.repeat(MAX_INDENT));
 }
 
@@ -83,7 +117,8 @@ export function safeDecode(s) {
  * @param {string} md
  */
 export function withoutTitle(md) {
-  return String(md ?? '').replace(/^﻿?\s*#\s+[^\n]*(\n|$)/, '');
+  // T011F-D4: the heading is one line ("# " + an empty line does not eat the next one).
+  return String(md ?? '').replace(/^﻿?\s*#(?:[ \t][^\n]*)?(\n|$)/, '');
 }
 
 /**

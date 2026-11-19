@@ -9,6 +9,13 @@ import { join, relative } from 'node:path';
 import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.mjs';
 import { strToU8 } from '../../vendor/fflate.js';
 
+// D-040 (T-057): the quizzes are under their lesson, behind the arrow: unfold every lesson.
+async function unfoldLessons(page) {
+  await expect(page.locator('[data-screen="course"] [data-section="activity"]')).toBeVisible({ timeout: 15000 });
+  const closed = page.locator('[data-field="lesson-toggle"][aria-expanded="false"]');
+  for (let n = await closed.count(); n > 0; n = await closed.count()) await closed.first().click();
+}
+
 let problems;
 test.beforeEach(async ({ page, context }) => {
   problems = [];
@@ -303,6 +310,7 @@ test.describe('T-050 "Отначало" and "Нулирай" (D-035)', () => {
       await page.waitForTimeout(200);
     }
     await page.goto('./#/c/LRN-N');
+    await unfoldLessons(page);
     const item = (t) => page.locator('.quiz-list__item', { hasText: t });
     await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('2 от 5 отговорени');
     await expect(item('Тест В').locator('[data-field="quiz-reset"]')).toBeDisabled();
@@ -426,6 +434,7 @@ test.describe('T-050 screenshots and the real course', () => {
       await page.screenshot({ path: join(dir, `demo-${o}-${t}-restart-dialog.png`) });
       await page.locator('[data-field="confirm-no"]').click();
       await page.goto('./#/c/LRN-DEMO');
+      await unfoldLessons(page);
       await page.locator('.quiz-list__item').first().locator('[data-field="quiz-reset"]').click();
       await page.locator('.quiz-list__item').first().scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(dir, `demo-${o}-${t}-course-reset.png`), fullPage: true });

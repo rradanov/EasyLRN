@@ -52,6 +52,16 @@ async function openCourse(page, id = 'LRN-DEMO') {
 const item = (page, number) => course(page).locator('.course-item', { has: page.locator(`[data-lesson] .import__num:text-is("${number}")`) });
 const progress = (page) => page.evaluate(async (id) => (await (await import('./src/db.js')).getLesson(id)).progress, LESSON_ID);
 const lessonFrame = (page) => page.frameLocator('iframe.lesson-frame');
+// D-040 (T-057): answer every question of every quiz of a course (the right option).
+const answerAll = (page, courseId) => page.evaluate(async (courseId) => {
+  const db = await import('./src/db.js');
+  for (const q of await db.listQuizzes(courseId)) {
+    const keys = db.questionKeys(q.questions);
+    for (const [i, question] of q.questions.entries()) {
+      await db.saveQuizChoice(q.id, { courseId, qKey: keys[i], choice: question.options[question.answer], cursor: i });
+    }
+  }
+}, courseId);
 async function openLessonFromCourse(page) {
   await course(page).locator('a.lesson-link', { hasText: 'Какви видове чай' }).click();
   await expect(page).toHaveURL(/read\/0001$/);
@@ -64,7 +74,8 @@ test.describe('T-011 the course screen: structure', () => {
     await openCourse(page);
     const h2 = await course(page).locator('h2').allTextContents();
     // The side column comes first in the DOM (on a narrow screen it is on top); D-038: no "Мисия", no "Бележки на курса".
-    expect(h2).toEqual(['Последни дейности', 'Ресурси', 'Уроци', 'Справочници', 'Тестове']);
+    // D-040 (T-057): no separate "Тестове" section; the quizzes are under their lesson.
+    expect(h2).toEqual(['Последни дейности', 'Ресурси', 'Уроци', 'Справочници']);
     // "Уроци" exactly once, in any case (was an h2 and an uppercase h3 eyebrow).
     expect(await course(page).getByText(/^уроци$/i).count()).toBe(1);
     await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Какви видове чай има?', 'R01 Температура и време за запарване']);
@@ -207,7 +218,7 @@ test.describe('T-011 layout: the width of the tablet is used, no horizontal scro
     const heights = await course(page).locator('a:not(.md a), button, summary').evaluateAll((els) => els.filter((e) => e.offsetParent).map((e) => [e.textContent.trim().slice(0, 20), Math.round(e.getBoundingClientRect().height)]));
     for (const [t, hgt] of heights) expect(hgt, t).toBeGreaterThanOrEqual(44);
     await expect(course(page).locator('.course-item__mark').first()).toHaveAttribute('aria-hidden', 'true');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 теста');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · Тестове 0 от 2'); // D-040: the quizzes of the lesson
     await expect(page.getByRole('link', { name: '0001 Какви видове чай има?' })).toBeVisible();
     await expect(page.getByRole('complementary', { name: 'За курса' })).toBeVisible();
     await expect(page.getByRole('progressbar')).toHaveAttribute('max', '1');
@@ -281,8 +292,15 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
     await page.reload();
     await expect(page.locator('[data-action="complete"]')).toHaveAttribute('aria-pressed', 'true'); // reopening keeps "done"
     await page.goto('./#/c/LRN-DEMO');
+    // D-040 (T-057): marked, but its two quizzes are not answered → still ◐, the line says "Завършен".
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/^Статус: Завършен · отворен днес \d\d:\d\d · Тестове 0 от 2$/);
+    await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 0 от 1 урок');
+    await answerAll(page, 'LRN-DEMO');
+    await page.reload();
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
     await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('●');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/Завършен · .* · Тестове 2 от 2 · \d+\/\d+ верни$/);
     await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
     await expect(course(page).locator('progress')).toHaveAttribute('value', '1');
     await expect(course(page).locator('[data-list="activity"]')).toContainText('Завършен урок 0001');
@@ -338,7 +356,7 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
       await db.createSubTopic({ courseId: 'LRN-DEMO', annotationId: a3.id, parent: target, title: 'Улун — <b>полуферментирал</b>', kind: 'термин', content: '' });
     }, LESSON_ID);
     await openCourse(page);
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 маркировки · 3 въпроса · 1 тема · 2 теста');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 маркировки · 3 въпроса · 1 тема · Тестове 0 от 2');
     await expect(course(page).locator('[data-list="activity"]')).toContainText('Тема „Улун — <b>полуферментирал</b>“');
     await expect(course(page).locator('[data-list="activity"] b')).toHaveCount(0);
   });
@@ -348,8 +366,13 @@ test.describe('T-011 what worked keeps working', () => {
   test('"Тестове" with status and "Нулирай"; "Тест към урока" in the reader; quiz activity', async ({ page }) => {
     await importDemo(page);
     await openCourse(page);
-    const quizzes = course(page).locator('[data-list="quizzes"]');
-    await expect(quizzes.locator('h2')).toHaveText('Тестове');
+    // D-040 (T-057): the quizzes are under their lesson, unfolded with the arrow.
+    await expect(course(page).locator('[data-section="quizzes"]')).toHaveCount(0);
+    const toggle = item(page, '0001').locator('[data-field="lesson-toggle"]');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const quizzes = item(page, '0001').locator('[data-list="quizzes"]');
     await expect(quizzes.locator('[data-quiz]')).toHaveCount(2);
     await quizzes.locator('a.quiz-list__link').first().click();
     await expect(page.locator('[data-screen="quiz"]')).toBeVisible();
@@ -367,6 +390,7 @@ test.describe('T-011 what worked keeps working', () => {
   test('a re-import keeps the progress and the statuses', async ({ page }) => {
     await importDemo(page);
     await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }), LESSON_ID);
+    await answerAll(page, 'LRN-DEMO'); // D-040: done = marked AND all its quizzes answered
     await importDemo(page);
     await openCourse(page);
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');

@@ -261,8 +261,11 @@ function htmlTitle(html) {
 }
 
 /** Course title from MISSION.md: first heading without "Мисия:". */
+// T011F-D4: [ \t]+, not \s+ — "# " followed by an empty line is no name (\s+
+// would match the line break and take the NEXT line of the file).
+const H1_LINE = /^#[ \t]+(\S.*)$/m;
 function missionTitle(md) {
-  const h = /^#\s+(.+)$/m.exec(md || '')?.[1];
+  const h = H1_LINE.exec(md || '')?.[1];
   return h ? h.replace(/^(мисия|mission)\s*[:—–-]\s*/i, '').trim() || null : null;
 }
 
@@ -271,7 +274,7 @@ function missionTitle(md) {
  * and the word "индекс"/"index" ("# LRN-CRA: индекс" names no course → null).
  */
 function indexTitle(md, courseId) {
-  const h = /^#\s+(.+)$/m.exec(md || '')?.[1];
+  const h = H1_LINE.exec(md || '')?.[1];
   if (!h) return null;
   const t = h.trim()
     .replace(new RegExp(`^${String(courseId || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), '')
@@ -456,6 +459,14 @@ export async function importCourse(files, { onProgress } = {}) {
 
   const indexMd = findEntry(list, 'INDEX.md') && text(findEntry(list, 'INDEX.md').data);
   const lessonFiles = list.filter((e) => lessonKind(e.path));
+  // T056-D1: an .html file in lessons/ or reference/ outside the pattern
+  // (NNNN-<slug>.html, R<N>-….html) is not a lesson; it is still stored as a
+  // file, but the summary says so (with D-039 the number is the key).
+  const oddLessonFiles = list
+    .filter((e) => /^(lessons|reference)\/[^/]+\.html?$/i.test(e.path) && !lessonKind(e.path))
+    .map((e) => /^lessons\//i.test(e.path)
+      ? `${e.path} не е във вида NNNN-….html — не е внесен като урок`
+      : `${e.path} не е във вида R<номер>-….html — не е внесен като справочник`);
   const hasMeta = META_FILES.some((m) => findEntry(list, m));
   if (!lessonFiles.length && !hasMeta) {
     throw new ImportError('Това не прилича на курс LRN: няма уроци (lessons/NNNN-….html), справочници (reference/R….html) или MISSION.md / INDEX.md.');
@@ -464,7 +475,7 @@ export async function importCourse(files, { onProgress } = {}) {
   // Course id: root folder → ZIP name → INDEX heading → lesson kicker → the only course.
   let courseId = (root && COURSE_ID.test(root) ? root : null)
     || zipNames.map(courseIdFromZipName).find(Boolean)
-    || courseIdInText(indexMd && /^#\s+.*$/m.exec(indexMd)?.[0])
+    || courseIdInText(indexMd && /^#[ \t]+\S.*$/m.exec(indexMd)?.[0])
     || lessonFiles.map((e) => courseIdInText(/class="kicker"[^>]*>([^<]*)/.exec(text(e.data))?.[1])).find(Boolean)
     || null;
   if (!courseId && loose) {
@@ -653,6 +664,21 @@ export async function importCourse(files, { onProgress } = {}) {
     if (previous.length) quiz.previousPaths = [...new Set(previous)];
     quizzes.push(quiz);
   }
+  // T056-D2 (D-039 §А.2.5): a quiz whose "lesson" is no lesson of the course,
+  // a lesson no longer in the course, or not the number in its file name is
+  // imported as it is (it shows under "Други тестове"/its lesson), with a note.
+  const lessonByKey = new Map(all.filter((l) => !l.deleted).map((l) => [normalizeNumber(l.number) ?? String(l.number), l]));
+  for (const q of quizzes) {
+    const fileLesson = quizNumberOf(q.path)?.lesson ?? null;
+    if (!q.lesson) {
+      quizInfo.push(`тест ${q.path} няма поле „lesson“ — показан е в „Други тестове“`);
+      continue;
+    }
+    const l = lessonByKey.get(normalizeNumber(q.lesson) ?? q.lesson);
+    if (!l) quizInfo.push(`тест ${q.path} е към урок ${q.lesson}, който го няма в курса — показан е в „Други тестове“`);
+    else if (l.isRetired) quizInfo.push(`тест ${q.path} е към урок ${q.lesson}, който вече не е в курса`);
+    if (fileLesson && fileLesson !== q.lesson) quizInfo.push(`тест ${q.path}: номерът в името (${fileLesson}) не е „lesson“ (${q.lesson}) — тестът е показан при урок ${q.lesson}`);
+  }
   if (quizNotes.length || quizInfo.length) console.info(`EasyLRN quizzes ${courseId}:`, [...quizNotes, ...quizInfo].join('; '));
 
   // Quizzes stored but absent from this (partial) import keep their place in the
@@ -738,8 +764,9 @@ export async function importCourse(files, { onProgress } = {}) {
     items,
     skippedPdf,
     quizNotes,
-    // D-039: a quiz file outside the NNNN-K pattern (kept by its path).
-    notes: quizInfo,
+    // D-039: a quiz file outside the NNNN-K pattern (kept by its path);
+    // T056-D1/D2: lesson files outside the pattern, quizzes of no lesson.
+    notes: [...oddLessonFiles, ...quizInfo],
     // T011F-D1: a lesson the user worked with got a quite different title.
     warnings,
     ms: Math.round(performance.now() - t0),
@@ -798,7 +825,7 @@ export function describeSummary(s) {
     s.lessons?.restored?.length ? ` Отново в курса: ${s.lessons.restored.join('; ')}.` : '',
   ].join('');
   const warnings = s.warnings?.length ? ` Внимание: ${s.warnings.slice(0, 3).join(' ')}${s.warnings.length > 3 ? ` (и още ${s.warnings.length - 3})` : ''}` : '';
-  const info = s.notes?.length ? ` Бележка: ${s.notes.slice(0, 3).join('; ')}${s.notes.length > 3 ? '; …' : ''}.` : '';
+  const info = s.notes?.length ? ` Бележка: ${s.notes.slice(0, 5).join('; ')}${s.notes.length > 5 ? `; … (общо ${s.notes.length})` : ''}.` : '';
   const tail = `${retired}${notes}${warnings}${info}`;
   if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.${tail}`;
   if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).${tail}`;

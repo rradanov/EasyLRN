@@ -95,10 +95,27 @@ function startApp() {
   // Open/upgrade the database and ask for persistent storage (D-014).
   // A failed upgrade (e.g. the v5 migration, D-039) leaves the old database
   // as it was: the user is told so on the screen, not only in the console.
+  // T056-D3: an upgrade that waits for another tab holding the database: say
+  // so (the course list would just stay empty) and take it back once it runs.
+  const BLOCKED_TEXT = 'Друг раздел с EasyLRN държи базата отворена. Затвори другите раздели с EasyLRN и презареди. Не импортирай нищо дотогава.';
+  window.addEventListener('easylrn:db-blocked', (event) => {
+    const box = document.getElementById('db-error');
+    if (!box) return;
+    if (event.detail?.blocked) {
+      box.textContent = BLOCKED_TEXT;
+      box.dataset.reason = 'blocked';
+      box.hidden = false;
+    } else if (box.dataset.reason === 'blocked') {
+      box.hidden = true;
+      box.textContent = '';
+      delete box.dataset.reason;
+    }
+  });
   initStorage().catch((err) => {
     console.error('IndexedDB:', err);
     const box = document.getElementById('db-error');
     if (!box) return;
+    delete box.dataset.reason;
     box.textContent = 'Базата не може да се обнови; данните са запазени. Затвори другите раздели с EasyLRN и презареди страницата; ако се повтори, не импортирай нищо и съобщи за проблема.';
     box.hidden = false;
   });
