@@ -38,7 +38,17 @@
 //    (console errors, T-045). If that frame cannot be made, the app document
 //    is used (same result, with those console messages).
 import { getFile, listCourseFiles, setFileRender } from './db.js';
-import { courseFileUrl, parseCourseUrl } from './lesson-frame.js';
+import { courseFileUrl, parseCourseUrl, describeForLog } from './lesson-frame.js';
+
+/**
+ * A reference of a lesson for a console note (T051-I3): a path inside the
+ * course as it is (cut at 120 characters); an absolute or external URL only
+ * as its scheme and lengths.
+ */
+const refForLog = (ref) => {
+  const r = String(ref ?? '').trim();
+  return /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(r) ? describeForLog(r) : r.slice(0, 120);
+};
 
 /** Bump when the output changes; must equal RENDER_VERSION in sw.js. */
 export const RENDER_VERSION = 4; // T050-D1: the bridge marker; T050-I1: no declarative shadow roots
@@ -173,7 +183,7 @@ function makeContext({ courseId, path, files }) {
     if (!url || url.protocol === 'data:' || url.protocol === 'blob:') return ref;
     const file = isCourse(url) ? fileOf(url.href) : null;
     if (!file) {
-      notes.push(`missing or external: ${ref}`);
+      notes.push(`missing or external: ${refForLog(ref)}`);
       return '';
     }
     if ((file.size ?? file.blob.size) > MAX_INLINE_BYTES) {
@@ -315,7 +325,7 @@ export async function assembleLesson(html, { courseId, path, files }) {
         const text = ctx.decoder.decode(await ctx.read(file));
         emit(elementEnd, `${serializeTag('script', attrs)}${rawSafe(text, 'script')}</script>`);
       } else {
-        ctx.notes.push(`script left out: ${src}`);
+        ctx.notes.push(`script left out: ${refForLog(src)}`);
         emit(elementEnd, `<!-- EasyLRN: script src removed (not in the course) -->`);
       }
       continue;

@@ -125,7 +125,22 @@ function palette() {
   return Object.fromEntries(HIGHLIGHTS.map((c) => [c, root.getPropertyValue(`--hl-${c}`).trim() || 'Highlight']));
 }
 
-const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${why})`, detail ?? '');
+// T051-I3: what a lesson sends (a URL it built, maybe from text typed into it,
+// even a key typed into a phishing lesson) never goes into the console of the
+// app: a URL is shown only as its scheme and lengths (a host can carry data
+// too: https://<data>.example/), anything else only as its type and length.
+/** "https: URL, host 12 + 40 characters" / "text, 42 characters" / "object". */
+const KNOWN_SCHEMES = new Set(['https:', 'http:', 'mailto:', 'tel:', 'javascript:', 'data:', 'blob:', 'file:', 'about:', 'ws:', 'wss:', 'ftp:']);
+export function describeForLog(value) {
+  if (typeof value !== 'string' && !(value instanceof URL)) return value === null ? 'null' : typeof value;
+  const text = String(value);
+  let url = null;
+  try { url = new URL(text); } catch { url = null; }
+  if (!url) return `text, ${text.length} characters`;
+  const scheme = KNOWN_SCHEMES.has(url.protocol) ? url.protocol : 'other:';
+  return `${scheme} URL, host ${url.host.length} + ${url.href.length - url.protocol.length - url.host.length} characters`;
+}
+const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${why})`, detail === undefined ? '' : describeForLog(detail));
 
 /**
  * Create the lesson frame.
@@ -327,7 +342,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       if (why === 'restore') startRecording();
     },
     'lrn:anchor'({ top }) {
-      if (!navigator.userActivation?.isActive) { warn('no user gesture', 'lrn:anchor'); return; }
+      if (!navigator.userActivation?.isActive) { warn('no user gesture: lrn:anchor'); return; }
       scrollToLessonY(top);
     },
     'lrn:link'({ href }) { openLink(href); },
@@ -364,7 +379,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     const m = event.data;
     if (!isPlain(m) || m.lrn !== PROTOCOL || typeof m.type !== 'string' || !Object.hasOwn(CHECK, m.type)) return;
     const clean = CHECK[m.type](m);
-    if (!clean) { warn('invalid fields', m.type); return; }
+    if (!clean) { warn(`invalid fields: ${m.type}`); return; } // m.type is one of CHECK's own keys
     handlers[m.type](clean);
   };
   window.addEventListener('message', onMessage);

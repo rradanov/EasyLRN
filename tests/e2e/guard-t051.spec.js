@@ -80,9 +80,12 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
   };
   Object.entries(DIRECT).forEach(([name, code], n) => {
     test(`${name} with a declarative closed root holding a frame: the nested document runs`, async ({ page }) => {
-      test.fail(true, 'T051-I1: the …HTMLUnsafe insertion methods (appendHTMLUnsafe, replaceWithHTMLUnsafe, streamHTMLUnsafe…) are not locked; they build a closed declarative shadow root with a frame in it that the guard never sees (D-037 → information)');
+      // T-052: fixed (every member with "HTML" in its name is locked away in the lesson).
       const id = `LRN-SU${n}`;
-      await importCourse(page, id, { 'INDEX.md': strToU8(`# ${id}\n`), 'lessons/0001-g.html': lesson(`if(!Element.prototype.appendHTMLUnsafe)rep('absent',1);${code}`) });
+      // T-052: the method is locked away inside the lesson now, so "does the browser
+      // have it" is asked in the app's own realm (same browser), not in the lesson.
+      expect(await page.evaluate(() => typeof Element.prototype.appendHTMLUnsafe)).toBe('function');
+      await importCourse(page, id, { 'INDEX.md': strToU8(`# ${id}\n`), 'lessons/0001-g.html': lesson(code) });
       const wrap = await open(page, id);
       await page.waitForTimeout(3000);
       const probe = await page.evaluate(() => window.__probe);
@@ -94,7 +97,7 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
   });
   Object.entries(WAYS).forEach(([name, make], n) => {
     test(`${name}: a silent nested document gets a working RTCPeerConnection`, async ({ page }) => {
-      test.fail(true, 'T051-I1: setHTML()/Document.parseHTML() (safe Sanitizer API) are not locked like setHTMLUnsafe(); a declarative closed shadow root is reachable through ElementInternals.shadowRoot, the guard never observes or sweeps it, window.length does not count it, so a nested document there runs with its own RTCPeerConnection (D-037: accepted risk → information)');
+      // T-052: fixed (setHTML / Document.parseHTML are locked away; ElementInternals#shadowRoot is watched).
       const id = `LRN-SZ${n}`;
       const code = `${make}var sr=window.__int&&window.__int.shadowRoot;rep('root',!!sr);if(sr)sr.innerHTML='<iframe srcdoc="'+S+'"></iframe>';`;
       await importCourse(page, id, { 'INDEX.md': strToU8(`# ${id}\n`), 'lessons/0001-g.html': lesson(code) });
@@ -103,7 +106,9 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
       const probe = await page.evaluate(() => window.__probe);
       const stopped = await wrap.getAttribute('data-lesson-stopped');
       console.log(`T-051 I1 "${name}": ${JSON.stringify(probe)}, stopped=${stopped}`);
-      expect(probe).toContain('root=true'); // the lesson did get the closed root
+      // T-052: the lesson no longer gets the closed root (setHTML / Document.parseHTML
+      // are gone, so the code throws: 'err=…'); before the fix it did ('root=true').
+      expect(probe.some((p) => p === 'root=true' || p.startsWith('err='))).toBe(true);
       expect(probe.filter((p) => p.startsWith('relay='))).toEqual([]); // no nested document ran
     });
   });
@@ -112,8 +117,17 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
     const code = `${DEFINE}var h=document.createElement('div');document.body.append(h);h.setHTML('<x-host><template shadowrootmode="closed"></template></x-host>',{sanitizer:{}});window.__int.shadowRoot.innerHTML='<iframe srcdoc="'+N+'"></iframe>';`;
     await importCourse(page, 'LRN-SZN', { 'INDEX.md': strToU8('# LRN-SZN\n'), 'lessons/0001-g.html': lesson(code) });
     const wrap = await open(page, 'LRN-SZN');
-    await expect(wrap).toHaveAttribute('data-lesson-stopped', 'frame', { timeout: 5000 });
-    await expect(page.locator('.lesson-frame__wrap iframe')).toHaveCount(0);
+    // T-052: setHTML is locked away in the lesson now, so the frame is never built
+    // (the backstop has nothing to stop); before the fix the app stopped the lesson.
+    // Either way no nested document may keep running.
+    await page.waitForTimeout(2000);
+    const stopped = await wrap.getAttribute('data-lesson-stopped');
+    if (stopped !== 'frame') {
+      expect(await page.evaluate(() => window.__probe.some((p) => p.startsWith('err=')))).toBe(true);
+      expect(await page.evaluate(() => window.__hits)).toEqual([]);
+    } else {
+      await expect(page.locator('.lesson-frame__wrap iframe')).toHaveCount(0);
+    }
   });
 
   test('which HTML parser entry points a lesson still has (for the report)', async ({ page }) => {

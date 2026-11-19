@@ -22,26 +22,37 @@ export const MODELS = Object.freeze([
 export const CHECK_TIMEOUT_MS = 20000;
 
 const KEY_PREFIX = 'sk-ant-';
-const KEY_TAIL = /^[A-Za-z0-9_-]+$/;
+/** The only characters of a key: printable ASCII letters, digits, "-" and "_". */
+const KEY_CHARS = /^[A-Za-z0-9_-]+$/;
+/** Spaces and line breaks around a pasted key (also NBSP, BOM): dropped. */
+const EDGE_SPACE = /^\s+|\s+$/g;
+export const KEY_BAD_CHARS = 'Ключът съдържа непозволени знаци — копирай го наново от Claude Console.';
 
 /**
  * Clean a typed or pasted key: { key } or { error } (Bulgarian, never with the key in it).
- * Spaces and line breaks from copying are dropped.
+ * T051-I2: only spaces and line breaks AROUND the key are dropped; a space, a
+ * control character or any non-ASCII character inside is an error (fetch()
+ * would refuse such a header, which looked like "no connection").
  * @param {string} raw
  */
 export function validateKey(raw) {
-  const key = String(raw ?? '').replace(/\s+/g, '');
+  const key = String(raw ?? '').replace(EDGE_SPACE, '');
   if (!key) return { error: 'Въведи ключа.' };
   if (!key.startsWith(KEY_PREFIX)) return { error: 'Ключът на Claude API започва със „sk-ant-“. Копирай го наново от Claude Console.' };
-  if (key.length < 20 || key.length > 400 || !KEY_TAIL.test(key.slice(KEY_PREFIX.length))) {
-    return { error: 'Това не прилича на ключ на Claude API (непозволени знаци или дължина). Копирай го наново от Claude Console.' };
+  if (!KEY_CHARS.test(key)) return { error: KEY_BAD_CHARS };
+  if (key.length < 20 || key.length > 400) {
+    return { error: 'Това не прилича на ключ на Claude API (дължината не е на ключ). Копирай го наново от Claude Console.' };
   }
   return { key };
 }
 
-/** "•••• 3f9a": only the last 4 characters of a saved key are ever shown. */
+/**
+ * "•••• 3f9a": only the last 4 characters of a saved key are ever shown; a
+ * key too short for that (not one from the field) shows only the dots.
+ */
 export function maskKey(key) {
-  if (typeof key !== 'string' || key.length < 8) return '';
+  if (typeof key !== 'string' || !key) return '';
+  if (key.length < 12) return '••••';
   return `•••• ${key.slice(-4)}`;
 }
 
@@ -110,6 +121,11 @@ export function describeError(status, type = '', model = '') {
  */
 export async function checkKey({ apiKey, model, timeoutMs = CHECK_TIMEOUT_MS }) {
   if (!apiKey) return { ok: false, kind: 'no-key', status: 0, text: 'Първо въведи и запази API ключ.' };
+  // A stored key that never went through the field (an old build, by hand):
+  // the same rules as "Запази", before any request (T051-I2).
+  const valid = validateKey(apiKey);
+  if (valid.error) return { ok: false, kind: 'bad-key', status: 0, text: valid.error };
+  apiKey = valid.key;
   const id = MODELS.some((m) => m.id === model) ? model : DEFAULT_MODEL;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

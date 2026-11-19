@@ -274,7 +274,7 @@ test.describe('T-051 where the key may leak in the app', () => {
     await page.goBack();
     await expect(screen(page)).toHaveAttribute('data-loaded', 'yes');
     await expect(field(page, 'api-key')).toHaveValue('');
-    await expect(field(page, 'api-key')).toHaveAttribute('type', 'password');
+    await expect(field(page, 'api-key')).toHaveAttribute('data-masked', 'yes'); // T-052: was type=password
     const leaks = await page.evaluate(() => ({
       url: location.href, title: document.title, hist: history.state ? JSON.stringify(history.state) : '',
       ls: JSON.stringify({ ...localStorage }), ss: JSON.stringify({ ...sessionStorage }), html: document.documentElement.outerHTML,
@@ -338,12 +338,15 @@ test.describe('T-051 the key field', () => {
     expect(await tryKey(`sk-ant-${tail(393)}`)).toMatch(/^Ключът е запазен/); // 400
     expect(await page.evaluate(async () => (await (await import('./src/db.js')).getApiKey()).length)).toBe(400);
     expect(await tryKey(`sk-ant-${tail(394)}`)).toMatch(/не прилича на ключ/); // 401
-    expect(await tryKey('sk-ant-test-FAKE-тест-0000')).toMatch(/не прилича на ключ/);
-    expect(await tryKey('sk-ant-test-FAKE-​-0000')).toMatch(/не прилича на ключ/); // zero-width space is not \s
+    // T-052 (T051-I2): characters that are not allowed get their own message (was "не прилича на ключ").
+    expect(await tryKey('sk-ant-test-FAKE-тест-0000')).toMatch(/непозволени знаци/);
+    expect(await tryKey('sk-ant-test-FAKE-​-0000')).toMatch(/непозволени знаци/); // zero-width space is not \s
     expect(await tryKey('ѕk-ant-test-FAKE-0000-0000')).toMatch(/започва със/); // Cyrillic "ѕ"
-    expect(await tryKey('sk-ant-<img src=x onerror="window.__xss=1">')).toMatch(/не прилича на ключ/);
-    // NBSP, a tab and line breaks from a paste are dropped.
-    expect(await tryKey(` sk-ant-test-FAKE-\n0000-\t9999\r\n`)).toMatch(/^Ключът е запазен/);
+    expect(await tryKey('sk-ant-<img src=x onerror="window.__xss=1">')).toMatch(/непозволени знаци/);
+    // T-052 (T051-I2): a tab (or a space) INSIDE the key is refused now; it was dropped.
+    expect(await tryKey(` sk-ant-test-FAKE-\n0000-\t9999\r\n`)).toMatch(/непозволени знаци/);
+    // NBSP, tabs and line breaks around the key (from a paste) are dropped.
+    expect(await tryKey(` \t sk-ant-test-FAKE-0000-9999\r\n `)).toMatch(/^Ключът е запазен/);
     expect(await page.evaluate(async () => (await import('./src/db.js')).getApiKey())).toBe('sk-ant-test-FAKE-0000-9999');
     await expect(field(page, 'key-status')).toHaveText('Запазен ключ: •••• 9999');
     expect(await page.evaluate(() => window.__xss)).toBeUndefined();
@@ -453,7 +456,7 @@ test.describe('T-051 "Провери"', () => {
   });
 
   test('"Изтрий" while a check runs: the key is gone and the late answer does not say the (deleted) key works', async ({ page }) => {
-    test.fail(true, 'T051-D1: a check that ends after "Изтрий" still shows "Ключът работи (…)" next to "Няма запазен ключ."');
+    // T051-D1: fixed in T-052.
     let release;
     await mockApi(page, () => new Promise((r) => { release = () => r(OK); }));
     await openSettings(page);
@@ -510,12 +513,12 @@ test.describe('T-051 threshold, model, offline, a11y, layout', () => {
   });
 
   test('threshold: what the field shows after saving is what was saved (0.004 → 0)', async ({ page }) => {
-    test.fail(true, 'T051-D2: the field keeps showing 0.004 (and "Запазено.") while 0 is saved; after a reload it shows 0');
+    // T051-D2: fixed in T-052 — a value above 0 that rounds to 0 is refused (0 means "no warning").
     await openSettings(page);
     const budget = field(page, 'budget');
     await budget.fill('0.004');
     await budget.press('Tab');
-    await expect(field(page, 'budget-message')).toHaveText('Запазено.');
+    await expect(field(page, 'budget-message')).toHaveText(/0\.01/); // T-052: was 'Запазено.' (with 0 saved)
     const saved = await page.evaluate(async () => (await (await import('./src/db.js')).getSettings()).monthlyBudgetUSD);
     console.log(`T-051 threshold 0.004 → saved ${saved}, shown ${await budget.inputValue()}`);
     expect(await budget.inputValue()).toBe(String(saved));

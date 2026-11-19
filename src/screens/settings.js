@@ -8,6 +8,12 @@
 //   it (never as an attribute); after "Запази" the field is emptied and only
 //   the last 4 characters are shown; "Покажи" shows what is being typed, the
 //   saved key is never put back into the page;
+// - the field is never an <input type="password"> (T-052): Chrome offers to
+//   "save the password" for every field that is or ever was one, whatever its
+//   autocomplete says. It is a text field hidden with `-webkit-text-security`
+//   (class settings__input--masked) while "Покажи" is off, outside any <form>,
+//   without a name, with autocomplete off and the ignore hints of password
+//   managers;
 // - it is never logged and never sent to a lesson (the lesson bridge gets
 //   only the text size and the colours).
 import { h, mount } from '../dom.js';
@@ -51,13 +57,17 @@ function row(label, forId, ...content) {
 export function settingsScreen() {
   let destroyed = false;
   let checking = null;
+  // T051-D1: every save/delete of the key starts a new generation; the answer
+  // of a check started for an older one is dropped.
+  let keyGeneration = 0;
   let hasKey = false;
   let settings = null;
 
   // --- AI teacher: the key -------------------------------------------------------
   const keyInput = h('input', {
-    id: 'settings-api-key', class: 'settings__input settings__input--key', type: 'password',
-    'data-field': 'api-key', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+    id: 'settings-api-key', class: 'settings__input settings__input--key settings__input--masked', type: 'text',
+    'data-field': 'api-key', 'data-masked': 'yes', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+    'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
     inputmode: 'text', placeholder: 'sk-ant-…', 'aria-describedby': 'settings-key-warning settings-key-message',
   });
   const showButton = h('button', { type: 'button', class: 'button', 'data-field': 'key-show', 'aria-pressed': 'false', 'aria-controls': 'settings-api-key' }, 'Покажи');
@@ -83,23 +93,26 @@ export function settingsScreen() {
     checkButton.disabled = !hasKey || !!checking;
     deleteButton.disabled = !hasKey;
   };
-  const hideTyped = () => {
-    keyInput.type = 'password';
-    showButton.textContent = 'Покажи';
-    showButton.setAttribute('aria-pressed', 'false');
+  const setMasked = (masked) => {
+    keyInput.classList.toggle('settings__input--masked', masked);
+    keyInput.dataset.masked = masked ? 'yes' : 'no';
+    showButton.textContent = masked ? 'Покажи' : 'Скрий';
+    showButton.setAttribute('aria-pressed', String(!masked));
   };
-  showButton.addEventListener('click', () => {
-    const show = keyInput.type === 'password';
-    keyInput.type = show ? 'text' : 'password';
-    showButton.textContent = show ? 'Скрий' : 'Покажи';
-    showButton.setAttribute('aria-pressed', String(show));
-  });
+  const hideTyped = () => setMasked(true);
+  showButton.addEventListener('click', () => setMasked(keyInput.dataset.masked === 'no'));
+  /** The key changed (saved or deleted): a running check no longer counts. */
+  const keyChanged = () => {
+    keyGeneration++;
+    checking = null;
+  };
   const save = async () => {
     const checked = validateKey(keyInput.value);
     if (checked.error) { say(checked.error, 'error'); keyInput.focus(); return; }
     saveButton.disabled = true;
     try {
       await saveApiKey(checked.key);
+      keyChanged();
       keyInput.value = '';
       hideTyped();
       showKeyState(checked.key);
@@ -123,6 +136,7 @@ export function settingsScreen() {
         mount(confirmSlot);
         try {
           await deleteApiKey();
+          keyChanged();
           showKeyState('');
           say('Ключът е изтрит.', 'ok');
         } catch {
@@ -138,6 +152,7 @@ export function settingsScreen() {
     if (checking) return;
     checkButton.disabled = true;
     say('Проверявам…', 'info');
+    const generation = keyGeneration;
     const run = (async () => {
       const apiKey = await getApiKey();
       return checkKey({ apiKey, model: settings?.model || DEFAULT_MODEL });
@@ -145,8 +160,10 @@ export function settingsScreen() {
     checking = run;
     let result;
     try { result = await run; } catch { result = { ok: false, text: 'Проверката не можа да се изпълни.' }; }
+    // The key was saved anew or deleted meanwhile: this answer is about a key
+    // that is no longer there; the message of the save/delete stays.
+    if (destroyed || generation !== keyGeneration) return;
     checking = null;
-    if (destroyed) return;
     checkButton.disabled = !hasKey;
     if (result.ok) say(`Ключът работи (${result.model}).`, 'ok');
     else say(result.text, 'error');
@@ -157,7 +174,7 @@ export function settingsScreen() {
     ...MODELS.map((m) => h('option', { value: m.id, text: m.label })));
   const budgetInput = h('input', {
     id: 'settings-budget', class: 'settings__input settings__input--number', type: 'number', inputmode: 'decimal',
-    min: '0', max: String(BUDGET_MAX), step: '0.5', 'data-field': 'budget',
+    min: '0', max: String(BUDGET_MAX), step: '0.01', 'data-field': 'budget', 'aria-describedby': 'settings-budget-hint',
   });
   const budgetMessage = h('span', { class: 'settings__inline-message', 'data-field': 'budget-message', role: 'status' });
   const spend = h('span', { 'data-field': 'spend', text: '…' });
@@ -167,15 +184,27 @@ export function settingsScreen() {
     settings = await saveSettings({ model: modelSelect.value });
     say('', 'info');
   });
+  // T051-D2: the threshold is kept in whole cents. What is saved is what the
+  // field shows: a value with more cents is rounded and the field shows the
+  // rounded value (and says so); a value above 0 that would round to 0 (which
+  // means "no warning") is refused instead of silently turning the warning off.
   budgetInput.addEventListener('change', async () => {
     const v = Number(budgetInput.value);
+    const restore = () => { budgetInput.value = String(settings?.monthlyBudgetUSD ?? 5); };
     if (budgetInput.value === '' || !Number.isFinite(v) || v < 0 || v > BUDGET_MAX) {
       budgetMessage.textContent = `Прагът е число от 0 до ${BUDGET_MAX}.`;
-      budgetInput.value = String(settings?.monthlyBudgetUSD ?? 5);
+      restore();
       return;
     }
-    settings = await saveSettings({ monthlyBudgetUSD: Math.round(v * 100) / 100 });
-    budgetMessage.textContent = 'Запазено.';
+    const cents = Math.round(v * 100) / 100;
+    if (v > 0 && cents === 0) {
+      budgetMessage.textContent = 'Най-малкият праг е 0.01 (0 значи без предупреждение).';
+      restore();
+      return;
+    }
+    settings = await saveSettings({ monthlyBudgetUSD: cents });
+    budgetInput.value = String(settings.monthlyBudgetUSD);
+    budgetMessage.textContent = cents === v ? 'Запазено.' : `Запазено като ${budgetInput.value} (закръглено до цент).`;
     showSpend();
   });
   let totals = null;
@@ -259,7 +288,8 @@ export function settingsScreen() {
       row('Модел', 'settings-model', modelSelect),
       row('Праг за разход', 'settings-budget',
         h('span', { class: 'settings__budget' }, h('span', { 'aria-hidden': 'true', text: '$' }), budgetInput, h('span', { class: 'muted', text: ' на месец' })),
-        budgetMessage),
+        budgetMessage,
+        h('p', { class: 'muted settings__hint', id: 'settings-budget-hint', 'data-field': 'budget-hint', text: 'До цент; 0 — без предупреждение за разход.' })),
       row('Разход този месец', null, spend, spendWarning),
     ),
     h('h2', { class: 'screen__heading', text: 'Четене' }),

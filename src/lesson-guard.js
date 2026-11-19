@@ -285,10 +285,86 @@
     });
   }
   // Parsers that can build declarative shadow roots the observer cannot see
-  // (lessons from lrn-teach never use them).
-  lockAway(w.Element.prototype, 'setHTMLUnsafe');
-  if (w.ShadowRoot) lockAway(w.ShadowRoot.prototype, 'setHTMLUnsafe');
-  lockAway(w.Document, 'parseHTMLUnsafe');
+  // (lessons from lrn-teach never use them). T051-I1: not a list of names but
+  // every member with "HTML" in its name, on every interface of the window
+  // (prototype and static side), also future ones: setHTML, setHTMLUnsafe,
+  // append/prepend/before/after/replaceWithHTMLUnsafe, stream…HTML(Unsafe),
+  // Document.parseHTML(Unsafe)… Kept: innerHTML and outerHTML (they never
+  // build a declarative shadow root; the observer sees what they insert),
+  // insertAdjacentHTML (wrapped below), getHTML (only serialises), and the
+  // Trusted Types interfaces (they only make strings).
+  var HTML_KEEP = create(null);
+  HTML_KEEP.innerHTML = 1; HTML_KEEP.outerHTML = 1; HTML_KEEP.insertAdjacentHTML = 1; HTML_KEEP.getHTML = 1;
+  function hasHTML(name) {
+    if (typeof name !== 'string') return false;
+    for (var i = 0; i + 3 < name.length; i++) {
+      if (name[i] === 'H' && name[i + 1] === 'T' && name[i + 2] === 'M' && name[i + 3] === 'L') return true;
+    }
+    return false;
+  }
+  function lockHTMLMembers(obj) {
+    var own;
+    try { own = getOwnPropertyNames(obj); } catch (e) { return; }
+    for (var i = 0; i < own.length; i++) {
+      var n = own[i];
+      if (hasHTML(n) && HTML_KEEP[n] !== 1) lockAway(obj, n);
+    }
+  }
+  (function lockHTMLParsers() {
+    var seen = list();
+    var names = list();
+    try {
+      for (var o = w; o && o !== ObjectProto; o = getPrototypeOf(o)) {
+        var own = getOwnPropertyNames(o);
+        for (var i = 0; i < own.length; i++) add(names, own[i]);
+      }
+    } catch (e) { /* ignore */ }
+    for (var k = 0; k < names.n; k++) {
+      var n = names[k];
+      // Interfaces are capitalised; HTMLElement, HTMLDocument… are names of
+      // interfaces, not members: their members are checked like any other.
+      if (typeof n !== 'string' || !n.length || !UPPER[n[0]] || startsWith(n, 'Trusted')) continue;
+      var dd = null;
+      try { dd = getOwnPropertyDescriptor(w, n); } catch (e) { dd = null; }
+      var ctor = dd && dd.value; // only data properties: no getter of the window is run
+      if (typeof ctor !== 'function') continue;
+      var dup = false;
+      for (var j = 0; j < seen.n; j++) if (seen[j] === ctor) { dup = true; break; }
+      if (dup) continue;
+      add(seen, ctor);
+      lockHTMLMembers(ctor);
+      var pd = null;
+      try { pd = getOwnPropertyDescriptor(ctor, 'prototype'); } catch (e) { pd = null; }
+      if (pd && pd.value && typeof pd.value === 'object') lockHTMLMembers(pd.value);
+    }
+    // The ones named in T051-I1, also if a browser keeps them off the window's names.
+    lockAway(w.Element.prototype, 'setHTMLUnsafe');
+    lockAway(w.Element.prototype, 'setHTML');
+    if (w.ShadowRoot) { lockAway(w.ShadowRoot.prototype, 'setHTMLUnsafe'); lockAway(w.ShadowRoot.prototype, 'setHTML'); }
+    lockAway(w.Document, 'parseHTMLUnsafe');
+    lockAway(w.Document, 'parseHTML');
+  })();
+  // ElementInternals#shadowRoot hands a custom element its (also closed)
+  // root, also a declarative one the guard never attached: every root it
+  // returns is remembered (observed, swept) and its frames removed.
+  try {
+    if (w.ElementInternals) {
+      var EIP = w.ElementInternals.prototype;
+      var eiDesc = getOwnPropertyDescriptor(EIP, 'shadowRoot');
+      if (eiDesc && eiDesc.get && eiDesc.configurable) {
+        var eiGet = eiDesc.get;
+        defineProperty(EIP, 'shadowRoot', {
+          configurable: false,
+          enumerable: eiDesc.enumerable,
+          get: function () {
+            var root = apply(eiGet, this, []);
+            if (root) { remember(root); stripFrames(root); }
+            return root;
+          },
+        });
+      }
+    }
+  } catch (e) { /* ignore */ }
   // Parser paths that build a frame directly: strip the result once it lands.
   lockMethod(w.Element.prototype, 'insertAdjacentHTML', function (orig) {
     return function () {

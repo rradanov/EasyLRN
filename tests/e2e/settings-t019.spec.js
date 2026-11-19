@@ -76,7 +76,7 @@ test.describe('T-019 the screen', () => {
     await expect(field(page, 'key-warning')).toBeVisible();
     await expect(field(page, 'key-warning')).toContainText('Уроците никога не искат API ключ. Въвеждай го само тук.');
     await expect(field(page, 'key-warning')).toContainText('Ползвай отделен ключ с месечен лимит от Claude Console.');
-    await expect(field(page, 'api-key')).toHaveAttribute('type', 'password');
+    await expect(field(page, 'api-key')).toHaveAttribute('data-masked', 'yes'); // T-052: type=text + text-security (no "save password")
     await expect(field(page, 'key-status')).toHaveText('Няма запазен ключ.');
     await expect(field(page, 'key-check')).toBeDisabled();
     await expect(field(page, 'key-delete')).toBeDisabled();
@@ -154,23 +154,23 @@ test.describe('T-019 the API key', () => {
     await expect(field(page, 'key-message')).toHaveText(/започва със „sk-ant-“/);
     await input.fill('sk-ant-<script>');
     await field(page, 'key-save').click();
-    await expect(field(page, 'key-message')).toHaveText(/не прилича на ключ/);
+    await expect(field(page, 'key-message')).toHaveText(/непозволени знаци/); // T-052 (T051-I2): was "не прилича на ключ"
     await expect(field(page, 'key-message')).not.toContainText('<script>');
     // "Покажи" / "Скрий" — what is being typed; the value is never an attribute.
     await input.fill(`  ${KEY}\n`);
     await field(page, 'key-show').click();
-    await expect(input).toHaveAttribute('type', 'text');
+    await expect(input).toHaveAttribute('data-masked', 'no'); // T-052: was type=text
     await expect(field(page, 'key-show')).toHaveText('Скрий');
     await expect(field(page, 'key-show')).toHaveAttribute('aria-pressed', 'true');
     expect(await input.getAttribute('value')).toBeNull();
     await field(page, 'key-show').click();
-    await expect(input).toHaveAttribute('type', 'password');
+    await expect(input).toHaveAttribute('data-masked', 'yes'); // T-052: was type=password
     await expect(field(page, 'key-show')).toHaveText('Покажи');
     await field(page, 'key-show').click(); // left visible: saving hides it again
     await field(page, 'key-save').click();
     await expect(field(page, 'key-status')).toHaveText('Запазен ключ: •••• 0000');
     await expect(input).toHaveValue('');
-    await expect(input).toHaveAttribute('type', 'password');
+    await expect(input).toHaveAttribute('data-masked', 'yes'); // T-052: was type=password
     await expect(field(page, 'key-check')).toBeEnabled();
     await expect(field(page, 'key-delete')).toBeEnabled();
     const where = await page.evaluate(async () => {

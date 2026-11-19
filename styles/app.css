@@ -460,6 +460,8 @@ a.card:active { background: var(--paper); }
 }
 .settings__input:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
 .settings__input--key { flex: 1 1 260px; min-width: 0; font-family: ui-monospace, "Roboto Mono", monospace; }
+/* The key field is type=text (no "save password" offer, T-052); hidden with dots. */
+.settings__input--masked { -webkit-text-security: disc; }
 .settings__input--number { width: 7em; }
 .settings__key-line, .settings__actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .settings__actions { margin-top: 8px; }
