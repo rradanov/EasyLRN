@@ -138,7 +138,8 @@ test.describe('T-047 the quiz screen', () => {
     await option(page, 'Не').first().click();
     await expect(page.locator('.quiz__verdict')).toHaveText('Грешно');
     await expect(page.locator('.quiz__option--wrong')).toHaveCount(1);
-    await expect(page.locator('.quiz__option--correct')).toHaveCount(1);
+    await expect(page.locator('.quiz__option--correct')).toHaveCount(0); // D-036: the right option is not coloured
+    await expect(page.locator('.quiz__right')).toContainText('Верен отговор: ');
 
     await page.locator('button', { hasText: 'Напред' }).click();
     await option(page, 'Матча').first().click(); // wrong (correct is Улун)

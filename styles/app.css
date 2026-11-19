@@ -386,12 +386,23 @@ a.card:active { background: var(--paper); }
 }
 .quiz__confirm-actions { display: flex; gap: 12px; margin-top: 12px; }
 
-/* ---- T-048-fix: long words, confirmation ---- */
+/* ---- T-049 / T-048-fix: links, "Отначало", resets, long words ---- */
 .screen--quiz, .quiz, .quiz__title, .quiz__question, .quiz__option, .quiz__why, .quiz__src,
-.quiz__wrong-link, .quiz__confirm, .quiz-list, .quiz-list__link { overflow-wrap: anywhere; min-width: 0; }
+.quiz__right, .quiz__wrong-link, .quiz__confirm, .quiz-list, .quiz-list__link { overflow-wrap: anywhere; min-width: 0; }
+.quiz__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.quiz__top .quiz__title { flex: 1 1 auto; }
+.quiz__restart { flex: 0 0 auto; }
+.quiz__right { margin: 0 0 6px; font-family: var(--font-sans); }
+.quiz__link { color: var(--accent); display: inline-flex; align-items: center; min-height: var(--touch); text-decoration: underline; }
+.quiz__option-text { min-width: 0; }
 .button--danger { color: #fff; background: #b3261e; border-color: #b3261e; }
+.quiz__confirm { margin: 12px 0 16px; }
 .quiz__confirm-text { margin: 0; }
+.quiz-list__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quiz-list__row .quiz-list__link { flex: 1 1 auto; }
+.quiz-list__reset { flex: 0 0 auto; color: #b3261e; border-color: #b3261e; }
+.quiz-list__item .quiz__confirm { margin: 4px 0 12px; }
 @media (prefers-color-scheme: dark) {
-  .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
+  .quiz-list__reset, .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
   .button--danger { color: #fff; background: #b3261e; border-color: #ff8a80; }
 }

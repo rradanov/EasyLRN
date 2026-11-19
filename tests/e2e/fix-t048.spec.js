@@ -169,12 +169,12 @@ test.describe('T-048-fix quizzes', () => {
     await page.getByRole('button', { name: 'Назад' }).click();
     await page.getByRole('button', { name: 'Назад' }).click();
     await expect(page.locator('.quiz__question')).toHaveText('Едно?');
-    await expect(page.locator('.quiz__option--wrong')).toHaveText('✗ А'); // the same text, now option 1
-    await expect(page.locator('.quiz__option--correct')).toHaveText('✓ Б');
+    await expect(page.locator('.quiz__option--wrong')).toHaveText('✗А'); // the same text, now option 1
+    await expect(page.locator('.quiz__right')).toHaveText('Верен отговор: Б');
     await page.getByRole('button', { name: 'Напред' }).click();
     await expect(page.locator('.quiz__verdict')).toHaveCount(0); // changed options: reset
     await page.getByRole('button', { name: 'Напред' }).click();
-    await expect(page.locator('.quiz__option--wrong')).toHaveText('✗ y'); // untouched
+    await expect(page.locator('.quiz__option--wrong')).toHaveText('✗y'); // untouched
   });
 
   test('v2 → v3 conversion of stored answers (index → option text; the first of equal questions keeps a shared answer)', async ({ page }) => {

@@ -270,8 +270,10 @@ test.describe('T-048 the quiz screen', () => {
     await expect(counter(page)).toHaveText('Въпрос 2 от 3 · отговорени 1');
     await pick(page, 0); // wrong (answer 1)
     await expect(page.locator('.quiz__verdict')).toHaveText('Грешно');
-    await expect(page.locator('.quiz__option--correct')).toContainText('Б');
+    // D-036 (T-049): only the chosen option is marked; the right one is named in the feedback.
+    await expect(page.locator('.quiz__option--correct')).toHaveCount(0);
     await expect(page.locator('.quiz__option--wrong')).toContainText('А');
+    await expect(page.locator('.quiz__right')).toHaveText('Верен отговор: Б');
     await back(page);
     await expect(page.locator('.quiz__question')).toHaveText('Едно?');
     await expect(page.locator('.quiz__verdict')).toHaveText('Вярно'); // kept

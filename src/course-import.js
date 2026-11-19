@@ -256,9 +256,9 @@ function lessonKind(path) {
 
 // --- Quizzes (T-047, D-032/D-033): quizzes/<slug>.json ------------------------
 
-const QUIZ_LIMITS = Object.freeze({ quizzes: 500, questions: 500, options: 20, q: 4000, option: 1000, why: 4000, src: 500, title: 300 });
+const QUIZ_LIMITS = Object.freeze({ quizzes: 500, questions: 500, options: 20, q: 4000, option: 1000, why: 4000, src: 500, title: 300, links: 5, label: 200, url: 2048 });
 /** Bump when parseQuiz() reads more from the same file: stored quizzes are parsed again. */
-export const QUIZ_FORMAT = 2; // 0.6.1: lesson number normalised, T048-D2
+export const QUIZ_FORMAT = 2; // 0.6.1: links, lesson number normalised, T048-D2
 const quizSlug = (path) => /^quizzes\/([^/]+)\.json$/i.exec(path)?.[1] ?? null;
 const clampText = (value, max) => {
   const s = typeof value === 'string' ? value : String(value ?? '');
@@ -272,6 +272,30 @@ export function normalizeLessonNumber(value) {
   const s = String(value).trim();
   if (!s) return null;
   return /^\d{1,4}$/.test(s) ? s.padStart(4, '0') : s;
+}
+
+/**
+ * Links of a question (D-035): at most 5 `{ label, url }`, only https: URLs,
+ * label plain text (≤ 200), url ≤ 2048. Invalid ones are left out with a note.
+ * @returns {{ label: string, url: string }[]}
+ */
+export function parseQuizLinks(value, where, notes) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) { notes.push(`${where}: „links“ не е списък — пропуснат`); return []; }
+  const links = [];
+  for (const [i, item] of value.entries()) {
+    if (links.length >= QUIZ_LIMITS.links) { notes.push(`${where}: над ${QUIZ_LIMITS.links} линка — останалите пропуснати`); break; }
+    const label = item && typeof item === 'object' && typeof item.label === 'string' ? item.label.trim() : '';
+    const raw = item && typeof item === 'object' && typeof item.url === 'string' ? item.url.trim() : '';
+    let url = null;
+    try { url = raw && raw.length <= QUIZ_LIMITS.url ? new URL(raw) : null; } catch { url = null; }
+    if (!url || url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
+      notes.push(`${where}: линк ${i + 1} е невалиден (позволени са само https: адреси) — пропуснат`);
+      continue;
+    }
+    links.push({ label: clampText(label || url.hostname, QUIZ_LIMITS.label), url: url.href });
+  }
+  return links;
 }
 
 /**
@@ -319,6 +343,7 @@ export function parseQuiz(courseId, path, bytes, notes = []) {
       answer: q.answer,
       why: clamp(q.why ?? '', QUIZ_LIMITS.why),
       src: clamp(q.src ?? '', QUIZ_LIMITS.src),
+      links: parseQuizLinks(q.links, where, notes),
     });
   });
   if (clamped) notes.push(`тест ${path}: ${clamped} твърде дълги текста са съкратени`);
