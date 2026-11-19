@@ -24,6 +24,10 @@
 // - No `lrn:ready` within 8 s → fallback: an inner scroll and a note.
 // - A lesson taller than MAX_HEIGHT (T046-D2) → the frame is as tall as the
 //   window and the lesson scrolls inside it (`lrn:scroll-mode`).
+// - A lesson with a nested frame of its own (D-034, T048-S1) is stopped: the
+//   guard reports one it could not remove (`lrn:violation`), and the app reads
+//   the frame count of the lesson window from outside every 250 ms
+//   (`contentWindow.length`, readable across origins, not spoofable by it).
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
 
@@ -81,6 +85,7 @@ const isStr = (v, max) => typeof v === 'string' && v.length <= max;
 /** Validators by type: return the clean fields, or null to drop the message. */
 const CHECK = {
   'lrn:hello': (m) => (m.v === PROTOCOL ? {} : null),
+  'lrn:violation': (m) => (m.v === PROTOCOL ? {} : null),
   'lrn:ready': (m) => (m.v === PROTOCOL && (m.title === undefined || isStr(m.title, 300))
     && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { title: m.title ?? '', textLength: m.textLength ?? 0 } : null),
   'lrn:size': (m) => (isNum(m.height, 0, MAX_COORD) ? { height: Math.ceil(m.height) } : null),
@@ -288,6 +293,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       restore();
     },
     'lrn:hello'() { /* `heard` is set for every message */ },
+    'lrn:violation'() { stopForFrames(); },
     'lrn:size'({ height }) {
       if (!frame || element.getAttribute('data-lesson-state') === 'fallback') return;
       if (height > MAX_HEIGHT) {
@@ -362,6 +368,31 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     if (!restored) { restored = true; startRecording(); }
   };
 
+  /** The lesson has a nested frame (D-034): remove the lesson (and with it every nested document). */
+  let frameWatch = null;
+  const stopForFrames = () => {
+    if (destroyed || !frame) return;
+    clearInterval(frameWatch);
+    frameWatch = null;
+    frame.remove();
+    frame = null;
+    clearTimeout(readyTimer);
+    clearTimeout(silentTimer);
+    showNote('');
+    console.warn('EasyLRN: the lesson created a nested frame (D-034) and was stopped.');
+    fail('Урокът е спрян: опита да отвори вграден прозорец (frame), а това не е позволено. Създай урока отново.');
+    element.setAttribute('data-lesson-stopped', 'frame');
+  };
+  const watchFrames = () => {
+    clearInterval(frameWatch);
+    frameWatch = setInterval(() => {
+      if (destroyed || !frame) { clearInterval(frameWatch); return; }
+      let count = 0;
+      try { count = frame.contentWindow?.length ?? 0; } catch { count = 0; }
+      if (count > 0) stopForFrames();
+    }, 250);
+  };
+
   /** The lesson navigated its own frame (§3.1): load the lesson again, but never in a loop. */
   const reloadAfterNavigation = () => {
     selfNavigations++;
@@ -418,6 +449,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     element.append(f); // the navigation starts here, without the sandbox attribute → the SW serves it
     f.setAttribute('sandbox', SANDBOX); // same task: every later navigation is sandboxed (§2а)
     readyTimer = setTimeout(fallback, READY_TIMEOUT_MS);
+    watchFrames();
   }
 
   /** The iframe must start loading only once it is in the document (see createFrame). */
@@ -469,6 +501,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       clearTimeout(readyTimer);
       clearTimeout(silentTimer);
       clearTimeout(positionTimer);
+      clearInterval(frameWatch);
       window.removeEventListener('scroll', onWindowScroll);
       window.removeEventListener('popstate', stopRecording, true);
       window.removeEventListener('hashchange', stopRecording, true);

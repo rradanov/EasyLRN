@@ -125,7 +125,41 @@ export const MIGRATIONS = Object.freeze({
 
     db.createObjectStore(STORES.quizAnswers, { keyPath: 'id' });
   },
+  // v3 (T048-D1/D3): answers by content, not by index. A choice is stored as
+  // the TEXT of the chosen option, under a key from the question text, its
+  // options (sorted) and the text of the right one (+ the number of an earlier
+  // identical question). Old choices (index under a hash of the text) are
+  // converted with the stored quiz; the old map stays as `choicesV2`.
+  3(db, tx) {
+    const raw = unwrap(tx);
+    const quizzes = new Map();
+    const read = raw.objectStore(STORES.quizzes).openCursor();
+    read.onsuccess = () => {
+      const cursor = read.result;
+      if (cursor) { quizzes.set(cursor.value.id, cursor.value); cursor.continue(); return; }
+      eachRecord(tx, STORES.quizAnswers, (value, c) => {
+        if (value.choicesV2 !== undefined) return;
+        c.update({ ...value, choices: migrateChoicesV2(quizzes.get(value.id), value.choices), choicesV2: value.choices ?? {} });
+      });
+    };
+  },
 });
+
+/** v2 → v3 choices of one quiz: { textHash: index } → { questionKey: option text }. */
+export function migrateChoicesV2(quiz, old) {
+  const out = {};
+  if (!quiz || !Array.isArray(quiz.questions) || !old || typeof old !== 'object') return out;
+  const keys = questionKeys(quiz.questions);
+  const seen = new Set();
+  quiz.questions.forEach((question, i) => {
+    const legacy = legacyQuestionKey(question.q);
+    if (seen.has(legacy)) return; // v2 shared one answer between equal texts: the first one keeps it
+    seen.add(legacy);
+    const index = old[legacy];
+    if (Number.isInteger(index) && typeof question.options?.[index] === 'string') out[keys[i]] = question.options[index];
+  });
+  return out;
+}
 
 /**
  * For data migrations: call `fn(value, cursor)` synchronously for every record
@@ -633,19 +667,49 @@ export function setLessonProgress(lessonId, progress) {
 // Quizzes and quiz answers (T-047, D-032/D-033)
 // ---------------------------------------------------------------------------
 
-/**
- * A stable key for a question, from its text (FNV-1a, hex). A re-import keeps
- * the answer of a question whose text did not change, even if its position or
- * the rest of the quiz did (D-032).
- */
-export function questionKey(q) {
-  const s = String(q ?? '').trim();
-  let h = 0x811c9dc5;
+function hash32(s, seed) {
+  let h = seed;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** The v2 key: a hash of the question text only (kept for the v3 migration). */
+export function legacyQuestionKey(q) {
+  return hash32(String(q ?? '').trim(), 0x811c9dc5);
+}
+
+/**
+ * A stable key for a question, from its CONTENT (T048-D1): the text, the
+ * options in sorted order and the text of the right option. Reordered options
+ * keep the key (the stored choice is the option text, so it follows); changed
+ * options or another right answer give a new key (the answer is reset).
+ * `dup` is the number of earlier questions with the same content (T048-D3).
+ */
+export function questionKey(question, dup = 0) {
+  const q = typeof question === 'string' ? { q: question, options: [], answer: -1 } : question || {};
+  const options = Array.isArray(q.options) ? q.options.map(String) : [];
+  const right = options[q.answer] ?? '';
+  const s = [String(q.q ?? '').trim(), [...options].sort().join('\u001e'), right].join('\u001f') + (dup ? `\u001f#${dup}` : '');
+  return `${hash32(s, 0x811c9dc5)}${hash32(s, 0x01000193)}`;
+}
+
+/** Keys of all questions of a quiz, in order (equal questions get their number). */
+export function questionKeys(questions) {
+  const count = new Map();
+  return (questions || []).map((question) => {
+    const base = questionKey(question);
+    const dup = count.get(base) ?? 0;
+    count.set(base, dup + 1);
+    return dup ? questionKey(question, dup) : base;
+  });
+}
+
+/** Index of the stored choice (option text) in the question's options, or -1. */
+export function choiceIndex(question, choice) {
+  return typeof choice === 'string' ? question.options.indexOf(choice) : -1;
 }
 
 /** Quizzes of a course, in order (`order`, then id). */
@@ -661,7 +725,7 @@ export const quizzesForLesson = (courseId, lesson, opts) =>
   byIndex(STORES.quizzes, 'by_lesson', [courseId, lesson], opts).then((qs) =>
     qs.sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || String(a.id).localeCompare(String(b.id))));
 
-/** The user's answers for a quiz: { choices: { [questionKey]: index }, cursor }. */
+/** The user's answers for a quiz: { choices: { [questionKey]: option text }, cursor }. */
 export async function getQuizAnswers(quizId) {
   const record = await get(STORES.quizAnswers, quizId);
   return { id: quizId, choices: record?.choices ?? {}, cursor: record?.cursor ?? 0, ...record };
@@ -671,6 +735,7 @@ export async function getQuizAnswers(quizId) {
 export async function saveQuizChoice(quizId, { courseId, qKey, choice, cursor }) {
   requireString(quizId, 'quizId');
   requireString(qKey, 'qKey');
+  if (typeof choice !== 'string') throw new TypeError('choice must be the text of the chosen option');
   const db = await openDb();
   const tx = db.transaction(STORES.quizAnswers, 'readwrite');
   const old = await tx.store.get(quizId);
@@ -732,11 +797,12 @@ export function scoreQuiz(quiz, answers) {
   const wrong = [];
   let answered = 0;
   let correct = 0;
+  const keys = questionKeys(quiz.questions);
   quiz.questions.forEach((question, i) => {
-    const choice = choices[questionKey(question.q)];
-    if (typeof choice !== 'number') return;
+    const index = choiceIndex(question, choices[keys[i]]);
+    if (index < 0) return;
     answered++;
-    if (choice === question.answer) correct++; else wrong.push(i);
+    if (index === question.answer) correct++; else wrong.push(i);
   });
   const total = quiz.questions.length;
   return { total, answered, correct, wrong, started: answered > 0, done: total > 0 && answered === total };

@@ -1,10 +1,11 @@
 // T-048 (tester): quiz answers across a real upgrade path, on one origin and
 // one browser profile:
 //   0.5.1 (schema v1, commit 601d5f5, old data: course, progress, annotation, note)
-//   → 0.6.0 (this tree; migration v1 → v2, "Има нова версия" → "Презареди",
+//   → 0.6.0 (commit ec5afee; migration v1 → v2, "Има нова версия" → "Презареди",
 //            re-import of the same ZIP brings the quizzes, answers given)
-//   → 0.6.0 + a version bump (a copy of this tree; the next release)
-// The old tree comes from `git archive` into /tmp (skipped without git).
+//   → this tree (T-048-fix/T-049: migration v2 → v3, answers by content, kept)
+//   → this tree + a version bump (a copy of this tree; the next release)
+// The old trees come from `git archive` into /tmp (skipped without git).
 // Synthetic data only (LRN-DEMO, D-026).
 import { test, expect } from '@playwright/test';
 import { execSync, spawn } from 'node:child_process';
@@ -15,21 +16,26 @@ import { DRIVE_ZIP_NAME, readFixture, makeZip } from '../fixtures/zips.mjs';
 
 const REPO = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const OLD_COMMIT = '601d5f5'; // T-045-fix, 0.5.1, IndexedDB schema v1
+const MID_COMMIT = 'ec5afee'; // T-047, 0.6.0, IndexedDB schema v2 (answers by index)
+const NOW_VERSION = /APP_VERSION = '([^']+)'/.exec(readFileSync(join(REPO, 'src/config.js'), 'utf8'))[1];
 
 function prepareTrees(base) {
   const old = join(base, 'old');
+  const mid = join(base, 'mid');
   const next = join(base, 'next');
   rmSync(base, { recursive: true, force: true });
   mkdirSync(old, { recursive: true });
+  mkdirSync(mid, { recursive: true });
   execSync(`git -C "${REPO}" archive ${OLD_COMMIT} | tar -x -C "${old}"`);
+  execSync(`git -C "${REPO}" archive ${MID_COMMIT} | tar -x -C "${mid}"`);
   cpSync(REPO, next, { recursive: true, filter: (p) => !/[\\/](node_modules|\.git|test-results)([\\/]|$)/.test(p.slice(REPO.length)) });
-  for (const [file, re] of [['sw.js', /const VERSION = '0\.6\.0'/], ['src/config.js', /APP_VERSION = '0\.6\.0'/]]) {
+  for (const [file, text0] of [['sw.js', `const VERSION = '${NOW_VERSION}'`], ['src/config.js', `APP_VERSION = '${NOW_VERSION}'`]]) {
     const path = join(next, file);
     const text = readFileSync(path, 'utf8');
-    expect(re.test(text), file).toBe(true);
-    writeFileSync(path, text.replace('0.6.0', '0.6.99'));
+    expect(text.includes(text0), file).toBe(true);
+    writeFileSync(path, text.replace(text0, text0.replace(NOW_VERSION, '0.6.99')));
   }
-  return { old, now: REPO, next };
+  return { old, mid, now: REPO, next };
 }
 
 async function serve(root, port) {
@@ -41,9 +47,9 @@ async function serve(root, port) {
   return () => new Promise((ok) => { child.removeAllListeners('exit'); child.on('exit', ok); child.kill(); });
 }
 
-test('T-048 answers survive the migration v1→v2 with old data and a version upgrade (0.5.1 → 0.6.0 → next)', async ({ page, context }, info) => {
+test('T-048 answers survive the migrations v1→v2→v3 with old data and version upgrades (0.5.1 → 0.6.0 → this → next)', async ({ page, context }, info) => {
   test.skip(!existsSync(join(REPO, '.git')), 'needs the git history');
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   const port = 4300 + info.workerIndex * 2 + (info.project.name === 'tablet-portrait' ? 1 : 0);
   const base = `/tmp/t048-upgrade-${port}`;
   const trees = prepareTrees(base);
@@ -93,7 +99,7 @@ test('T-048 answers survive the migration v1→v2 with old data and a version up
   } finally { await stop(); }
 
   // --- 0.6.0: migration v1 → v2, re-import, answers ----------------------------
-  stop = await serve(trees.now, port);
+  stop = await serve(trees.mid, port);
   try {
     await upgradeTo('0.6.0');
     const migrated = await dbInfo();
@@ -115,6 +121,20 @@ test('T-048 answers survive the migration v1→v2 with old data and a version up
     expect(await dbInfo()).toMatchObject({ annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
   } finally { await stop(); }
 
+  // --- this version: migration v2 → v3 (answers by content), the answers stay ---
+  stop = await serve(trees.now, port);
+  try {
+    await upgradeTo(NOW_VERSION);
+    expect(await dbInfo()).toMatchObject({ version: 3, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    await page.goto(`${url}#/c/LRN-DEMO`);
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
+    await page.goto(`${url}#/c/LRN-DEMO/quiz/0001-1-vidove`);
+    await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
+    const kept = await page.evaluate(async () => (await (await import('./src/db.js')).getQuizAnswers('LRN-DEMO/quizzes/0001-1-vidove.json')));
+    console.log(`T-048-fix upgrade v2 → v3 answers: ${JSON.stringify({ choices: kept.choices, choicesV2: kept.choicesV2 })}`);
+    expect(Object.values(kept.choices).every((v) => typeof v === 'string')).toBe(true);
+  } finally { await stop(); }
+
   // --- the next version: the answers stay (online, then offline) ---------------
   stop = await serve(trees.next, port);
   try {
@@ -127,7 +147,7 @@ test('T-048 answers survive the migration v1→v2 with old data and a version up
     await page.reload();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     await context.setOffline(false);
-    expect(await dbInfo()).toMatchObject({ version: 2, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    expect(await dbInfo()).toMatchObject({ version: 3, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
   } finally { await stop(); }
   rmSync(base, { recursive: true, force: true });
   expect(problems.filter((p) => !/Failed to fetch|ERR_INTERNET_DISCONNECTED|status of 40/.test(p))).toEqual([]);

@@ -385,3 +385,13 @@ a.card:active { background: var(--paper); }
   box-shadow: var(--shadow);
 }
 .quiz__confirm-actions { display: flex; gap: 12px; margin-top: 12px; }
+
+/* ---- T-048-fix: long words, confirmation ---- */
+.screen--quiz, .quiz, .quiz__title, .quiz__question, .quiz__option, .quiz__why, .quiz__src,
+.quiz__wrong-link, .quiz__confirm, .quiz-list, .quiz-list__link { overflow-wrap: anywhere; min-width: 0; }
+.button--danger { color: #fff; background: #b3261e; border-color: #b3261e; }
+.quiz__confirm-text { margin: 0; }
+@media (prefers-color-scheme: dark) {
+  .quiz__reset { color: #ff8a80; border-color: #ff8a80; }
+  .button--danger { color: #fff; background: #b3261e; border-color: #ff8a80; }
+}

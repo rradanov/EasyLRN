@@ -144,7 +144,6 @@ test.describe('T-048 retest T046-S1 / D-034: no working nested frame', () => {
   // ---- Defects found in T-048 (see the log) ---------------------------------
 
   test('[T048-S1a] the lesson overrides Element.prototype.remove before inserting: the guard cannot remove the frame, its script runs with RTCPeerConnection', async ({ page }) => {
-    test.fail(); // T048-S1: open defect
     await importCourse(page, 'LRN-G4', {
       'INDEX.md': strToU8('# G4\n'),
       'lessons/0001-g.html': doc(`<script>Element.prototype.remove = function () {};
@@ -156,7 +155,6 @@ test.describe('T-048 retest T046-S1 / D-034: no working nested frame', () => {
   });
 
   test('[T048-S1b] the lesson replaces document.documentElement: the guard\'s MutationObserver no longer sees inserted frames', async ({ page }) => {
-    test.fail(); // T048-S1: open defect
     await importCourse(page, 'LRN-G5', {
       'INDEX.md': strToU8('# G5\n'),
       'lessons/0001-g.html': doc(`<script>addEventListener('load', () => setTimeout(() => {
@@ -172,7 +170,6 @@ test.describe('T-048 retest T046-S1 / D-034: no working nested frame', () => {
   test('[T048-S1c] the assembler misses a frame inside <svg><title> (an HTML integration point it treats as raw text)', async ({ page }) => {
     // The guard may still catch it at runtime; this checks the assembly step
     // alone (D-034: "the renderer removes them"): the frame must not reach the served HTML.
-    test.fail(); // T048-S1: open defect
     await importCourse(page, 'LRN-G6', {
       'INDEX.md': strToU8('# G6\n'),
       'lessons/0001-g.html': doc(`<svg><title><iframe srcdoc="${attr(REPORT('svg title'))}"></iframe></title></svg>`
@@ -185,7 +182,6 @@ test.describe('T-048 retest T046-S1 / D-034: no working nested frame', () => {
   });
 
   test('[T048-S1d] static frame missed by the assembler + Element.prototype.remove overridden earlier: a working nested frame from the source HTML', async ({ page }) => {
-    test.fail(); // T048-S1: open defect
     await importCourse(page, 'LRN-G7', {
       'INDEX.md': strToU8('# G7\n'),
       'lessons/0001-g.html': doc(`<svg><title><iframe srcdoc="${attr(REPORT('static svg title + remove()'))}"></iframe></title></svg>`,

@@ -118,7 +118,6 @@ test.describe('T-048 validation of quizzes/*.json', () => {
   });
 
   test('[T048-D2] a non-string option is dropped and the answer index then points to another option', async ({ page }) => {
-    test.fail(); // T048-D2: open defect
     await importCourse(page, 'LRN-SHIFT', {
       'INDEX.md': INDEX('LRN-SHIFT'),
       'lessons/0001-l.html': LESSON('0001'),
@@ -172,7 +171,6 @@ test.describe('T-048 validation of quizzes/*.json', () => {
 });
 
 test('[T048-D4] a long unbroken string (a URL in "src", a long word in an option or the title) widens the page: horizontal scroll', async ({ page }) => {
-  test.fail(); // T048-D4: open defect (low)
   const url = `https://eur-lex.europa.eu/legal-content/BG/TXT/HTML/?uri=CELEX:32024R2847&from=EN#${'d1e'.repeat(60)}`; // ≈ 250 characters
   await importCourse(page, 'LRN-URL', {
     'INDEX.md': INDEX('LRN-URL'),
@@ -402,8 +400,7 @@ test.describe('T-048 re-import and several quizzes per lesson', () => {
     expect(same.line).toContain('Без промени');
   });
 
-  test('[T048-D1] re-import with the same question text but reordered options / another answer: the old choice is kept and the verdict flips', async ({ page }) => {
-    test.fail(); // T048-D1: open defect
+  test('[T048-D1] re-import with the same question text but reordered options / another answer: the choice follows the option text; another answer resets it', async ({ page }) => {
     await importCourse(page, 'LRN-Q', BASIC());
     await openQuiz(page, 'LRN-Q', '0001-a');
     await pick(page, 0); // "А", right
@@ -414,12 +411,21 @@ test.describe('T-048 re-import and several quizzes per lesson', () => {
     }));
     await page.goto('./#/c/LRN-Q/quiz/0001-a');
     await expect(page.locator('.quiz__question')).toHaveText('Едно?');
-    // A changed question must be reset (D-032, T-048): no stale verdict.
+    // T-048-fix (orchestrator): answers are kept by content — the choice "А" follows
+    // the text to its new place and the verdict is computed against the new answer.
+    await expect(page.locator('.quiz__verdict')).toHaveText('Вярно');
+    await expect(page.locator('.quiz__option--correct')).toContainText('А');
+    // Another right answer (same options) = a changed question: reset.
+    await importCourse(page, 'LRN-Q', BASIC({
+      'quizzes/0001-a.json': json({ lesson: '0001', title: 'Тест А', questions: [Q('Едно?', 1, ['В', 'Б', 'А']), Q('Две?', 1), Q('Три?', 2)] }),
+    }));
+    await page.goto('./#/c/LRN-Q');
+    await page.goto('./#/c/LRN-Q/quiz/0001-a');
+    await expect(page.locator('.quiz__question')).toHaveText('Едно?');
     await expect(page.locator('.quiz__verdict')).toHaveCount(0);
   });
 
   test('[T048-D3] two questions with the same text in one quiz share one answer', async ({ page }) => {
-    test.fail(); // T048-D3: open defect (low)
     await importCourse(page, 'LRN-Q', BASIC({
       'quizzes/0001-a.json': json({ lesson: '0001', title: 'Тест А', questions: [Q('Вярно ли е?', 0, ['Да', 'Не']), Q('Вярно ли е?', 1, ['Да', 'Не'])] }),
     }));
@@ -446,6 +452,7 @@ test.describe('T-048 re-import and several quizzes per lesson', () => {
     await expect(box.locator('a', { hasText: 'Първи' })).toHaveCount(1);
     await expect(box.locator('a', { hasText: 'Втори' })).toHaveCount(1);
     await expect(box.locator('a', { hasText: 'Трети' })).toHaveCount(0);
+    await expect(box.locator('a', { hasText: 'Число' })).toHaveCount(1); // T-048 Н-4 fixed: "lesson": 1 → "0001"
     await box.locator('a', { hasText: 'Втори' }).click();
     await pick(page, 0);
     await page.goto('./#/c/LRN-M/read/0002');

@@ -55,7 +55,7 @@ test.describe('data layer (IndexedDB)', () => {
     expect(after).toEqual({ course: 'Демо', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
   });
 
-  test('the app opens lrn-app v2 and requests persistent storage at start', async ({ page }) => {
+  test('the app opens lrn-app v3 and requests persistent storage at start', async ({ page }) => {
     await page.addInitScript(() => {
       window.__persistCalls = 0;
       const original = navigator.storage.persist.bind(navigator.storage);
@@ -69,7 +69,7 @@ test.describe('data layer (IndexedDB)', () => {
     await expect.poll(() => page.evaluate(async () => {
       const dbs = await indexedDB.databases();
       return dbs.find((d) => d.name === 'lrn-app')?.version ?? null;
-    })).toBe(2);
+    })).toBe(3);
     await expect.poll(() => page.evaluate(() => window.__persistCalls)).toBeGreaterThanOrEqual(1);
     const stores = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('lrn-app');

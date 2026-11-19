@@ -291,7 +291,9 @@ test.describe('T-010 CSP of the lesson (more cases)', () => {
     });
     expect(r.out.eventSource).toBe('blocked');
     expect(r.out.blobWorker).toBe('allowed'); // constructor does not throw; CSP refuses it (worker-src) — no request anyway
-    expect(r.v).toEqual(expect.arrayContaining(['connect-src', 'img-src', 'worker-src', 'frame-src', 'style-src-elem', 'media-src', 'object-src']));
+    // object-src: since T-048-fix the guard removes the <object>/<embed> before it
+    // loads (no violation to report, nothing leaves either way).
+    expect(r.v).toEqual(expect.arrayContaining(['connect-src', 'img-src', 'worker-src', 'frame-src', 'style-src-elem', 'media-src']));
     // Self-navigation of the lesson frame to another site (the T-009 log thought this was
     // an open channel): the app's own frame-src 'self' blocks it, nothing leaves.
     await f.evaluate(() => { location.href = 'https://example.org/selfnav?k=1'; });

@@ -90,41 +90,113 @@
     lockFrames(w.HTMLObjectElement.prototype, 'contentDocument');
   } catch (e) { /* ignore */ }
 
-  // --- 1b. No nested browsing contexts at all (D-034, T046-S1) -----------------
+  // --- 1b. No nested browsing contexts at all (D-034, T046-S1, T048-S1) ---------
   // A nested frame of the lesson runs its own scripts in a fresh realm with a
-  // fresh RTCPeerConnection. The renderer removes static frames from the lesson;
-  // here every way to create one at runtime is blocked. A frame only loads once
-  // it is connected to the live document, so a MutationObserver that removes it
-  // in the microtask after it is inserted stops its document before it can run
-  // (microtasks run before the frame's load task). createElement is also
-  // neutralised, so the lesson cannot even get a frame element.
+  // fresh RTCPeerConnection. The renderer removes static frames from the lesson
+  // (with a real HTML parser); here every way to create one at runtime is
+  // blocked. A frame only loads once it is connected to the live document, so a
+  // MutationObserver that removes it in the microtask after it is inserted stops
+  // its document before it can run (microtasks run before the frame's load
+  // task). createElement is also neutralised, so the lesson cannot even get a
+  // frame element.
+  // T048-S1a: every DOM method the guard needs is taken here, before the
+  // lesson runs, and called with a saved Reflect.apply: a lesson that replaces
+  // Element.prototype.remove, Function.prototype.call, NodeList#length… does
+  // not change what the guard does. T048-S1b: the observer watches the
+  // document itself (a new documentElement is seen too) and every shadow root.
+  // If a frame stays anyway, the guard tells the app (`lrn:violation`), which
+  // stops the lesson; the app also checks the frame count from outside.
+  var apply = Reflect.apply;
   var FRAME_TAGS = { iframe: 1, frame: 1, frameset: 1, object: 1, embed: 1, portal: 1 };
-  function stripFrames(node) {
-    try {
-      if (node.nodeType === 1 && FRAME_TAGS[node.localName]) { node.remove(); return; }
-      if (node.querySelectorAll) {
-        var found = node.querySelectorAll('iframe,frame,frameset,object,embed,portal');
-        for (var i = 0; i < found.length; i++) found[i].remove();
-      }
-    } catch (e) { /* ignore */ }
+  var FRAME_SELECTOR = 'iframe,frame,frameset,object,embed,portal';
+  function getter(proto, name) {
+    for (var o = proto; o; o = getPrototypeOf(o)) {
+      var dd = getOwnPropertyDescriptor(o, name);
+      if (dd) return dd.get || null;
+    }
+    return null;
   }
-  try {
-    var observer = new w.MutationObserver(function (records) {
-      for (var i = 0; i < records.length; i++) {
-        var added = records[i].addedNodes;
-        for (var j = 0; j < added.length; j++) stripFrames(added[j]);
+  function method(proto, name) {
+    try { var f = proto && proto[name]; return typeof f === 'function' ? f : null; } catch (e) { return null; }
+  }
+  var NodeP = w.Node.prototype;
+  var get = {
+    nodeType: getter(NodeP, 'nodeType'),
+    localName: getter(w.Element.prototype, 'localName'),
+    parentNode: getter(NodeP, 'parentNode'),
+    listLength: getter(w.NodeList.prototype, 'length'),
+    addedNodes: getter(w.MutationRecord.prototype, 'addedNodes'),
+    shadowRoot: getter(w.Element.prototype, 'shadowRoot'),
+    winLength: getter(w, 'length'),
+  };
+  var fn = {
+    removeChild: method(NodeP, 'removeChild'),
+    qsaElement: method(w.Element.prototype, 'querySelectorAll'),
+    qsaDocument: method(w.Document.prototype, 'querySelectorAll'),
+    qsaFragment: method(w.DocumentFragment.prototype, 'querySelectorAll'),
+    observe: method(w.MutationObserver && w.MutationObserver.prototype, 'observe'),
+    takeRecords: method(w.MutationObserver && w.MutationObserver.prototype, 'takeRecords'),
+    attachShadow: method(w.Element.prototype, 'attachShadow'),
+  };
+  var MO = w.MutationObserver;
+  var violated = false;
+  function prop(g, obj, fallback) { try { return g ? apply(g, obj, []) : fallback; } catch (e) { return fallback; } }
+  function qsa(node, type) {
+    var f = type === 9 ? fn.qsaDocument : type === 11 ? fn.qsaFragment : type === 1 ? fn.qsaElement : null;
+    if (!f) return null;
+    try { return apply(f, node, [FRAME_SELECTOR]); } catch (e) { return null; }
+  }
+  function removeNode(node) {
+    var parent = prop(get.parentNode, node, null);
+    if (!parent) return true;
+    try { apply(fn.removeChild, parent, [node]); } catch (e) { /* ignore */ }
+    return !prop(get.parentNode, node, null);
+  }
+  var reportViolation = function () {}; // set in section 3 (needs the parent window)
+  function stripFrames(node) {
+    var type = prop(get.nodeType, node, 0);
+    if (type === 1 && FRAME_TAGS[String(prop(get.localName, node, '')).toLowerCase()]) {
+      if (!removeNode(node)) reportViolation('frame');
+      return;
+    }
+    var found = qsa(node, type);
+    if (!found) return;
+    var n = prop(get.listLength, found, 0);
+    var all = [];
+    for (var i = 0; i < n; i++) all.push(found[i]);
+    for (var k = 0; k < all.length; k++) if (!removeNode(all[k])) reportViolation('frame');
+    // Open shadow roots inside (closed ones are watched since attachShadow, below).
+    if (type === 1 || type === 9 || type === 11) {
+      var hosts = null;
+      try { hosts = apply(type === 9 ? fn.qsaDocument : type === 11 ? fn.qsaFragment : fn.qsaElement, node, ['*']); } catch (e) { hosts = null; }
+      var m = hosts ? prop(get.listLength, hosts, 0) : 0;
+      for (var j = 0; j < m; j++) {
+        var sr = prop(get.shadowRoot, hosts[j], null);
+        if (sr) { watch(sr); stripFrames(sr); }
       }
-    });
-    observer.observe(w.document.documentElement || w.document, { childList: true, subtree: true });
-  } catch (e) { /* ignore */ }
+    }
+  }
+  function onRecords(records) {
+    for (var i = 0; i < records.length; i++) {
+      var added = prop(get.addedNodes, records[i], null);
+      var n = added ? prop(get.listLength, added, 0) : 0;
+      for (var j = 0; j < n; j++) stripFrames(added[j]);
+    }
+  }
+  var observer = null;
+  try { observer = new MO(onRecords); } catch (e) { observer = null; }
+  function watch(root) {
+    try { apply(fn.observe, observer, [root, { childList: true, subtree: true }]); } catch (e) { /* ignore */ }
+  }
+  watch(w.document);
 
   function neuter(create) {
     return function (tagName) {
-      var el = create.apply(this, arguments);
+      var el = apply(create, this, arguments);
       try {
-        if (el && el.nodeType === 1 && FRAME_TAGS[String(el.localName).toLowerCase()]) {
+        if (el && prop(get.nodeType, el, 0) === 1 && FRAME_TAGS[String(prop(get.localName, el, '')).toLowerCase()]) {
           // A harmless inert element instead; its content never becomes a frame.
-          return create.call(this, 'template');
+          return apply(create, this, ['template']);
         }
       } catch (e) { /* ignore */ }
       return el;
@@ -137,26 +209,44 @@
       defineProperty(obj, name, { value: wrap(orig), writable: false, enumerable: false, configurable: false });
     } catch (e) { /* ignore */ }
   }
+  function lockAway(obj, name) {
+    try { defineProperty(obj, name, { value: undefined, writable: false, enumerable: false, configurable: false }); } catch (e) { /* ignore */ }
+  }
   lockMethod(w.Document.prototype, 'createElement', neuter);
   lockMethod(w.Document.prototype, 'createElementNS', function (create) {
     return function (ns, tagName) {
-      var el = create.apply(this, arguments);
+      var el = apply(create, this, arguments);
       try {
-        if (el && el.nodeType === 1 && FRAME_TAGS[String(el.localName).toLowerCase()]) return create.call(this, ns, 'span');
+        if (el && prop(get.nodeType, el, 0) === 1 && FRAME_TAGS[String(prop(get.localName, el, '')).toLowerCase()]) return apply(create, this, [ns, 'span']);
       } catch (e) { /* ignore */ }
       return el;
     };
   });
+  // Shadow roots (also closed ones) are watched like the document.
+  if (fn.attachShadow) {
+    lockMethod(w.Element.prototype, 'attachShadow', function (orig) {
+      return function () { var root = apply(orig, this, arguments); watch(root); stripFrames(root); return root; };
+    });
+  }
+  // Parsers that can build declarative shadow roots the observer cannot see
+  // (lessons from lrn-teach never use them).
+  lockAway(w.Element.prototype, 'setHTMLUnsafe');
+  if (w.ShadowRoot) lockAway(w.ShadowRoot.prototype, 'setHTMLUnsafe');
+  lockAway(w.Document, 'parseHTMLUnsafe');
   // Parser paths that build a frame directly: strip the result once it lands.
   lockMethod(w.Element.prototype, 'insertAdjacentHTML', function (orig) {
-    return function () { var r = orig.apply(this, arguments); try { stripFrames(this.parentNode || this); } catch (e) { /* ignore */ } return r; };
+    return function () {
+      var r = apply(orig, this, arguments);
+      stripFrames(prop(get.parentNode, this, null) || this);
+      return r;
+    };
   });
-  lockMethod(w.Document.prototype, 'write', function (orig) {
-    return function () { var r = orig.apply(this, arguments); stripFrames(w.document.documentElement || w.document); return r; };
-  });
-  lockMethod(w.Document.prototype, 'writeln', function (orig) {
-    return function () { var r = orig.apply(this, arguments); stripFrames(w.document.documentElement || w.document); return r; };
-  });
+  // document.write/writeln: the parser they feed builds declarative shadow
+  // roots (also closed ones, which no observer sees), and a tag can be split
+  // over several calls. Lessons do not need them: they do nothing here.
+  var noWrite = function () { return function () { try { w.console.warn('EasyLRN: document.write is not available in lessons.'); } catch (e) { /* ignore */ } }; };
+  lockMethod(w.Document.prototype, 'write', noWrite);
+  lockMethod(w.Document.prototype, 'writeln', noWrite);
 
   // --- 2. The bridge's own references ------------------------------------------
   var parentWindow = w.parent;
@@ -181,8 +271,24 @@
     defineProperty(w, '__easylrn', { value: refs, writable: false, enumerable: false, configurable: false });
   } catch (e) { /* the bridge falls back to the window's own names */ }
 
-  // --- 3. lrn:hello after load ---------------------------------------------------
+  // --- 3. lrn:hello after load; lrn:violation -------------------------------------
   if (parentWindow === w) return; // not in a frame (a lesson opened directly)
+  reportViolation = function (what) {
+    if (violated) return;
+    violated = true;
+    try { parentWindow.postMessage({ lrn: 1, type: 'lrn:violation', v: 1, what: what }, '*'); } catch (e) { /* ignore */ }
+  };
+  // A frame that stays in the document (not removable, or out of the
+  // observer's sight): the window's own frame count, read with a saved getter.
+  var checkCount = function () {
+    try {
+      var records = fn.takeRecords && observer ? apply(fn.takeRecords, observer, []) : [];
+      if (records && records.length) onRecords(records);
+    } catch (e) { /* ignore */ }
+    if (prop(get.winLength, w, 0) > 0) reportViolation('frame');
+    if (!violated) setTimeoutFn(checkCount, 250);
+  };
+  setTimeoutFn(checkCount, 0);
   var hello = function () {
     try { parentWindow.postMessage({ lrn: 1, type: 'lrn:hello', v: 1 }, '*'); } catch (e) { /* ignore */ }
   };

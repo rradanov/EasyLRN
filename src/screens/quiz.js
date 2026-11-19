@@ -9,14 +9,16 @@
 // One question per screen, immediate feedback with the explanation and source,
 // Back/Next, a progress bar, a result with the wrong questions, "Опитай пак
 // грешните" and "Нулирай отговорите" (with a confirmation). The answers are in
-// IndexedDB (by course and quiz, each choice under a hash of the question text),
-// so they survive leaving, reloading, offline and a version upgrade.
+// IndexedDB (by course and quiz, each choice as the option text under a key
+// from the question's content, T048-D1), so they survive leaving, reloading,
+// offline, a version upgrade and reshuffled options.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
 import {
   getCourse, listQuizzes, getQuizAnswers, saveQuizChoice, saveQuizCursor,
-  resetQuizAnswers, clearQuizChoices, scoreQuiz, questionKey,
+  resetQuizAnswers, clearQuizChoices, scoreQuiz, questionKeys, choiceIndex,
 } from '../db.js';
+import { confirmBox } from './confirm.js';
 
 function findQuiz(quizzes, key) {
   const k = String(key);
@@ -57,8 +59,11 @@ export function quizScreen({ params }) {
 /** The interactive quiz, once the data is loaded. */
 function runQuiz(root, courseId, quiz, answers) {
   const questions = quiz.questions;
-  const keys = questions.map((q) => questionKey(q.q));
+  // Answers by content (T048-D1/D3): key from the question, its options and
+  // the right one; the stored choice is the TEXT of the chosen option.
+  const keys = questionKeys(questions);
   const choices = { ...answers.choices }; // local mirror of the stored choices
+  const chosenIndex = (qi) => choiceIndex(questions[qi], choices[keys[qi]]);
 
   // `order` is which questions this run goes through (all, or only the wrong
   // ones for "Опитай пак грешните"); `pos` is the position inside it.
@@ -67,9 +72,10 @@ function runQuiz(root, courseId, quiz, answers) {
   if (pos === -1) pos = 0;
   let view = 'quiz';
 
-  const persistChoice = (qi, choice) => {
-    choices[keys[qi]] = choice;
-    saveQuizChoice(quiz.id, { courseId, qKey: keys[qi], choice, cursor: order[pos] })
+  const persistChoice = (qi, oi) => {
+    const text = questions[qi].options[oi];
+    choices[keys[qi]] = text;
+    saveQuizChoice(quiz.id, { courseId, qKey: keys[qi], choice: text, cursor: order[pos] })
       .catch((err) => console.warn('Cannot save the answer:', err));
   };
 
@@ -77,10 +83,10 @@ function runQuiz(root, courseId, quiz, answers) {
     if (view === 'results') { renderResults(); return; }
     const qi = order[pos];
     const question = questions[qi];
-    const chosen = choices[keys[qi]];
-    const answered = typeof chosen === 'number';
+    const chosen = chosenIndex(qi);
+    const answered = chosen >= 0;
 
-    const answeredCount = order.filter((i) => typeof choices[keys[i]] === 'number').length;
+    const answeredCount = order.filter((i) => chosenIndex(i) >= 0).length;
     // The width is set through the CSSOM (element.style), not a `style` attribute:
     // the app CSP is `style-src 'self'` (no inline styles).
     const fill = h('div', { class: 'quiz__bar-fill' });
@@ -104,7 +110,7 @@ function runQuiz(root, courseId, quiz, answers) {
         'data-option': oi,
         'aria-pressed': answered && oi === chosen ? 'true' : 'false',
         disabled: answered || undefined,
-        onclick: () => { if (typeof choices[keys[qi]] !== 'number') { persistChoice(qi, oi); render(); } },
+        onclick: () => { if (chosenIndex(qi) < 0) { persistChoice(qi, oi); render(); } },
       }, h('span', { class: 'quiz__option-mark', 'aria-hidden': 'true', text: mark }), h('span', { text }));
       return btn;
     });
@@ -154,7 +160,7 @@ function runQuiz(root, courseId, quiz, answers) {
           h('ul', { class: 'quiz__wrong-list' }, wrong.map((qi) =>
             h('li', {}, h('button', {
               type: 'button', class: 'quiz__wrong-link',
-              onclick: () => { order = questions.map((_, i) => i); pos = qi; view = 'quiz'; render(); },
+              onclick: () => { order = questions.map((_, i) => i); pos = qi; view = 'quiz'; saveQuizCursor(quiz.id, qi).catch(() => {}); render(); },
             }, questions[qi].q)))))
       : h('p', { class: 'quiz__all-correct', text: s.total ? 'Всички отговори са верни.' : 'Тестът няма въпроси.' });
 
@@ -182,14 +188,16 @@ function runQuiz(root, courseId, quiz, answers) {
   const confirmReset = () => {
     if (confirming) return;
     confirming = true;
-    const dialog = h('div', { class: 'quiz__confirm', role: 'alertdialog', 'aria-label': 'Нулиране на отговорите' },
-      h('p', { text: 'Да изтрия ли всички отговори на този тест? Това не може да се върне.' }),
-      h('div', { class: 'quiz__confirm-actions' },
-        h('button', { type: 'button', class: 'button button--primary', 'data-field': 'quiz-reset-yes', onclick: doReset }, 'Изтрий'),
-        h('button', { type: 'button', class: 'button', onclick: () => { confirming = false; renderResults(); } }, 'Отказ'),
-      ));
+    // T-048 Н-5: the focus goes to "Отказ"; "Изтрий" is red, not the primary button.
+    const dialog = confirmBox({
+      text: 'Да изтрия ли всички отговори на този тест? Това не може да се върне.',
+      yes: 'Изтрий',
+      label: 'Нулиране на отговорите',
+      onYes: doReset,
+      onNo: () => { confirming = false; renderResults(); },
+    });
     root.append(dialog);
-    dialog.querySelector('[data-field="quiz-reset-yes"]').focus();
+    dialog.focusCancel();
   };
   const doReset = async () => {
     try { await resetQuizAnswers(quiz.id); } catch (err) { console.warn('Cannot reset the answers:', err); }

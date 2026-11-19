@@ -257,53 +257,83 @@ function lessonKind(path) {
 // --- Quizzes (T-047, D-032/D-033): quizzes/<slug>.json ------------------------
 
 const QUIZ_LIMITS = Object.freeze({ quizzes: 500, questions: 500, options: 20, q: 4000, option: 1000, why: 4000, src: 500, title: 300 });
+/** Bump when parseQuiz() reads more from the same file: stored quizzes are parsed again. */
+export const QUIZ_FORMAT = 2; // 0.6.1: lesson number normalised, T048-D2
 const quizSlug = (path) => /^quizzes\/([^/]+)\.json$/i.exec(path)?.[1] ?? null;
 const clampText = (value, max) => {
   const s = typeof value === 'string' ? value : String(value ?? '');
   return s.length > max ? s.slice(0, max) : s;
 };
 
+/** Lesson number of a quiz: 1, "1", "01" → "0001" (T-048 Н-4); other text as it is. */
+export function normalizeLessonNumber(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0 && value <= 9999 ? String(value).padStart(4, '0') : null;
+  const s = String(value).trim();
+  if (!s) return null;
+  return /^\d{1,4}$/.test(s) ? s.padStart(4, '0') : s;
+}
+
 /**
  * Validate a quizzes/<slug>.json into a clean quiz record, or null if it has no
  * valid question. All text stays PLAIN TEXT (D-032): the UI shows it with
  * textContent, never innerHTML, so HTML or <script> inside a field cannot run.
- * Invalid questions (bad shape, fewer than 2 options, answer index out of
- * range) are dropped with a note; limits bound every length and count.
+ * Invalid questions (bad shape, an option that is not text — T048-D2 —,
+ * fewer than 2 options, answer index out of range) are dropped whole with a
+ * note; limits bound every length and count, and a cut is noted too (the
+ * import summary shows the notes, T-048 Н-2).
  */
 export function parseQuiz(courseId, path, bytes, notes = []) {
   const slug = quizSlug(path);
   if (!slug) return null;
   let json;
-  try { json = JSON.parse(text(bytes)); } catch { notes.push(`quiz ${path}: невалиден JSON`); return null; }
-  if (!json || typeof json !== 'object' || !Array.isArray(json.questions)) { notes.push(`quiz ${path}: няма въпроси`); return null; }
+  try { json = JSON.parse(text(bytes)); } catch { notes.push(`тест ${path}: невалиден JSON — пропуснат`); return null; }
+  if (!json || typeof json !== 'object' || !Array.isArray(json.questions)) { notes.push(`тест ${path}: няма въпроси — пропуснат`); return null; }
   const questions = [];
+  let clamped = 0;
+  const clamp = (value, max) => {
+    const s = typeof value === 'string' ? value : String(value ?? '');
+    if (s.length > max) clamped++;
+    return clampText(s, max);
+  };
+  if (json.questions.length > QUIZ_LIMITS.questions) {
+    notes.push(`тест ${path}: ${json.questions.length} въпроса, показани са първите ${QUIZ_LIMITS.questions}`);
+  }
   json.questions.forEach((q, i) => {
     if (questions.length >= QUIZ_LIMITS.questions) return;
+    const where = `тест ${path}, въпрос ${i + 1}`;
     if (!q || typeof q !== 'object' || typeof q.q !== 'string' || !q.q.trim() || !Array.isArray(q.options)) {
-      notes.push(`quiz ${path} #${i + 1}: грешна форма на въпроса`); return;
+      notes.push(`${where}: грешна форма — пропуснат`); return;
     }
-    const options = q.options.filter((o) => typeof o === 'string').slice(0, QUIZ_LIMITS.options).map((o) => clampText(o, QUIZ_LIMITS.option));
-    if (options.length < 2) { notes.push(`quiz ${path} #${i + 1}: трябват поне 2 опции`); return; }
-    if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= options.length) { notes.push(`quiz ${path} #${i + 1}: индексът на отговора е извън диапазона`); return; }
+    if (q.options.some((o) => typeof o !== 'string')) { notes.push(`${where}: опция, която не е текст — въпросът е пропуснат`); return; }
+    if (q.options.length < 2) { notes.push(`${where}: трябват поне 2 опции — пропуснат`); return; }
+    if (q.options.length > QUIZ_LIMITS.options) {
+      if (Number.isInteger(q.answer) && q.answer >= QUIZ_LIMITS.options) { notes.push(`${where}: верният отговор е след опция ${QUIZ_LIMITS.options} — пропуснат`); return; }
+      notes.push(`${where}: над ${QUIZ_LIMITS.options} опции — останалите пропуснати`);
+    }
+    const options = q.options.slice(0, QUIZ_LIMITS.options).map((o) => clamp(o, QUIZ_LIMITS.option));
+    if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= options.length) { notes.push(`${where}: индексът на отговора е извън диапазона — пропуснат`); return; }
     questions.push({
-      q: clampText(q.q, QUIZ_LIMITS.q),
+      q: clamp(q.q, QUIZ_LIMITS.q),
       options,
       answer: q.answer,
-      why: clampText(q.why ?? '', QUIZ_LIMITS.why),
-      src: clampText(q.src ?? '', QUIZ_LIMITS.src),
+      why: clamp(q.why ?? '', QUIZ_LIMITS.why),
+      src: clamp(q.src ?? '', QUIZ_LIMITS.src),
     });
   });
-  if (!questions.length) { notes.push(`quiz ${path}: няма валидни въпроси`); return null; }
-  const lesson = json.lesson == null ? null : String(json.lesson).trim() || null;
+  if (clamped) notes.push(`тест ${path}: ${clamped} твърде дълги текста са съкратени`);
+  if (!questions.length) { notes.push(`тест ${path}: няма валидни въпроси — пропуснат`); return null; }
+  const lesson = normalizeLessonNumber(json.lesson);
   return {
     id: `${courseId}/${path}`,
     courseId,
     path,
     slug,
     lesson,
-    title: clampText(json.title ?? slug, QUIZ_LIMITS.title),
+    title: clamp(json.title ?? slug, QUIZ_LIMITS.title),
     questions,
     count: questions.length,
+    format: QUIZ_FORMAT,
   };
 }
 
@@ -447,7 +477,7 @@ export async function importCourse(files, { onProgress } = {}) {
   const quizzes = [];
   for (const e of list) {
     if (!quizSlug(e.path)) continue;
-    if (quizzes.length >= QUIZ_LIMITS.quizzes) { quizNotes.push(`над ${QUIZ_LIMITS.quizzes} теста, останалите пропуснати`); break; }
+    if (quizzes.length >= QUIZ_LIMITS.quizzes) { quizNotes.push(`над ${QUIZ_LIMITS.quizzes} теста — останалите пропуснати`); break; }
     const quiz = parseQuiz(courseId, e.path, e.data, quizNotes);
     if (quiz) { quiz.sha256 = e.sha256; quizzes.push(quiz); }
   }
@@ -470,7 +500,12 @@ export async function importCourse(files, { onProgress } = {}) {
       if (!old.deleted && old.order !== q.order) quizzesToWrite.push({ ...old, order: q.order });
       continue;
     }
-    if (old && !old.deleted && old.sha256 === q.sha256 && old.order === q.order) { quizStats.unchanged++; continue; }
+    if (old && !old.deleted && old.sha256 === q.sha256 && old.order === q.order) {
+      quizStats.unchanged++;
+      // The same file, read by an older version of parseQuiz (no links…): store it again, silently.
+      if (old.format !== QUIZ_FORMAT) quizzesToWrite.push(record);
+      continue;
+    }
     if (!old || old.deleted) quizStats.added++; else if (old.sha256 !== q.sha256) quizStats.changed++;
     quizzesToWrite.push(record);
   }
@@ -528,6 +563,7 @@ export async function importCourse(files, { onProgress } = {}) {
     },
     items,
     skippedPdf,
+    quizNotes,
     ms: Math.round(performance.now() - t0),
   };
   progress({ phase: 'done', done: 1, total: 1 });
@@ -545,12 +581,15 @@ export function plural(n, one, many) {
 export function describeSummary(s) {
   const quizPart = s.counts.quizzes ? `, ${plural(s.counts.quizzes, 'тест', 'теста')}` : '';
   const content = `${plural(s.counts.lessons, 'урок', 'урока')}, ${plural(s.counts.references, 'справочник', 'справочника')}${quizPart}, ${plural(s.counts.files, 'файл', 'файла')}`;
-  if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.`;
-  if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).`;
+  const notes = s.quizNotes?.length
+    ? ` Внимание — тестовете не са внесени изцяло (${s.quizNotes.length}): ${s.quizNotes.slice(0, 3).join('; ')}${s.quizNotes.length > 3 ? '; …' : ''}.`
+    : '';
+  if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.${notes}`;
+  if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).${notes}`;
   const quizChanges = s.quizzes && (s.quizzes.added || s.quizzes.changed)
     ? ` Тестове — нови: ${s.quizzes.added}, променени: ${s.quizzes.changed}.` : '';
   return `Курсът ${s.courseId} е обновен: нови уроци: ${s.lessons.added.length}, променени: ${s.lessons.changed.length}; `
-    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}.${quizChanges} Бележките, прогресът и отговорите на тестовете са запазени.`;
+    + `файлове — нови: ${s.files.added}, променени: ${s.files.changed}, без промяна: ${s.files.unchanged}.${quizChanges} Бележките, прогресът и отговорите на тестовете са запазени.${notes}`;
 }
 
 /** Message for any error thrown by importCourse(). */

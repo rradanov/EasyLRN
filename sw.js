@@ -14,8 +14,8 @@
 //   the shell cache) before </body>.
 // - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.6.0'; // keep in sync with src/config.js
-const RENDER_VERSION = 2; // keep in sync with src/lesson-render.js
+const VERSION = '0.6.1'; // keep in sync with src/config.js
+const RENDER_VERSION = 3; // keep in sync with src/lesson-render.js
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 
@@ -23,6 +23,7 @@ const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const SHELL = [
   './',
   './index.html',
+  './parser.html',
   './manifest.webmanifest',
   './styles/app.css',
   './src/main.js',
@@ -38,6 +39,7 @@ const SHELL = [
   './src/screens/reader.js',
   './src/screens/quiz.js',
   './src/screens/quiz-link.js',
+  './src/screens/confirm.js',
   './src/lesson-frame.js',
   './src/lesson-render.js',
   './src/lesson-bridge.js',

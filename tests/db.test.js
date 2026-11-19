@@ -57,7 +57,7 @@ async function seedTree() {
 test('схема v1: всички хранилища и индекси', async () => {
   const conn = await db.openDb();
   eq(conn.version, db.SCHEMA_VERSION, 'version');
-  eq(db.SCHEMA_VERSION, 2, 'SCHEMA_VERSION');
+  eq(db.SCHEMA_VERSION, 3, 'SCHEMA_VERSION');
   eq([...conn.objectStoreNames].sort(), Object.values(STORES).sort(), 'stores');
   const expected = {
     files: ['by_course'], lessons: ['by_course'], annotations: ['by_course', 'by_target'],

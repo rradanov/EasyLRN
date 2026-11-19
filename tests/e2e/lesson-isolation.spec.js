@@ -129,7 +129,7 @@ test.describe('T-045 П-1 delivery: opaque origin, served by the Service Worker,
       return { links: f.links, version: f.renderVersion, sameSha: f.renderSha === f.sha256, deps: Object.keys(f.renderDeps).sort(), original: (await f.blob.text()).includes('../assets/S.CSS') };
     });
     expect(file.links).toEqual(expect.arrayContaining(['https://example.org/a?x=1&y=2', expect.stringMatching(/\/EasyLRN\/c\/LRN-PIC\/lessons\/0001-pic\.html#box$/)]));
-    expect(file).toMatchObject({ version: 2, sameSha: true, deps: ['assets/S.css', 'assets/dot.png'], original: true });
+    expect(file).toMatchObject({ version: 3, sameSha: true, deps: ['assets/S.css', 'assets/dot.png'], original: true });
   });
 
   test('RENDER_VERSION is the same in the Service Worker and in lesson-render.js; the bridge files are clean modules', async () => {

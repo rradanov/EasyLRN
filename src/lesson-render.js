@@ -18,18 +18,30 @@
 // is stored next to the original in the `files` record; the original (`blob`,
 // `sha256`) is never changed.
 //
-// Why not DOMParser (LESSON-ISOLATION §4.2 suggests it): in Chromium a document
-// made by DOMParser / createHTMLDocument / <template> reports every inline
-// style and inline event handler of the lesson as a violation of the app CSP
-// (console errors; nothing runs). So this module uses a small HTML tag scanner
-// that only rewrites the tags above and copies everything else byte for byte.
-// Security does not depend on it (the CSP sandbox does); a missed sub-resource
-// only changes how the lesson looks (risk I-8).
+// Two passes:
+// 1. A small HTML tag scanner rewrites the sub-resources above and copies
+//    everything else byte for byte (it is not a full HTML parser; a missed
+//    sub-resource only changes how the lesson looks, risk I-8).
+// 2. Nested frames (D-034) are removed by the browser's own HTML parser
+//    (T048-S1c): the result of pass 1 is parsed as a whole document in an
+//    inert document (no browsing context: nothing runs, nothing loads), every
+//    iframe/frame/frameset/object/embed/portal and noscript is removed (also
+//    inside <template>, <svg>, <math>, after odd comments), and the tree is
+//    serialized again. This repeats until parsing the output gives the same
+//    output with nothing to remove (no "mutation" on re-parsing); otherwise
+//    the lesson is not served. `noscript` goes because the inert document
+//    parses it with scripting off and the lesson with scripting on.
+//    The inert document is made by a hidden same-origin frame (parser.html,
+//    no scripts) that has no CSP: a document made in the app
+//    window (DOMParser, createHTMLDocument, <template>) reports every inline
+//    style and event handler of the lesson as a violation of the app CSP
+//    (console errors, T-045). If that frame cannot be made, the app document
+//    is used (same result, with those console messages).
 import { getFile, listCourseFiles, setFileRender } from './db.js';
 import { courseFileUrl, parseCourseUrl } from './lesson-frame.js';
 
 /** Bump when the output changes; must equal RENDER_VERSION in sw.js. */
-export const RENDER_VERSION = 2; // D-034: nested frames removed
+export const RENDER_VERSION = 3; // T048-S1c: frames removed by a real HTML parser
 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 const MAX_CSS_DEPTH = 4;
@@ -261,13 +273,13 @@ export async function assembleLesson(html, { courseId, path, files }) {
       continue;
     }
     if (name === 'base' || (name === 'meta' && /refresh/i.test(getAttr(tag, 'http-equiv') || ''))) {
-      emit(tag.end, `<!-- EasyLRN: <${name}> removed -->`);
+      emit(tag.end, `<!-- EasyLRN: ${name} removed -->`);
       continue;
     }
     if (FRAME_TAGS.has(name)) {
       // Drop the whole element (iframe carries its srcdoc; object/frameset keep
       // any fallback children, but without a browsing context).
-      emit(RAW_TEXT.has(name) ? elementEnd : tag.end, `<!-- EasyLRN: <${name}> removed (D-034) -->`);
+      emit(RAW_TEXT.has(name) ? elementEnd : tag.end, `<!-- EasyLRN: ${name} removed (D-034) -->`);
       continue;
     }
     if (name === 'link') {
@@ -282,7 +294,7 @@ export async function assembleLesson(html, { courseId, path, files }) {
         emit(tag.end, `${serializeTag('style', media ? [{ name: 'media', value: media }] : [])}${rawSafe(text, 'style')}</style>`);
       } else if (rel.some((r) => ['stylesheet', 'preconnect', 'dns-prefetch', 'preload', 'prefetch', 'modulepreload', 'prerender', 'icon', 'manifest'].includes(r))) {
         const why = url && GOOGLE_FONTS.test(url.href) ? 'Google Fonts, D-031' : 'not in the course';
-        emit(tag.end, `<!-- EasyLRN: <link rel="${escapeAttr(rel.join(' '))}"> removed (${why}) -->`);
+        emit(tag.end, `<!-- EasyLRN: link rel=${escapeAttr(rel.join(' ')).replace(/[<>-]/g, '')} removed (${why}) -->`);
       } else {
         i = tag.end;
       }
@@ -304,7 +316,7 @@ export async function assembleLesson(html, { courseId, path, files }) {
         emit(elementEnd, `${serializeTag('script', attrs)}${rawSafe(text, 'script')}</script>`);
       } else {
         ctx.notes.push(`script left out: ${src}`);
-        emit(elementEnd, `<!-- EasyLRN: <script src> removed (not in the course) -->`);
+        emit(elementEnd, `<!-- EasyLRN: script src removed (not in the course) -->`);
       }
       continue;
     }
@@ -337,7 +349,126 @@ export async function assembleLesson(html, { courseId, path, files }) {
     else i = RAW_TEXT.has(name) ? elementEnd : tag.end;
   }
   out.push(html.slice(last));
-  return { html: out.join(''), links: [...ctx.links], deps: ctx.deps, notes: ctx.notes };
+  let stripped;
+  try {
+    stripped = stripFrames(out.join(''), makeDocument);
+  } catch (err) {
+    console.warn(`EasyLRN: ${path}:`, err.message);
+    ctx.notes.push('not served: unstable HTML');
+    stripped = { html: UNSAFE_LESSON, removed: 0 };
+  }
+  if (stripped.removed) ctx.notes.push(`${stripped.removed} nested frame/noscript element(s) removed (D-034)`);
+  return { html: stripped.html, links: [...ctx.links], deps: ctx.deps, notes: ctx.notes };
+}
+
+// --- Pass 2: nested frames, with the browser's HTML parser (T048-S1c) ----------
+
+const UNSAFE_LESSON = '<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8"><title>Урокът не може да се покаже</title></head>'
+  + '<body><h1>Урокът не може да се покаже</h1><p>HTML кодът на урока не може да бъде проверен безопасно. Създай урока отново.</p></body></html>';
+const STRIP_SELECTOR = 'iframe,frame,frameset,object,embed,portal,noscript';
+const MAX_ROUNDS = 4;
+
+/** Remove every frame element (and noscript) in a tree and in all template contents. */
+function removeFramesIn(root) {
+  let removed = 0;
+  for (const el of [...root.querySelectorAll(STRIP_SELECTOR)]) {
+    el.remove();
+    removed++;
+  }
+  for (const t of root.querySelectorAll('template')) {
+    if (t.content) removed += removeFramesIn(t.content);
+  }
+  return removed;
+}
+
+function serializeDoctype(dt) {
+  let s = `<!DOCTYPE ${dt.name}`;
+  if (dt.publicId) s += ` PUBLIC "${dt.publicId}"`;
+  if (dt.systemId) s += `${dt.publicId ? '' : ' SYSTEM'} "${dt.systemId}"`;
+  return `${s}>`;
+}
+
+/** The whole document as HTML (doctype, comments around <html>, the root element). */
+function serializeDocument(doc) {
+  let s = '';
+  for (const node of doc.childNodes) {
+    if (node.nodeType === 10) s += serializeDoctype(node);
+    else if (node.nodeType === 8) s += `<!--${node.data}-->`;
+    else if (node.nodeType === 1) s += node.outerHTML;
+  }
+  return s;
+}
+
+/**
+ * Parse `html` as a document, remove frames, serialize; repeat until stable.
+ * @param {string} html
+ * @param {() => Document} newDocument makes an empty inert HTML document
+ * @returns {{ html: string, removed: number }}
+ */
+export function stripFrames(html, newDocument) {
+  let current = html;
+  let removed = 0;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const doc = newDocument();
+    doc.open();
+    doc.write(current);
+    doc.close();
+    const n = removeFramesIn(doc);
+    removed += n;
+    const out = serializeDocument(doc);
+    if (round > 0 && n === 0 && out === current) return { html: out, removed };
+    current = out;
+  }
+  throw new Error('The lesson HTML changes every time it is parsed (D-034): not served.');
+}
+
+// The inert-document factory: a hidden same-origin frame without CSP and
+// without scripts of its own, made once per render batch. (Not sandboxed: a
+// sandbox without allow-scripts makes every <script> of a parsed lesson log
+// "Blocked script execution"; an inert document never runs scripts anyway.)
+let makeDocument = () => document.implementation.createHTMLDocument('');
+let parserUsers = 0;
+let parserFrame = null;
+let parserReady = null;
+
+async function acquireParser() {
+  parserUsers++;
+  if (!parserReady) {
+    parserReady = (async () => {
+      try {
+        const f = document.createElement('iframe');
+        f.hidden = true;
+        f.setAttribute('aria-hidden', 'true');
+        f.setAttribute('tabindex', '-1');
+        f.setAttribute('data-easylrn', 'parser');
+        const loaded = new Promise((resolve, reject) => {
+          f.addEventListener('load', resolve, { once: true });
+          setTimeout(() => reject(new Error('parser frame timeout')), 5000);
+        });
+        f.src = new URL('./parser.html', document.baseURI).href;
+        document.body.append(f);
+        await loaded;
+        const impl = f.contentDocument?.implementation;
+        if (!impl) throw new Error('parser frame not reachable');
+        impl.createHTMLDocument(''); // works?
+        parserFrame = f;
+        makeDocument = () => impl.createHTMLDocument('');
+      } catch (err) {
+        console.info('EasyLRN: parser frame not available, the app document is used:', err?.message || err);
+        makeDocument = () => document.implementation.createHTMLDocument('');
+      }
+    })();
+  }
+  await parserReady;
+}
+
+function releaseParser() {
+  parserUsers = Math.max(0, parserUsers - 1);
+  if (parserUsers) return;
+  parserFrame?.remove();
+  parserFrame = null;
+  parserReady = null;
+  makeDocument = () => document.implementation.createHTMLDocument('');
 }
 
 // --- Stored renders -------------------------------------------------------------
@@ -372,13 +503,15 @@ async function renderOne(file, filesByPath) {
 export async function renderCourse(courseId) {
   const files = await listCourseFiles(courseId);
   const byPath = new Map(files.map((f) => [f.path, f]));
-  let count = 0;
-  for (const file of files) {
-    if (!isHtmlPath(file.path) || !file.blob || !isRenderStale(file, byPath)) continue;
-    await renderOne(file, byPath);
-    count++;
+  const todo = files.filter((file) => isHtmlPath(file.path) && file.blob && isRenderStale(file, byPath));
+  if (!todo.length) return 0;
+  await acquireParser();
+  try {
+    for (const file of todo) await renderOne(file, byPath);
+  } finally {
+    releaseParser();
   }
-  return count;
+  return todo.length;
 }
 
 /**
@@ -395,5 +528,10 @@ export async function ensureRendered(courseId, path) {
   const files = await listCourseFiles(courseId);
   const byPath = new Map(files.map((f) => [f.path, f]));
   if (!isRenderStale(file, byPath)) return file;
-  return (await renderOne(file, byPath)) || getFile(courseId, path);
+  await acquireParser();
+  try {
+    return (await renderOne(file, byPath)) || getFile(courseId, path);
+  } finally {
+    releaseParser();
+  }
 }

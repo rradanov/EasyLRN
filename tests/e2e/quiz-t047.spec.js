@@ -168,7 +168,7 @@ test.describe('T-047 the quiz screen', () => {
 
     // Reset with confirmation.
     await page.locator('button', { hasText: 'Нулирай отговорите' }).click();
-    await page.locator('[data-field="quiz-reset-yes"]').click();
+    await page.locator('[data-field="confirm-yes"]').click();
     await expect(page.locator('.quiz__count')).toContainText('отговорени 0');
     await openCourse(page, 'LRN-DEMO');
     await expect(page.locator('[data-quiz] [data-field="quiz-status"]').nth(1)).toHaveText('не е започнат');
