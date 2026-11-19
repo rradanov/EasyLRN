@@ -27,7 +27,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --- fixtures ---------------------------------------------------------------
 const COURSE = 'LRN-TEST';
-const LESSON = `${COURSE}/lessons/0001-test.html`;
+// T-055 (D-039): lessons are keyed by course + number, quizzes by NNNN-K.
+const LESSON = `${COURSE}/lesson:0001`;
 const selector = (start = 10, exact = 'съответствие') => ({
   quote: { exact, prefix: 'текст преди ', suffix: ' текст след' },
   position: { start, end: start + exact.length },
@@ -57,7 +58,7 @@ async function seedTree() {
 test('схема v1: всички хранилища и индекси', async () => {
   const conn = await db.openDb();
   eq(conn.version, db.SCHEMA_VERSION, 'version');
-  eq(db.SCHEMA_VERSION, 4, 'SCHEMA_VERSION'); // v4 (T-019): secrets
+  eq(db.SCHEMA_VERSION, 5, 'SCHEMA_VERSION'); // v5 (T-055, D-039): ids by number
   eq([...conn.objectStoreNames].sort(), Object.values(STORES).sort(), 'stores');
   const expected = {
     files: ['by_course'], lessons: ['by_course'], annotations: ['by_course', 'by_target'],
@@ -157,8 +158,8 @@ const SAMPLES = {
   subtopics: () => ({ courseId: COURSE, annotationId: 'A1', parent: { type: 'lesson', id: LESSON }, rootLessonId: LESSON, depth: 1, title: 'Тема', kind: 'термин', content: '# Тема', status: 'done' }),
   settings: () => ({ id: 'settings', model: 'claude-sonnet-5-5' }),
   usage: () => ({ at: new Date().toISOString(), model: 'claude-sonnet-5-5', kind: 'answer', input: 10, output: 20, cacheRead: 0, cacheWrite: 0, estCostUSD: 0.001 }),
-  quizzes: () => ({ id: `${COURSE}/quizzes/0001-1.json`, courseId: COURSE, path: 'quizzes/0001-1.json', slug: '0001-1', lesson: '0001', title: 'Тест', count: 1, order: 1, questions: [{ q: 'Въпрос?', options: ['А', 'Б'], answer: 0, why: '', src: '' }], sha256: 'q' }),
-  quizAnswers: () => ({ id: `${COURSE}/quizzes/0001-1.json`, courseId: COURSE, choices: { abc: 0 }, cursor: 0 }),
+  quizzes: () => ({ id: `${COURSE}/quiz:0001-1`, courseId: COURSE, path: 'quizzes/0001-1.json', slug: '0001-1', lesson: '0001', title: 'Тест', count: 1, order: 1, questions: [{ q: 'Въпрос?', options: ['А', 'Б'], answer: 0, why: '', src: '' }], sha256: 'q' }),
+  quizAnswers: () => ({ id: `${COURSE}/quiz:0001-1`, courseId: COURSE, choices: { abc: 0 }, cursor: 0 }),
   secrets: () => ({ id: 'apiKey', value: 'sk-ant-test-CRUD-0000' }), // T-019 (generic CRUD; the app uses getApiKey/saveApiKey)
 };
 
@@ -287,7 +288,7 @@ test('„деца на документ“: annotations.by_target и subtopics.b
 test('„дърво на урок“: subtopics.by_root и getLessonTree', async () => {
   const t = await seedTree();
   // Another lesson's tree must not leak in.
-  const other = `${COURSE}/lessons/0002.html`;
+  const other = `${COURSE}/lesson:0002`;
   await db.putLesson({ id: other, courseId: COURSE, number: '0002', title: 'Урок 2', order: 2 });
   const aOther = await db.createAnnotation({ courseId: COURSE, target: { type: 'lesson', id: other }, selector: selector() });
   await db.createSubTopic({ annotationId: aOther.id, kind: 'термин', title: 'Чужда' });

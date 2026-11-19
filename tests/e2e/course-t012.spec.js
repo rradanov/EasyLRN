@@ -23,7 +23,8 @@ import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.m
 import { strToU8 } from '../../vendor/fflate.js';
 
 const FILES = readFixture();
-const DEMO_LESSON = 'LRN-DEMO/lessons/0001-vidove-chay.html';
+// T-055 (D-039): lessons are keyed by course + number, not by path.
+const DEMO_LESSON = 'LRN-DEMO/lesson:0001';
 
 let problems;
 let external;
@@ -427,7 +428,7 @@ test.describe('T-012 layout: two columns from 900 px, one below, never a horizon
     for (const n of many) files[`lessons/${n}-urok.html`] = lessonHtml(n === '0001' ? LONG_WORD : `Урок ${n} с дълго заглавие, което се пренася на няколко реда при тесен екран`);
     await importCourse(page, 'LRN-WIDE', files);
     // Some progress, so the meta line and "Продължи" have their longest form.
-    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-WIDE/lessons/0001-urok.html', { status: 'started', lastOpenedAt: new Date().toISOString() }));
+    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-WIDE/lesson:0001', { status: 'started', lastOpenedAt: new Date().toISOString() }));
     for (const scale of ['100%', '160%']) {
       for (const size of SIZES) {
         await page.setViewportSize({ width: size.width, height: size.height });
@@ -599,7 +600,7 @@ test.describe('T-012 edge courses', () => {
     console.log(`T012-I4 after renaming the file of 0001: ${await zeros.count()} entries "0001"`);
     expect(await zeros.count()).toBe(1);
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
-    expect(await progressOf(page, 'LRN-DEMO/lessons/0001-vidove-chay-v2.html')).toMatchObject({ status: 'done', completedAt: '2026-11-18T10:00:00.000Z', scrollY: 321 });
+    expect(await progressOf(page, 'LRN-DEMO/lesson:0001')).toMatchObject({ status: 'done', completedAt: '2026-11-18T10:00:00.000Z', scrollY: 321 });
     // "Продължи" never points to nothing.
     const href = await course(page).locator('[data-action="continue"]').getAttribute('href');
     await page.goto(`./${href}`);
@@ -652,14 +653,14 @@ test.describe('T-012 edge courses', () => {
     });
     await page.evaluate(async () => {
       const db = await import('./src/db.js');
-      await db.setLessonProgress('LRN-SEQ/lessons/0001-a.html', { status: 'done' });
+      await db.setLessonProgress('LRN-SEQ/lesson:0001', { status: 'done' });
     });
     await openCourse(page, 'LRN-SEQ');
     await expect(course(page).locator('[data-action="continue"]')).toHaveText('Започни: урок 0002 — Втори');
     await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 3 урока');
     await page.evaluate(async () => {
       const db = await import('./src/db.js');
-      for (const p of ['0002-b', '0003-c']) await db.setLessonProgress(`LRN-SEQ/lessons/${p}.html`, { status: 'done' });
+      for (const p of ['0002-b', '0003-c']) await db.setLessonProgress(`LRN-SEQ/lesson:${p.slice(0, 4)}`, { status: 'done' });
     });
     await openCourse(page, 'LRN-SEQ');
     await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 3 от 3 урока');
@@ -668,7 +669,7 @@ test.describe('T-012 edge courses', () => {
     // A corrupted status is shown as "нов", never breaks the screen.
     await page.evaluate(async () => {
       const db = await import('./src/db.js');
-      await db.update(db.STORES.lessons, 'LRN-SEQ/lessons/0001-a.html', (l) => ({ progress: { ...l.progress, status: 'bogus', lastOpenedAt: 'not a date' } }));
+      await db.update(db.STORES.lessons, 'LRN-SEQ/lesson:0001', (l) => ({ progress: { ...l.progress, status: 'bogus', lastOpenedAt: 'not a date' } }));
     });
     await openCourse(page, 'LRN-SEQ');
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'new');
@@ -809,7 +810,7 @@ test.describe('T-012 progress and navigation', () => {
       const db = await import('./src/db.js');
       const now = Date.now();
       for (const [i, n] of nums.entries()) {
-        await db.setLessonProgress(`LRN-ACT/lessons/${n}-u.html`, { status: 'started', lastOpenedAt: new Date(now - (i * 3 + 1) * 3600 * 1000 * 4).toISOString() });
+        await db.setLessonProgress(`LRN-ACT/lesson:${n}`, { status: 'started', lastOpenedAt: new Date(now - (i * 3 + 1) * 3600 * 1000 * 4).toISOString() });
       }
     }, nums);
     await openCourse(page, 'LRN-ACT');
@@ -918,7 +919,7 @@ test.describe('T-012 themes', () => {
   for (const theme of ['light', 'dark']) {
     test(`${theme}: the texts of the course screen have contrast ≥ 4.5 (without the planned items)`, async ({ page }) => {
       await importDemo(page);
-      await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-DEMO/lessons/0001-vidove-chay.html', { status: 'started', lastOpenedAt: new Date().toISOString() }));
+      await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-DEMO/lesson:0001', { status: 'started', lastOpenedAt: new Date().toISOString() }));
       await page.evaluate(async (t) => (await import('./src/db.js')).saveSettings({ theme: t }), theme);
       await openCourse(page);
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);

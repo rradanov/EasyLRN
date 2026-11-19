@@ -7,8 +7,9 @@ import {
 } from '../fixtures/zips.mjs';
 
 const FILES = readFixture();
-const LESSON_ID = 'LRN-DEMO/lessons/0001-vidove-chay.html';
-const REF_ID = 'LRN-DEMO/reference/R01-temperatura-i-vreme.html';
+// T-055 (D-039): lessons are keyed by course + number, not by path.
+const LESSON_ID = 'LRN-DEMO/lesson:0001';
+const REF_ID = 'LRN-DEMO/reference:R01';
 const IMPORTED_FILES = Object.keys(FILES).filter((p) => !p.endsWith('.pdf')).length; // 11
 
 let consoleErrors;

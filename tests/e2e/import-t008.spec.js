@@ -13,8 +13,9 @@ import { rawZip, EMPTY_ZIP, cp866 } from '../fixtures/rawzip.mjs';
 
 const FILES = readFixture();
 const LESSON_PATH = 'lessons/0001-vidove-chay.html';
-const LESSON_ID = `LRN-DEMO/${LESSON_PATH}`;
-const REF_ID = 'LRN-DEMO/reference/R01-temperatura-i-vreme.html';
+// T-055 (D-039): lessons are keyed by course + number, not by path.
+const LESSON_ID = 'LRN-DEMO/lesson:0001';
+const REF_ID = 'LRN-DEMO/reference:R01';
 const LESSON = FILES[LESSON_PATH];
 const IMPORTED = Object.keys(FILES).filter((p) => !p.endsWith('.pdf')).length; // 11
 

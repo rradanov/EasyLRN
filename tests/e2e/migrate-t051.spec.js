@@ -88,7 +88,7 @@ test('T-051 migration v3 → v4 with a real 0.6.2 profile: courses, answers, pro
       const v = idb.version;
       idb.close();
       const s = await db.getSettings();
-      const answers = await db.getQuizAnswers('LRN-M4/quizzes/m.json');
+      const answers = await db.getQuizAnswers('LRN-M4/quiz:path:quizzes/m.json'); // T-055: v5 id of a quiz outside NNNN-K
       return {
         v, rawHasKey: Object.hasOwn(raw, 'apiKey'), key: await db.getApiKey(),
         settings: [s.fontScale, s.model, s.monthlyBudgetUSD, s.theme, 'apiKey' in s],
@@ -97,7 +97,7 @@ test('T-051 migration v3 → v4 with a real 0.6.2 profile: courses, answers, pro
       };
     });
     console.log(`T-051 migrate v3→v4: ${JSON.stringify({ ...after, key: after.key ? `${after.key.length} chars` : '' })}`);
-    expect(after.v).toBe(4);
+    expect(after.v).toBe(5); // T-055 (0.9.0): v4 → v5 runs right after v3 → v4
     expect(after.rawHasKey).toBe(false);
     expect(after.key).toBe(OLD_KEY);
     expect(after.settings).toEqual([1.25, 'claude-opus-5-5', 12.5, 'system', false]);
