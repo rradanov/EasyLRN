@@ -69,6 +69,12 @@ test('T-050 the published _site (built by the Pages workflow) installs the SW, p
     const sw = await page.evaluate(async () => {
       const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 15000))]);
       if (!reg) return null;
+      // T-056: `ready` resolves while the worker may still be "activating" (a race
+      // seen in ~40 % of runs, also on 0.8.1): wait up to 15 s for "activated".
+      const w = reg.active;
+      if (w && w.state !== 'activated') {
+        await Promise.race([new Promise((r) => w.addEventListener('statechange', () => { if (w.state === 'activated') r(); })), new Promise((r) => setTimeout(r, 15000))]);
+      }
       const keys = await caches.keys();
       const cache = await caches.open(keys.find((k) => k.startsWith('easylrn-shell-')));
       return { active: reg.active?.state, keys, cached: (await cache.keys()).length };
