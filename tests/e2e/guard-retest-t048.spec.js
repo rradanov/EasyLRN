@@ -43,10 +43,15 @@ async function importCourse(page, id, files) {
     return m.describeSummary(await m.importCourse([new File([new Uint8Array(bytes)], name)]));
   }, { name: f.name, bytes: [...f.buffer] });
 }
-async function openLesson(page, course) {
+async function openLesson(page, course, { attached = false } = {}) {
   await page.goto(`./#/c/${course}`);
   await page.goto(`./#/c/${course}/read/0001`);
-  await expect(page.locator('[data-lesson-state="ready"], [data-lesson-state="fallback"]')).toBeVisible({ timeout: 20000 });
+  const state = page.locator('[data-lesson-state="ready"], [data-lesson-state="fallback"]');
+  // T-054 (T053-I4): a lesson that swaps its documentElement may do it before the
+  // bridge has measured it; the frame then stays 0 px high ("hidden" to Playwright)
+  // although it is ready. Such a test waits for the state, not for visibility.
+  if (attached) await expect(state).toBeAttached({ timeout: 20000 });
+  else await expect(state).toBeVisible({ timeout: 20000 });
   return page.frames().find((f) => f.url().includes(`/EasyLRN/c/${course}/`));
 }
 
@@ -57,8 +62,8 @@ const attr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</
 // Collector: runs first among the lesson's own scripts (after the guard).
 const COLLECT = `<script>window.__hits=[];addEventListener('message',e=>{if(e.data&&e.data.nested)window.__hits.push(e.data.nested+':'+e.data.rtc)});</script>`;
 
-async function hits(page, course) {
-  const f = await openLesson(page, course);
+async function hits(page, course, opts) {
+  const f = await openLesson(page, course, opts);
   await page.waitForTimeout(2500);
   return f.evaluate(() => ({
     hits: window.__hits,
@@ -162,9 +167,11 @@ test.describe('T-048 retest T046-S1 / D-034: no working nested frame', () => {
         const d = document.createElement('div'); d.innerHTML = '<iframe srcdoc="${attr(REPORT('new documentElement')).replace(/'/g, "\\'")}"></iframe>'; document.body.append(d);
       }, 200));</script>`, COLLECT),
     });
-    const r = await hits(page, 'LRN-G5');
+    const r = await hits(page, 'LRN-G5', { attached: true });
     console.log(`T-048 S1b: ${JSON.stringify(r)}`);
     expect(r.hits).toEqual([]);
+    // T-054: also no frame is alive in the swapped document.
+    expect(r.live).toBe(0);
   });
 
   test('[T048-S1c] the assembler misses a frame inside <svg><title> (an HTML integration point it treats as raw text)', async ({ page }) => {

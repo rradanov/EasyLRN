@@ -343,6 +343,9 @@ test.describe('T051-D2 fix: the threshold', () => {
     const budget = field(page, 'budget');
     const msg = field(page, 'budget-message');
     const RANGE = /Пр\u0430гът е число от 0 до 1000/;
+    // T-054: the field is type=text now (T053-D1) and parses the value itself:
+    // a value that is not a plain decimal gets its own message (FORMAT).
+    const FORMAT = /^Пр\u0430гът не е число\./;
     const cases = [
       ['3', 'З\u0430п\u0430зено.', '3', 3],
       ['0', 'З\u0430п\u0430зено.', '0', 0],
@@ -351,13 +354,14 @@ test.describe('T051-D2 fix: the threshold', () => {
       ['0.01', 'З\u0430п\u0430зено.', '0.01', 0.01],
       ['2.257', 'З\u0430п\u0430зено к\u0430то 2.26 (з\u0430кръглено до цент).', '2.26', 2.26],
       ['-1', RANGE, '2.26', 2.26],
-      ['1e9', RANGE, '2.26', 2.26],
+      ['1e9', FORMAT, '2.26', 2.26], // T-054: was RANGE (a number field read 1e9); a letter is refused now
       ['1000', 'З\u0430п\u0430зено.', '1000', 1000],
       ['1000.004', /З\u0430п\u0430зено к\u0430то 1000|Пр\u0430гът/, null, null],
-      ['abc', RANGE, '1000', 1000], // a number field turns it into ''
+      ['abc', FORMAT, '1000', 1000], // T-054: was RANGE (a number field turned it into '')
       ['', RANGE, '1000', 1000],
-      ['2,5', RANGE, '1000', 1000],
-      ['1e-7', /Н\u0430й-м\u0430лкият пр\u0430г е 0\.01/, '1000', 1000],
+      ['2,5', 'З\u0430п\u0430зено.', '2.5', 2.5], // T-054 (T053-D1): a decimal comma is 2.5; was RANGE
+      ['1000', 'З\u0430п\u0430зено.', '1000', 1000],
+      ['1e-7', FORMAT, '1000', 1000], // T-054: was "Най-малкият праг" (a number field read 1e-7); a letter is refused now
       ['999.995', /З\u0430п\u0430зено к\u0430то|Пр\u0430гът/, null, null],
     ];
     for (const [v, m, shown, value] of cases) {
@@ -376,7 +380,9 @@ test.describe('T051-D2 fix: the threshold', () => {
     await budget.press('Tab');
     await page.waitForTimeout(200);
     console.log(`T-053 threshold typed "2,5": shown "${await budget.inputValue()}", saved ${await saved(page)}, message "${await msg.textContent()}"`);
-    expect(String(await saved(page))).toBe(await budget.inputValue() || String(await saved(page)));
+    // T-054: was `saved === shown || saved` (any outcome); now exactly 2.5.
+    expect(await saved(page)).toBe(2.5);
+    await expect(budget).toHaveValue('2.5');
     // Arrows step by a cent.
     await setRaw(page, '2.26');
     await budget.focus();
@@ -390,7 +396,7 @@ test.describe('T051-D2 fix: the threshold', () => {
   });
 
   test('typed with a decimal comma "2,5" (Bulgarian keyboard): 2.5 is saved or the value is refused — never 25', async ({ page }) => {
-    test.fail(true, 'T053-D1: Chromium drops the comma typed into the number field, so "2,5" becomes 25 and is saved with "Запазено." (the warning threshold is silently 10× higher)');
+    // T-054: test.fail removed — T053-D1 is fixed (type=text inputmode=decimal, parsed by the app).
     await openSettings(page);
     const budget = field(page, 'budget');
     await budget.fill('');
@@ -400,6 +406,7 @@ test.describe('T051-D2 fix: the threshold', () => {
     const v = await saved(page);
     console.log(`T-053 D1 "2,5" → shown "${await budget.inputValue()}", saved ${v}, "${await field(page, 'budget-message').textContent()}"`);
     expect(v === 2.5 || v === 5).toBe(true); // 2.5, or the old value (5) kept after a refusal
+    expect(v).not.toBe(25);
   });
 
   test('1.005 (binary float): the field and the store agree, the message says the shown value', async ({ page }) => {
@@ -427,7 +434,7 @@ test.describe('T051-I2 fix: key characters, the mask', () => {
     expect(await storedKey(page)).toBeFalsy();
   });
 
-  test('around the key: spaces, NBSP, tab, line breaks, BOM, U+2028, U+3000 are dropped; zero-width space around → refused (information)', async ({ page }) => {
+  test('around the key: spaces, NBSP, tab, line breaks, BOM, U+2028, U+3000 are dropped; zero-width and other invisible characters around → dropped (T-054)', async ({ page }) => {
     await openSettings(page);
     for (const [pre, post] of [[' ', ' '], ['\u00a0', '\u00a0'], ['\t', '\r\n'], ['\n\n', '\n'], ['\ufeff', ''], ['\u2028', '\u3000']]) {
       await field(page, 'api-key').fill(`${pre}${KEY}${post}`);
@@ -435,13 +442,17 @@ test.describe('T051-I2 fix: key characters, the mask', () => {
       await expect(field(page, 'key-message'), JSON.stringify(pre + post)).toHaveText(/^Ключът е з\u0430п\u0430зен/);
       expect(await storedKey(page)).toBe(KEY);
     }
-    // U+200B is not \s in JS: a zero-width space at the start of a paste is refused (not trimmed).
-    await field(page, 'api-key').fill(`\u200b${KEY2}`);
-    await field(page, 'key-save').click();
-    // T053-I3 (information): it is refused, but with the "starts with sk-ant-" message (the prefix check comes first).
-    await expect(field(page, 'key-message')).toHaveText(/непозволени знаци|започва със/);
-    console.log(`T-053 U+200B before the key → "${await field(page, 'key-message').textContent()}"`);
-    expect(await storedKey(page)).toBe(KEY);
+    // T-054 (T053-I3): invisible characters around the key are dropped like spaces.
+    // Was: a zero-width space before the key was refused with the "starts with sk-ant-" message.
+    for (const [pre, post] of [['\u200b', ''], ['', '\u200b'], ['\u200c\u200d', '\u2060'], ['\u180e', '\u00ad'], ['\ufeff\u200b ', ' \u200b\n']]) {
+      await field(page, 'api-key').fill(`${pre}${KEY2}${post}`);
+      await field(page, 'key-save').click();
+      await expect(field(page, 'key-message'), JSON.stringify(pre + post)).toHaveText(/^Ключът е з\u0430п\u0430зен/);
+      expect(await storedKey(page)).toBe(KEY2);
+      await field(page, 'api-key').fill(`${pre}${KEY}${post}`);
+      await field(page, 'key-save').click();
+      expect(await storedKey(page)).toBe(KEY);
+    }
   });
 
   test('length: 19 / 20 / 400 / 401 and a 200 000-character paste (no hang, nothing echoed)', async ({ page }) => {

@@ -504,11 +504,19 @@ test.describe('T-051 threshold, model, offline, a11y, layout', () => {
     };
     expect(await set('0')).toEqual({ msg: 'Запазено.', shown: '0', saved: 0 });
     expect(await set('1000')).toEqual({ msg: 'Запазено.', shown: '1000', saved: 1000 });
-    expect(await set('1e3')).toMatchObject({ msg: 'Запазено.', saved: 1000 });
+    // T-054 (T053-D1): the field is type=text and parses the value itself. "1e3" was 1000
+    // (a number field); a letter is refused now. "5,5" was refused; a decimal comma is 5.5 now.
+    const FORMAT = 'Прагът не е число. Пиши само цифри и един десетичен знак (запетая или точка), напр. 2,5 — без букви, интервали и разделител за хилядите.';
+    expect(await set('1e3')).toEqual({ msg: FORMAT, shown: '1000', saved: 1000 });
+    expect(await set('5,5')).toEqual({ msg: 'Запазено.', shown: '5.5', saved: 5.5 });
     expect(await set('2.25')).toMatchObject({ msg: 'Запазено.', saved: 2.25 });
-    for (const bad of ['1000.01', '-0.5', '', 'abc', '5,5', '1e309', 'Infinity']) {
+    for (const bad of ['1000.01', '-0.5', '-0', '']) {
       const r = await set(bad);
       expect(r, bad).toEqual({ msg: 'Прагът е число от 0 до 1000.', shown: '2.25', saved: 2.25 });
+    }
+    for (const bad of ['abc', '1e309', 'Infinity', '+2', '1,2,3', '1 000', '1.000,5', '2,5$']) {
+      const r = await set(bad);
+      expect(r, bad).toEqual({ msg: FORMAT, shown: '2.25', saved: 2.25 });
     }
   });
 

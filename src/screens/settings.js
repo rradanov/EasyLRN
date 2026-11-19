@@ -22,7 +22,7 @@ import {
   getSettings, saveSettings, getApiKey, saveApiKey, deleteApiKey,
   usageTotals, monthStart, storageEstimate, requestPersistence,
 } from '../db.js';
-import { MODELS, DEFAULT_MODEL, validateKey, maskKey, checkKey } from '../claude.js';
+import { MODELS, DEFAULT_MODEL, validateKey, maskKey, checkKey, trimBlank } from '../claude.js';
 import { THEMES } from '../theme.js';
 import { confirmBox } from './confirm.js';
 
@@ -45,6 +45,30 @@ export function formatBytes(bytes) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return `${numberBg(v, i === 0 || v >= 100 ? 0 : 1)} ${units[i]}`;
 }
+/** A plain decimal: digits, at most one decimal separator ("," or "."), digits. */
+const DECIMAL = /^(\d{1,12})(?:[.,](\d{1,12}))?$/;
+export const BUDGET_RANGE = `Прагът е число от 0 до ${BUDGET_MAX}.`;
+export const BUDGET_FORMAT = 'Прагът не е число. Пиши само цифри и един десетичен знак (запетая или точка), напр. 2,5 — без букви, интервали и разделител за хилядите.';
+
+/**
+ * T053-D1: the threshold as typed → { value } or { error }. Both "2,5" (the
+ * Bulgarian keyboard) and "2.5" are 2.5; anything else — two separators, a
+ * letter (also "1e3"), a sign, a space or a thousands separator inside — is
+ * refused, never guessed. Blank characters around the value are dropped.
+ * @param {string} raw
+ */
+export function parseBudget(raw) {
+  const text = trimBlank(raw);
+  if (!text) return { error: BUDGET_RANGE };
+  // A negative number is a number out of the range, not a typo.
+  if (text[0] === '-' && DECIMAL.test(text.slice(1))) return { error: BUDGET_RANGE };
+  const m = DECIMAL.exec(text);
+  if (!m) return { error: BUDGET_FORMAT };
+  const value = Number(m[2] === undefined ? m[1] : `${m[1]}.${m[2]}`);
+  if (!Number.isFinite(value) || value < 0 || value > BUDGET_MAX) return { error: BUDGET_RANGE };
+  return { value };
+}
+
 const usd = (n) => `$${(Number(n) || 0).toFixed(2)}`;
 
 /** A labelled row of the settings list. */
@@ -172,11 +196,13 @@ export function settingsScreen() {
   // --- AI teacher: model, threshold, spend ----------------------------------------
   const modelSelect = h('select', { id: 'settings-model', class: 'settings__input', 'data-field': 'model' },
     ...MODELS.map((m) => h('option', { value: m.id, text: m.label })));
+  // T053-D1: a text field, not type=number — Chromium drops a typed decimal
+  // comma from a number field ("2,5" became 25). The value is parsed here.
   const budgetInput = h('input', {
-    id: 'settings-budget', class: 'settings__input settings__input--number', type: 'number', inputmode: 'decimal',
-    min: '0', max: String(BUDGET_MAX), step: '0.01', 'data-field': 'budget', 'aria-describedby': 'settings-budget-hint',
+    id: 'settings-budget', class: 'settings__input settings__input--number', type: 'text', inputmode: 'decimal',
+    autocomplete: 'off', spellcheck: 'false', 'data-field': 'budget', 'aria-describedby': 'settings-budget-hint settings-budget-message',
   });
-  const budgetMessage = h('span', { class: 'settings__inline-message', 'data-field': 'budget-message', role: 'status' });
+  const budgetMessage = h('span', { class: 'settings__inline-message', id: 'settings-budget-message', 'data-field': 'budget-message', role: 'status' });
   const spend = h('span', { 'data-field': 'spend', text: '…' });
   const spendWarning = h('p', { class: 'settings__spend-warning', 'data-field': 'spend-warning', hidden: true });
 
@@ -188,24 +214,40 @@ export function settingsScreen() {
   // field shows: a value with more cents is rounded and the field shows the
   // rounded value (and says so); a value above 0 that would round to 0 (which
   // means "no warning") is refused instead of silently turning the warning off.
-  budgetInput.addEventListener('change', async () => {
-    const v = Number(budgetInput.value);
+  const commitBudget = async () => {
     const restore = () => { budgetInput.value = String(settings?.monthlyBudgetUSD ?? 5); };
-    if (budgetInput.value === '' || !Number.isFinite(v) || v < 0 || v > BUDGET_MAX) {
-      budgetMessage.textContent = `Прагът е число от 0 до ${BUDGET_MAX}.`;
+    const parsed = parseBudget(budgetInput.value);
+    if (parsed.error) {
+      budgetMessage.textContent = parsed.error;
+      budgetInput.setAttribute('aria-invalid', 'true');
       restore();
       return;
     }
+    const v = parsed.value;
     const cents = Math.round(v * 100) / 100;
     if (v > 0 && cents === 0) {
       budgetMessage.textContent = 'Най-малкият праг е 0.01 (0 значи без предупреждение).';
+      budgetInput.setAttribute('aria-invalid', 'true');
       restore();
       return;
     }
+    budgetInput.removeAttribute('aria-invalid');
     settings = await saveSettings({ monthlyBudgetUSD: cents });
     budgetInput.value = String(settings.monthlyBudgetUSD);
     budgetMessage.textContent = cents === v ? 'Запазено.' : `Запазено като ${budgetInput.value} (закръглено до цент).`;
     showSpend();
+  };
+  budgetInput.addEventListener('change', commitBudget);
+  budgetInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); commitBudget(); return; }
+    // The arrows step by a cent, as the number field did.
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const parsed = parseBudget(budgetInput.value);
+    const base = parsed.error ? Number(settings?.monthlyBudgetUSD ?? 5) : parsed.value;
+    const next = Math.round(base * 100) + (event.key === 'ArrowUp' ? 1 : -1);
+    budgetInput.value = String(Math.min(BUDGET_MAX * 100, Math.max(0, next)) / 100);
+    commitBudget();
   });
   let totals = null;
   const showSpend = () => {

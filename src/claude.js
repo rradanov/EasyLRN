@@ -24,9 +24,21 @@ export const CHECK_TIMEOUT_MS = 20000;
 const KEY_PREFIX = 'sk-ant-';
 /** The only characters of a key: printable ASCII letters, digits, "-" and "_". */
 const KEY_CHARS = /^[A-Za-z0-9_-]+$/;
-/** Spaces and line breaks around a pasted key (also NBSP, BOM): dropped. */
-const EDGE_SPACE = /^\s+|\s+$/g;
+/**
+ * Blank characters around a pasted key: dropped. `\s` covers spaces, tabs,
+ * line breaks, NBSP, BOM (U+FEFF), U+2028/2029, U+3000 and the other Unicode
+ * spaces; T053-I3 adds the invisible ones that are not `\s`: zero-width space,
+ * non-joiner and joiner (U+200B–U+200D), word joiner (U+2060), the Mongolian
+ * vowel separator (U+180E) and the soft hyphen (U+00AD). Inside the key they
+ * are still refused (KEY_CHARS).
+ */
+const EDGE_SPACE = /^[\s\u200B-\u200D\u2060\u180E\u00AD]+|[\s\u200B-\u200D\u2060\u180E\u00AD]+$/g;
 export const KEY_BAD_CHARS = 'Ключът съдържа непозволени знаци — копирай го наново от Claude Console.';
+
+/** `raw` as a string without blank or invisible characters at its ends. */
+export function trimBlank(raw) {
+  return String(raw ?? '').replace(EDGE_SPACE, '');
+}
 
 /**
  * Clean a typed or pasted key: { key } or { error } (Bulgarian, never with the key in it).
@@ -36,7 +48,7 @@ export const KEY_BAD_CHARS = 'Ключът съдържа непозволени
  * @param {string} raw
  */
 export function validateKey(raw) {
-  const key = String(raw ?? '').replace(EDGE_SPACE, '');
+  const key = trimBlank(raw);
   if (!key) return { error: 'Въведи ключа.' };
   if (!key.startsWith(KEY_PREFIX)) return { error: 'Ключът на Claude API започва със „sk-ant-“. Копирай го наново от Claude Console.' };
   if (!KEY_CHARS.test(key)) return { error: KEY_BAD_CHARS };
