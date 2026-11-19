@@ -85,13 +85,18 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
       // T-052: the method is locked away inside the lesson now, so "does the browser
       // have it" is asked in the app's own realm (same browser), not in the lesson.
       expect(await page.evaluate(() => typeof Element.prototype.appendHTMLUnsafe)).toBe('function');
-      await importCourse(page, id, { 'INDEX.md': strToU8(`# ${id}\n`), 'lessons/0001-g.html': lesson(code) });
+      // T-053: and inside the lesson the method must really be gone (the T-052 edit left
+      // `not.toContain('absent=1')`, which could no longer fail: nothing reported 'absent').
+      const member = name.match(/\.(\w+)/)[1];
+      const owner = name.startsWith('ShadowRoot') ? 'ShadowRoot' : 'Element';
+      await importCourse(page, id, { 'INDEX.md': strToU8(`# ${id}\n`), 'lessons/0001-g.html': lesson(`rep('inLesson',typeof ${owner}.prototype.${member});${code}`) });
       const wrap = await open(page, id);
       await page.waitForTimeout(3000);
       const probe = await page.evaluate(() => window.__probe);
       const stopped = await wrap.getAttribute('data-lesson-stopped');
       console.log(`T-051 I1 "${name}": ${JSON.stringify(probe)}, stopped=${stopped}`);
-      expect(probe).not.toContain('absent=1');
+      expect(probe).toContain('inLesson=undefined');
+      expect(probe.some((p) => p.startsWith('err=TypeError'))).toBe(true); // the call itself failed
       expect(probe.filter((p) => p.startsWith('relay='))).toEqual([]);
     });
   });
@@ -108,7 +113,9 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
       console.log(`T-051 I1 "${name}": ${JSON.stringify(probe)}, stopped=${stopped}`);
       // T-052: the lesson no longer gets the closed root (setHTML / Document.parseHTML
       // are gone, so the code throws: 'err=…'); before the fix it did ('root=true').
-      expect(probe.some((p) => p === 'root=true' || p.startsWith('err='))).toBe(true);
+      // T-053: stricter again — 'root=true' is the T051-I1 defect itself and must not pass.
+      expect(probe).not.toContain('root=true');
+      expect(probe.some((p) => p.startsWith('err=TypeError'))).toBe(true);
       expect(probe.filter((p) => p.startsWith('relay='))).toEqual([]); // no nested document ran
     });
   });
@@ -120,14 +127,12 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
     // T-052: setHTML is locked away in the lesson now, so the frame is never built
     // (the backstop has nothing to stop); before the fix the app stopped the lesson.
     // Either way no nested document may keep running.
+    // T-053: no "either way" — with setHTML locked only one outcome is right: the call
+    // throws, no nested document ever speaks. (The backstop itself: guard-t050fix.)
     await page.waitForTimeout(2000);
-    const stopped = await wrap.getAttribute('data-lesson-stopped');
-    if (stopped !== 'frame') {
-      expect(await page.evaluate(() => window.__probe.some((p) => p.startsWith('err=')))).toBe(true);
-      expect(await page.evaluate(() => window.__hits)).toEqual([]);
-    } else {
-      await expect(page.locator('.lesson-frame__wrap iframe')).toHaveCount(0);
-    }
+    expect(await page.evaluate(() => window.__probe.some((p) => p.startsWith('err=TypeError')))).toBe(true);
+    expect(await page.evaluate(() => window.__hits)).toEqual([]);
+    expect(await page.evaluate(() => document.querySelectorAll('.lesson-frame__wrap iframe').length)).toBeLessThanOrEqual(1);
   });
 
   test('which HTML parser entry points a lesson still has (for the report)', async ({ page }) => {
@@ -141,6 +146,9 @@ test.describe('T051-I1: the Sanitizer API builds closed shadow roots the guard n
     console.log(`T-051 parser entry points in a lesson: ${list}`);
     expect(list).toMatch(/Element\.setHTMLUnsafe:locked/);
     expect(list).toMatch(/ShadowRoot\.setHTMLUnsafe:locked/);
+    // T-053: after T-052 every member with HTML in its name is locked but the kept ones.
+    const left = list.split(' ').filter((x) => x && !/:(locked|undefined)$/.test(x)).map((x) => x.replace(/:.*/, '')).sort();
+    expect(left).toEqual(['Element.getHTML', 'Element.innerHTML', 'Element.insertAdjacentHTML', 'Element.outerHTML', 'ShadowRoot.getHTML', 'ShadowRoot.innerHTML']);
   });
 });
 

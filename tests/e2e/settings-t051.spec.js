@@ -518,10 +518,13 @@ test.describe('T-051 threshold, model, offline, a11y, layout', () => {
     const budget = field(page, 'budget');
     await budget.fill('0.004');
     await budget.press('Tab');
-    await expect(field(page, 'budget-message')).toHaveText(/0\.01/); // T-052: was 'Запазено.' (with 0 saved)
+    // T-052: was 'Запазено.' (with 0 saved). T-053: /0\.01/ alone would also pass a silent
+    // "Запазено като 0.01"; the chosen behaviour is a refusal that keeps the old value.
+    await expect(field(page, 'budget-message')).toHaveText('Най-малкият праг е 0.01 (0 значи без предупреждение).');
     const saved = await page.evaluate(async () => (await (await import('./src/db.js')).getSettings()).monthlyBudgetUSD);
     console.log(`T-051 threshold 0.004 → saved ${saved}, shown ${await budget.inputValue()}`);
     expect(await budget.inputValue()).toBe(String(saved));
+    expect(saved).not.toBe(0); // T-053: the warning was not switched off
   });
 
   test('a model saved by hand (not in the list, with HTML) is shown as text; "Провери" checks the default model instead and says so', async ({ page }) => {
