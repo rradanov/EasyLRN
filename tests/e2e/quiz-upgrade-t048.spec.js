@@ -125,12 +125,12 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
   stop = await serve(trees.now, port);
   try {
     await upgradeTo(NOW_VERSION);
-    expect(await dbInfo()).toMatchObject({ version: 4, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    expect(await dbInfo()).toMatchObject({ version: 5, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055
     await page.goto(`${url}#/c/LRN-DEMO`);
     await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
     await page.goto(`${url}#/c/LRN-DEMO/quiz/0001-1-vidove`);
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
-    const kept = await page.evaluate(async () => (await (await import('./src/db.js')).getQuizAnswers('LRN-DEMO/quizzes/0001-1-vidove.json')));
+    const kept = await page.evaluate(async () => (await (await import('./src/db.js')).getQuizAnswers('LRN-DEMO/quiz:0001-1')));
     console.log(`T-048-fix upgrade v2 → v3 answers: ${JSON.stringify({ choices: kept.choices, choicesV2: kept.choicesV2 })}`);
     expect(Object.values(kept.choices).every((v) => typeof v === 'string')).toBe(true);
   } finally { await stop(); }
@@ -147,7 +147,7 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
     await page.reload();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     await context.setOffline(false);
-    expect(await dbInfo()).toMatchObject({ version: 4, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 });
+    expect(await dbInfo()).toMatchObject({ version: 5, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055
   } finally { await stop(); }
   rmSync(base, { recursive: true, force: true });
   expect(problems.filter((p) => !/Failed to fetch|ERR_INTERNET_DISCONNECTED|status of 40/.test(p))).toEqual([]);

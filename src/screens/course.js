@@ -10,6 +10,9 @@
 //   status (○ нов, ◐ започнат, ● завършен), counters and the lessons planned
 //   in INDEX.md that are not imported yet ("скоро"); "Тестове" (D-032) with
 //   their status and "Нулирай".
+// D-039 (T-055): lessons no longer in the course (`retired`) are only in a
+// collapsed "Вече не са в курса" (if there are any), not in the progress and
+// never the target of "Продължи".
 // D-038: MISSION.md and NOTES.md are not shown here; they stay in the course
 // (imported as before) as context for the AI teacher (D-016).
 // Every heading of a section is there once (the T-008 user check saw
@@ -25,6 +28,7 @@ import { confirmBox } from './confirm.js';
 import { readerLink } from './reader.js';
 import { quizLink } from './quiz-link.js';
 import { APP_NAME } from '../config.js';
+import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
 
 /** Status line of a quiz: "не е започнат" / "x от n" / "резултат: c от n верни". */
 function quizStatus(score) {
@@ -61,7 +65,9 @@ export function whenText(when, now = new Date()) {
 const lessonLabel = (l) => (l.kind === 'reference' ? `справочник ${l.number}` : `урок ${l.number}`);
 
 /** The lesson to continue: the last opened one; else the first lesson not done. */
-export function continueTarget(lessons) {
+export function continueTarget(all) {
+  // D-039: never to a lesson that is no longer in the course.
+  const lessons = all.filter((l) => !l.retired);
   const opened = lessons.filter((l) => l.progress?.lastOpenedAt)
     .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)));
   if (opened.length) return { lesson: opened[0], resume: true };
@@ -173,7 +179,10 @@ export function courseScreen({ params }) {
     for (const q of quizzes) if (q.lesson) quizCount.set(q.lesson, (quizCount.get(q.lesson) || 0) + 1);
 
     // --- Head: title, progress, "Продължи" ---------------------------------------
-    const only = (kind) => lessons.filter((l) => l.kind === kind);
+    // D-039: retired lessons are only in "Вече не са в курса" (not counted).
+    const current = lessons.filter((l) => !l.retired);
+    const retired = lessons.filter((l) => l.retired);
+    const only = (kind) => current.filter((l) => l.kind === kind);
     const main = only('lesson');
     const done = main.filter((l) => statusOf(l) === 'done').length;
     const target = continueTarget(lessons);
@@ -190,11 +199,12 @@ export function courseScreen({ params }) {
 
     // --- Lessons, references, planned ------------------------------------------
     const index = parseIndex(course.meta?.index);
-    const have = new Set(lessons.map((l) => String(l.number).toUpperCase()));
+    const numKey = (n) => normalizeNumber(n) ?? String(n).toUpperCase();
+    const have = new Set(lessons.map((l) => numKey(l.number)));
     const seen = new Set();
     const planned = [...index.rows, ...index.planned]
       .filter((r) => {
-        const k = String(r.number).toUpperCase();
+        const k = numKey(r.number);
         if (have.has(k) || seen.has(k)) return false;
         seen.add(k);
         return true;
@@ -208,10 +218,17 @@ export function courseScreen({ params }) {
     };
     const lessonList = list('lesson');
     const refList = list('reference');
+    // "Вече не са в курса" (D-039): collapsed, only if there are such lessons.
+    const retiredBox = retired.length ? h('details', { class: 'course__details course__retired', 'data-section': 'retired' },
+      h('summary', { class: 'course__summary' }, h('h2', { class: 'screen__heading', text: 'Вече не са в курса' })),
+      h('p', { class: 'muted', text: 'Тези уроци са махнати от курса. Можеш да ги отвориш; данните ти за тях са запазени и не се броят в прогреса.' }),
+      h('ul', { class: 'course-list', 'data-kind': 'retired' },
+        retired.map((l) => lessonItem(courseId, l, counters.get(l.id), 0)))) : null;
     mount(lessonsBox,
       lessonList ? section('lessons', 'Уроци', lessonList) : null,
       refList ? section('references', 'Справочници', refList) : null,
-      !lessonList && !refList ? h('p', { class: 'empty', text: 'В курса няма уроци.' }) : null);
+      !lessonList && !refList ? h('p', { class: 'empty', text: 'В курса няма уроци.' }) : null,
+      retiredBox);
 
     // --- "Тестове" (D-032): status and "Нулирай" (T-049, D-035) ---------------
     if (quizzes.length) {
@@ -252,12 +269,13 @@ export function courseScreen({ params }) {
     }
 
     // --- Side: recent activity, resources (D-038: no mission, no notes) -------
-    const byPath = new Map(lessons.map((l) => [l.path, l]));
+    // D-039 §А.3: by path, an earlier path, or the number in the file name.
+    const byPath = (p) => resolveLessonPath(lessons, p);
     const resolveLink = (href) => {
       const path = href.replace(/^\.\//, '').replace(/[?#].*$/, '');
       // T012-D1: a malformed %-escape ("100%.pdf") is no course link: dead text.
       const decoded = safeDecode(path);
-      const l = byPath.get(path) || (decoded !== null ? byPath.get(decoded) : undefined);
+      const l = resolveLessonPath(lessons, path, { byNumber: false }) || (decoded !== null ? byPath(decoded) : undefined);
       return l ? readerLink(courseId, l) : null;
     };
     const meta = course.meta || {};

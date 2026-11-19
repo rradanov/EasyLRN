@@ -20,7 +20,8 @@ import { strToU8 } from '../../vendor/fflate.js';
 
 const FILES = readFixture();
 const DEMO_PATH = 'lessons/0001-vidove-chay.html';
-const DEMO_ID = `LRN-DEMO/${DEMO_PATH}`;
+// T-055 (D-039): lessons are keyed by course + number, not by path.
+const DEMO_ID = 'LRN-DEMO/lesson:0001';
 
 let problems;
 let external;
@@ -325,7 +326,11 @@ test.describe('T012-D3, T012-I5, T012-I7', () => {
 });
 
 test.describe('T012-I4: a renamed lesson file is the same lesson', () => {
-  test('one row; progress, annotations (with their threads) and subtopics move to the new file; the old record is soft-deleted', async ({ page }) => {
+  // T-055 (D-039): the lesson is its number, so a rename moves nothing: the
+  // same record gets the new path (the old one in previousPaths) and keeps the
+  // progress; annotations and subtopics keep pointing at the same id. No
+  // soft-deleted `renamedTo` record any more.
+  test('one row; progress, annotations (with their threads) and subtopics stay with the lesson (its number); no second record', async ({ page }) => {
     await importDemo(page);
     const ids = await page.evaluate(async (lessonId) => {
       const db = await import('./src/db.js');
@@ -343,30 +348,28 @@ test.describe('T012-I4: a renamed lesson file is the same lesson', () => {
     const summary = await importDemo(page, renamed);
     expect(summary.lessons.added).toEqual([]);
     expect(summary.lessons.changed).toEqual(['0001 Какви видове чай има?']);
-    const NEW_ID = 'LRN-DEMO/lessons/0001-vidove-chay-novo.html';
-    const after = await page.evaluate(async ({ ids, NEW_ID, OLD_ID }) => {
+    const NEW_ID = DEMO_ID;
+    const after = await page.evaluate(async ({ ids, NEW_ID }) => {
       const db = await import('./src/db.js');
-      const lessons = await db.listLessons('LRN-DEMO');
-      const old = await db.getLesson(OLD_ID, { includeDeleted: true });
+      const lessons = await db.listLessons('LRN-DEMO', { includeDeleted: true });
+      const rec = await db.getLesson(NEW_ID);
       return {
         numbers: lessons.map((l) => l.number),
-        progress: (await db.getLesson(NEW_ID)).progress,
-        old: { deleted: old.deleted, renamedTo: old.renamedTo },
+        progress: rec.progress,
+        old: { path: rec.path, previousPaths: rec.previousPaths, renamedTo: rec.renamedTo ?? null, deleted: lessons.filter((l) => l.deleted).length },
         ann: (await db.getAnnotation(ids.a)).target,
         threads: (await db.threadsFor(ids.a)).map((t) => t.id),
         sub: await db.getSubTopic(ids.s).then((s) => [s.parent, s.rootLessonId]),
         onNew: (await db.annotationsFor({ type: 'lesson', id: NEW_ID })).map((a) => a.id),
-        onOld: (await db.annotationsFor({ type: 'lesson', id: OLD_ID })).length,
       };
-    }, { ids, NEW_ID, OLD_ID: DEMO_ID });
+    }, { ids, NEW_ID });
     expect(after.numbers).toEqual(['0001', 'R01']);
     expect(after.progress).toMatchObject({ status: 'done', completedAt: '2026-11-18T10:00:00.000Z', lastOpenedAt: '2026-11-18T09:00:00.000Z', scrollY: 654 });
-    expect(after.old).toEqual({ deleted: true, renamedTo: NEW_ID });
+    expect(after.old).toEqual({ path: 'lessons/0001-vidove-chay-novo.html', previousPaths: [DEMO_PATH], renamedTo: null, deleted: 0 });
     expect(after.ann).toEqual({ type: 'lesson', id: NEW_ID });
     expect(after.threads).toEqual([ids.t]);
     expect(after.sub).toEqual([{ type: 'lesson', id: NEW_ID }, NEW_ID]);
     expect(after.onNew).toEqual([ids.a]);
-    expect(after.onOld).toBe(0);
     await openCourse(page);
     await expect(course(page).locator('[data-section="lessons"] [data-lesson]')).toHaveText(['0001 Какви видове чай има?']);
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
@@ -385,26 +388,26 @@ test.describe('T012-I4: a renamed lesson file is the same lesson', () => {
     await expect(course(page).locator('[data-section="lessons"] [data-lesson]')).toHaveCount(1);
   });
 
-  test('ambiguous or partial imports change nothing: two new files with one number stay two; a part without the lesson keeps it', async ({ page }) => {
+  // T-055 (D-039): two files with one number are refused (the whole import,
+  // nothing written) instead of being imported as two lessons.
+  test('ambiguous or partial imports change nothing: two new files with one number are refused; a part without the lesson keeps it', async ({ page }) => {
     await importCourse(page, 'LRN-REN', {
       'INDEX.md': indexMd('LRN-REN', ['0001', '0002']),
       'lessons/0001-a.html': lessonHtml('Първи'),
       'lessons/0002-b.html': lessonHtml('Втори'),
     });
-    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-REN/lessons/0001-a.html', { status: 'done' }));
+    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-REN/lesson:0001', { status: 'done' }));
     // A part (no INDEX.md) with 0002 only: 0001 stays as it is.
     await importCourse(page, 'LRN-REN', { 'lessons/0002-b.html': lessonHtml('Втори') });
-    // Two new files with the number 0001 and the old one gone: not a rename (which one?) — both are new, the old one stays.
-    const r = await importCourse(page, 'LRN-REN', {
+    // Two new files with the number 0001 and the old one gone: which one is the lesson? The import is refused.
+    await expect(importCourse(page, 'LRN-REN', {
       'INDEX.md': indexMd('LRN-REN', ['0001', '0002']),
       'lessons/0001-x.html': lessonHtml('Първи X'),
       'lessons/0001-y.html': lessonHtml('Първи Y'),
       'lessons/0002-b.html': lessonHtml('Втори'),
-    });
-    expect(r.lessons.added.length).toBe(2);
+    })).rejects.toThrow('В курса има два урока с номер 0001: lessons/0001-x.html, lessons/0001-y.html.');
     const st = await page.evaluate(async () => (await (await import('./src/db.js')).listLessons('LRN-REN')).map((l) => [l.path, l.progress.status]));
-    expect(st).toEqual(expect.arrayContaining([['lessons/0001-a.html', 'done'], ['lessons/0001-x.html', 'new'], ['lessons/0001-y.html', 'new'], ['lessons/0002-b.html', 'new']]));
-    expect(st).toHaveLength(4);
+    expect(st).toEqual([['lessons/0001-a.html', 'done'], ['lessons/0002-b.html', 'new']]);
   });
 });
 

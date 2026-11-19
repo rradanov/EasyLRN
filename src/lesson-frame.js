@@ -33,6 +33,7 @@
 //   nested in the lesson stops the lesson too.
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
+import { resolveLessonPath } from './lesson-id.js';
 
 const SANDBOX = 'allow-scripts';
 const ALLOW = 'clipboard-write *';
@@ -156,8 +157,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
   const element = h('div', { class: 'lesson-frame__wrap', 'data-lesson-state': 'loading' }, status, note);
 
-  const byPath = new Map(lessons.map((l) => [l.path, l]));
-  const lowerExt = (p) => p.replace(/\.[^./]+$/, (e) => e.toLowerCase());
+  // D-039 §А.3: a link path → the lesson by path, an earlier path, or the number in the file name.
+  const lessonAt = (path) => resolveLessonPath(lessons, path);
   let links = new Set();
   let frame = null;
   let destroyed = false;
@@ -265,12 +266,12 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     const target = parseCourseUrl(url.href);
     if (target) {
       if (target.courseId !== course.id) { warn('another course', url.href); return; }
-      if (target.path === lesson.path || lowerExt(target.path) === lesson.path) {
+      const other = lessonAt(target.path);
+      if (other && other.id === lesson.id) {
         if (target.hash.length > 1) askPosition(target.hash.slice(1), 'fragment');
         else scrollToLessonTop();
         return;
       }
-      const other = byPath.get(target.path) || byPath.get(lowerExt(target.path));
       if (other) onNavigate(other, target.hash);
       else warn('not a lesson of the course', url.href);
       return;
@@ -278,7 +279,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     const artifact = ARTIFACT.exec(url.href)?.[1];
     if (artifact) {
       const path = course.meta?.artifacts?.[artifact];
-      const local = path && byPath.get(path);
+      const local = path && lessonAt(path);
       if (local) {
         if (local.id === lesson.id) scrollToLessonTop();
         else onNavigate(local, '');

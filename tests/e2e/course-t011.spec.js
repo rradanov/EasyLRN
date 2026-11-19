@@ -14,7 +14,8 @@ import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.m
 import { strToU8 } from '../../vendor/fflate.js';
 
 const FILES = readFixture();
-const LESSON_ID = 'LRN-DEMO/lessons/0001-vidove-chay.html';
+// T-055 (D-039): lessons are keyed by course + number, not by path.
+const LESSON_ID = 'LRN-DEMO/lesson:0001';
 
 let problems;
 let external;

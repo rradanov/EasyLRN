@@ -24,10 +24,10 @@ test.describe('data layer (IndexedDB)', () => {
       await db.deleteDatabase('easylrn-persist');
       await db.openDb({ name: 'easylrn-persist' });
       await db.putCourse({ id: 'LRN-DEMO', title: 'Демо' });
-      await db.putLesson({ id: 'LRN-DEMO/lessons/0001.html', courseId: 'LRN-DEMO', number: '0001', title: 'Урок', order: 1 });
+      await db.putLesson({ id: 'LRN-DEMO/lesson:0001', courseId: 'LRN-DEMO', number: '0001', title: 'Урок', order: 1 });
       await db.putFile({ courseId: 'LRN-DEMO', path: 'lessons/0001.html', mime: 'text/html', blob: new Blob(['<p>здравей</p>'], { type: 'text/html' }), sha256: 'x' });
       const a = await db.createAnnotation({
-        courseId: 'LRN-DEMO', target: { type: 'lesson', id: 'LRN-DEMO/lessons/0001.html' },
+        courseId: 'LRN-DEMO', target: { type: 'lesson', id: 'LRN-DEMO/lesson:0001' },
         selector: { quote: { exact: 'здравей', prefix: '', suffix: '' }, position: { start: 0, end: 7 } }, color: 'blue',
       });
       const n = await db.createNote({ annotationId: a.id, body: 'бележка' });
@@ -45,7 +45,7 @@ test.describe('data layer (IndexedDB)', () => {
         course: (await db.getCourse('LRN-DEMO'))?.title,
         lessons: (await db.listLessons('LRN-DEMO')).length,
         file: await file.blob.text(),
-        annotation: (await db.annotationsFor({ type: 'lesson', id: 'LRN-DEMO/lessons/0001.html' }))[0]?.id === a,
+        annotation: (await db.annotationsFor({ type: 'lesson', id: 'LRN-DEMO/lesson:0001' }))[0]?.id === a,
         note: (await db.notesFor(a))[0]?.id === n,
         fontScale: (await db.getSettings()).fontScale,
       };
@@ -55,7 +55,7 @@ test.describe('data layer (IndexedDB)', () => {
     expect(after).toEqual({ course: 'Демо', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
   });
 
-  test('the app opens lrn-app v3 and requests persistent storage at start', async ({ page }) => {
+  test('the app opens lrn-app v5 and requests persistent storage at start', async ({ page }) => {
     await page.addInitScript(() => {
       window.__persistCalls = 0;
       const original = navigator.storage.persist.bind(navigator.storage);
@@ -69,7 +69,7 @@ test.describe('data layer (IndexedDB)', () => {
     await expect.poll(() => page.evaluate(async () => {
       const dbs = await indexedDB.databases();
       return dbs.find((d) => d.name === 'lrn-app')?.version ?? null;
-    })).toBe(4); // v4 (T-019): the secrets store
+    })).toBe(5); // v5 (T-055, D-039): lesson ids by number (v4, T-019: the secrets store)
     await expect.poll(() => page.evaluate(() => window.__persistCalls)).toBeGreaterThanOrEqual(1);
     const stores = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('lrn-app');

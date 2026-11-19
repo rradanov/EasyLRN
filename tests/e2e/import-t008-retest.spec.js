@@ -132,7 +132,7 @@ test.describe('Н-1 and Н-5 retest', () => {
 
   test('Н-5: three re-imports (same ZIP, split parts, loose files) write nothing and keep the user data', async ({ page }) => {
     const first = await imp(page, full());
-    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-DEMO/lessons/0001-vidove-chay.html', { scrollY: 321 }));
+    await page.evaluate(async () => (await import('./src/db.js')).setLessonProgress('LRN-DEMO/lesson:0001', { scrollY: 321 }));
     await page.waitForTimeout(20); // a new timestamp would differ
     for (const files of [full(), splitZips(FILES, 3), [asFile('0001-vidove-chay.html', Buffer.from(FILES[LESSON_PATH]), 'text/html')]]) {
       const r = await imp(page, files);

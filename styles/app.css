@@ -259,6 +259,19 @@ a.card:active { background: var(--paper); }
 }
 .button:disabled { opacity: 0.6; cursor: default; }
 
+/* ---- The database could not be opened/upgraded (T-055) ---- */
+.db-error {
+  margin: 12px auto 0;
+  max-width: 72rem;
+  padding: 12px 16px;
+  border: 2px solid var(--danger, #b3261e);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+.db-error[hidden] { display: none; }
+
 /* ---- "New version" banner ---- */
 .update-banner {
   position: fixed;
@@ -650,6 +663,15 @@ a.card:active { background: var(--paper); }
 /* ---- Reader: "Маркирай като завършен" (T-011) ---- */
 .reader__bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 12px; }
 .reader__bar .breadcrumb { margin-bottom: 0; }
+/* D-039: "Този урок вече не е в курса" */
+.reader__retired {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--ink-planned, currentColor);
+  background: var(--paper-2);
+  color: var(--ink);
+}
+.reader__retired[hidden] { display: none; }
 .reader__complete[aria-pressed="true"] { border-color: #2e7d32; color: #2e7d32; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .reader__complete[aria-pressed="true"] { border-color: #81c784; color: #81c784; }

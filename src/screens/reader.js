@@ -11,13 +11,19 @@ import { link } from '../router.js';
 import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson } from '../db.js';
 import { createLessonFrame } from '../lesson-frame.js';
 import { quizLink } from './quiz-link.js';
+import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
 
-/** Find a lesson by number (case-insensitive), id or path. */
+/**
+ * Find a lesson by id, number (case-insensitive, "R1" = "R01", "3" = "0003")
+ * or path (also an earlier path or the number in a file name, D-039).
+ */
 export function findLesson(lessons, key) {
   const k = String(key);
+  const n = normalizeNumber(k);
   return lessons.find((l) => l.id === k)
     || lessons.find((l) => String(l.number).toUpperCase() === k.toUpperCase())
-    || lessons.find((l) => l.path === k)
+    || (n ? lessons.find((l) => normalizeNumber(l.number) === n) : null)
+    || resolveLessonPath(lessons, k)
     || null;
 }
 
@@ -35,6 +41,9 @@ export function readerScreen({ params, query }) {
     type: 'button', class: 'button reader__complete', 'data-action': 'complete', 'aria-pressed': 'false', hidden: true,
   }, 'Маркирай като завършен');
   const completeStatus = h('span', { class: 'visually-hidden', role: 'status', 'data-field': 'complete-status' });
+  // D-039: a lesson taken out of the course (retired) still opens, with a note.
+  const retiredNote = h('p', { class: 'reader__retired', role: 'note', 'data-field': 'retired-note', hidden: true },
+    'Този урок вече не е в курса. Можеш да го четеш; маркировките и бележките ти към него са запазени.');
   const content = h('div', { class: 'reader__content', 'data-field': 'reader-content' },
     h('p', { class: 'muted', text: 'Зареждам…' }));
   let frame = null;
@@ -49,6 +58,7 @@ export function readerScreen({ params, query }) {
         text: course ? 'Урокът не е намерен в курса. Импортирай курса отново.' : 'Курсът още не е импортиран.' }));
       return;
     }
+    retiredNote.hidden = !lesson.retired;
     // Progress (T-011): opened → "started" (a finished lesson stays finished).
     let status = lesson.progress?.status === 'done' ? 'done' : 'started';
     setLessonProgress(lesson.id, { status, lastOpenedAt: new Date().toISOString() })
@@ -127,6 +137,7 @@ export function readerScreen({ params, query }) {
         completeButton,
         completeStatus,
       ),
+      retiredNote,
       content,
       quizzesBox,
     ),

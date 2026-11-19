@@ -174,7 +174,7 @@ test.describe('T-049 "Отначало" and "Нулирай" (D-035)', () => {
     await page.goto('./#/c/LRN-N/quiz/b');
     await pick(page, 1);
     await page.goto('./#/c/LRN-N');
-    const item = (id) => page.locator(`[data-quiz="LRN-N/quizzes/${id}.json"]`);
+    const item = (id) => page.locator(`[data-quiz="LRN-N/quiz:path:quizzes/${id}.json"]`);
     await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('1 от 3 отговорени');
     await item('a').getByRole('button', { name: /Нулирай/ }).click();
     await expect(item('a').getByRole('alertdialog')).toContainText('Да изтрия ли отговорите на „Три въпроса“?');

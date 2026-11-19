@@ -168,7 +168,7 @@ test.describe('T-010 reading position between two readers', () => {
     const pad = (path, px) => strToU8(new TextDecoder().decode(FILES[path]).replace('</body>', `<div style="height:${px}px"></div></body>`));
     // Like the real course: the lesson is much longer than the reference.
     await importFiles(page, [asFile(DRIVE_ZIP_NAME, makeZip({ ...FILES, [refPath]: pad(refPath, 1500), 'lessons/0001-vidove-chay.html': pad('lessons/0001-vidove-chay.html', 4000) }))]);
-    const ref = async () => page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/reference/R01-temperatura-i-vreme.html')).progress?.scrollY ?? 0);
+    const ref = async () => page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/reference:R01')).progress?.scrollY ?? 0);
     const saved = [];
     for (let i = 0; i < 3; i++) {
       await open(page, 'LRN-DEMO');

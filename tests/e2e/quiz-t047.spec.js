@@ -185,7 +185,7 @@ test.describe('T-047 the answers survive', () => {
     await option(page, 'Да').first().click(); // Q2 correct
     // The answers are written asynchronously; make sure they are persisted
     // before the reload (a real user never reloads within milliseconds).
-    await expect.poll(() => storedChoices(page, 'LRN-DEMO/quizzes/0001-1-vidove.json')).toBe(2);
+    await expect.poll(() => storedChoices(page, 'LRN-DEMO/quiz:0001-1')).toBe(2);
 
     await page.reload();
     await expect(quizScreen(page)).toBeVisible();
@@ -217,7 +217,7 @@ test.describe('T-047 the answers survive', () => {
     await page.locator('button', { hasText: 'Напред' }).click();
     await option(page, 'б').first().click(); // Q2 answered (correct)
     await expect(page.locator('.quiz__count')).toContainText('отговорени 2');
-    await expect.poll(() => storedChoices(page, 'LRN-RE/quizzes/0001-q.json')).toBe(2);
+    await expect.poll(() => storedChoices(page, 'LRN-RE/quiz:path:quizzes/0001-q.json')).toBe(2);
 
     // Re-import: Q1 unchanged, Q2 text changed.
     const q2changed = { ...q2, q: 'Втори въпрос, преформулиран?' };

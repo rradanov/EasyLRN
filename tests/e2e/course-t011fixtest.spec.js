@@ -13,7 +13,7 @@ import { strToU8 } from '../../vendor/fflate.js';
 
 const FILES = readFixture();
 const DEMO_PATH = 'lessons/0001-vidove-chay.html';
-const DEMO_ID = `LRN-DEMO/${DEMO_PATH}`;
+const DEMO_ID = 'LRN-DEMO/lesson:0001'; // T-055 (D-039): by number
 
 let problems;
 let external;
@@ -716,15 +716,16 @@ test.describe('T011F-I1 renamed lesson files', () => {
   async function seed(page) {
     await importCourse(page, C, base());
     await db(page, async (db, C) => {
-      await db.setLessonProgress(`${C}/lessons/0001-alpha.html`, { status: 'done', completedAt: '2026-11-18T10:00:00.000Z', lastOpenedAt: '2026-11-18T10:00:00.000Z', scrollY: 111 });
-      await db.setLessonProgress(`${C}/lessons/0002-beta.html`, { status: 'started', lastOpenedAt: '2026-11-18T11:00:00.000Z', scrollY: 222 });
+      // T-055 (D-039): lessons are keyed by course + number, not by path.
+      await db.setLessonProgress(`${C}/lesson:0001`, { status: 'done', completedAt: '2026-11-18T10:00:00.000Z', lastOpenedAt: '2026-11-18T10:00:00.000Z', scrollY: 111 });
+      await db.setLessonProgress(`${C}/lesson:0002`, { status: 'started', lastOpenedAt: '2026-11-18T11:00:00.000Z', scrollY: 222 });
       const q = (await db.listQuizzes(C))[0];
       const keys = db.questionKeys(q.questions);
       await db.saveQuizChoice(q.id, { courseId: C, qKey: keys[0], choice: 'Да', cursor: 0 });
     }, C);
   }
   const rows = (page) => db(page, async (db, C) => (await db.listLessons(C)).map((l) => [l.kind, l.number, l.path, l.title, l.progress.status, l.progress.scrollY ?? 0]), C);
-  const all = (page) => db(page, async (db, C) => (await db.listLessons(C, { includeDeleted: true })).map((l) => [l.path, !!l.deleted, l.renamedTo ? l.renamedTo.slice(C.length + 1) : null]), C);
+  const all = (page) => db(page, async (db, C) => (await db.listLessons(C, { includeDeleted: true })).map((l) => [l.path, !!l.deleted, l.renamedTo ? l.renamedTo.slice(C.length + 1) : null, l.previousPaths ?? null]), C);
   async function screenRows(page) {
     await openCourse(page, C);
     return course(page).locator('[data-lesson]').allTextContents();
@@ -757,18 +758,13 @@ test.describe('T011F-I1 renamed lesson files', () => {
       for (const h of hrefs) expect(h).not.toMatch(/alpha/);
       expect(await quizAnswered(page)).toEqual(score0);
     }
-    // Soft-deleted records: there, marked, never shown.
+    // T-055 (D-039): no soft-deleted `renamedTo` records any more — one record
+    // per number; the earlier file names are in previousPaths.
     const recs = await all(page);
     console.log(`T011F-I1a records: ${JSON.stringify(recs)}`);
-    expect(recs.filter(([, del]) => !del).map(([p]) => p).sort()).toEqual(['lessons/0001-alpha-v2.html', 'lessons/0002-beta.html', 'lessons/0003-gama.html', 'reference/R01-spr.html']);
-    // Every soft-deleted record leads (renamedTo, renamedTo…) to the live one.
-    const next = new Map(recs.map(([p, del, to]) => [p, del ? to : null]));
-    for (const [p, del] of recs) {
-      if (!del) continue;
-      let at = p;
-      for (let k = 0; k < 10 && next.get(at); k++) at = next.get(at);
-      expect(at, p).toBe('lessons/0001-alpha-v2.html');
-    }
+    expect(recs.map(([p, del, to]) => [p, del, to]).sort()).toEqual([
+      ['lessons/0001-alpha-v2.html', false, null], ['lessons/0002-beta.html', false, null], ['lessons/0003-gama.html', false, null], ['reference/R01-spr.html', false, null]]);
+    expect([...recs.find(([p]) => p === 'lessons/0001-alpha-v2.html')[3]].sort()).toEqual(['lessons/0001-alpha-v3.html', 'lessons/0001-alpha.html']);
     await expect(page.locator('[data-course="LRN-REN2"] [data-field="course-progress"]').or(page.locator('body'))).toBeVisible();
     await page.goto('./#/');
     await expect(page.locator(`[data-course="${C}"] [data-field="course-progress"]`)).toHaveText(/^Завършени: 1 от 3/);
@@ -792,7 +788,10 @@ test.describe('T011F-I1 renamed lesson files', () => {
   });
 
   test('T011F-I1c the author renumbers the course (a new lesson at 0001, the old ones shift by one, same files): the progress must not jump onto another lesson', async ({ page }) => {
-    test.fail(true, 'T011F-D1: "a lesson is its number" — when lessons are renumbered (same file content, sha256 equal to another stored lesson), the progress, annotations and subtopics of the old 0001 are moved onto the NEW, unread 0001; the moved lesson "Алфа" (now 0002) loses "завършен" and gets the progress of "Бета"');
+    // T-055: by the user's decision (D-039) the data stays with the NUMBER and
+    // the import only warns (see T011F-I1c-w below); so this expectation of the
+    // tester (progress follows the content) still fails, as designed.
+    test.fail(true, 'T011F-D1 (D-039: by decision the progress stays with the number; the summary warns): when lessons are renumbered (same file content), the progress of the old 0001 stays on the NEW, unread 0001; the moved lesson "Алфа" (now 0002) gets the progress of "Бета"');
     await seed(page);
     const files = {
       'INDEX.md': indexMd(C, ['0001', '0002', '0003', '0004']),
@@ -811,6 +810,21 @@ test.describe('T011F-I1 renamed lesson files', () => {
     expect(by['Бета']).toBe('started');
   });
 
+  test('T011F-I1c-w (T-055) the renumbering of T011F-I1c: the summary warns for each lesson with progress whose title changed', async ({ page }) => {
+    await seed(page);
+    const s = await importCourse(page, C, {
+      'INDEX.md': indexMd(C, ['0001', '0002', '0003', '0004']),
+      'lessons/0001-uvod.html': lessonHtml('Нов увод'),
+      'lessons/0002-alpha.html': lessonHtml('Алфа'),
+      'lessons/0003-beta.html': lessonHtml('Бета'),
+      'lessons/0004-gama.html': lessonHtml('Гама'),
+      'reference/R01-spr.html': lessonHtml('Справочник'),
+    });
+    expect(s.text).toContain('Внимание: Урок 0001 е с ново заглавие „Нов увод“ (беше „Алфа“).');
+    expect(s.text).toContain('Урок 0002 е с ново заглавие „Алфа“ (беше „Бета“).');
+    expect(s.text).not.toContain('Урок 0003 е с ново заглавие');
+  });
+
   test('T011F-I1d the number disappears from the file name, a lesson becomes a reference, two new files with one number: no progress is lost, nothing is merged by guess', async ({ page }) => {
     await seed(page);
     const files = base();
@@ -821,6 +835,12 @@ test.describe('T011F-I1 renamed lesson files', () => {
     files['reference/R02-beta.html'] = lessonHtml('Бета като справочник');
     files['lessons/0003-gama-a.html'] = lessonHtml('Гама А');
     files['lessons/0003-gama-b.html'] = lessonHtml('Гама Б');
+    // T-055 (D-039): two files with one number → the whole import is refused, nothing changes…
+    const before = await rows(page);
+    await expect(importCourse(page, C, files)).rejects.toThrow('В курса има два урока с номер 0003: lessons/0003-gama-a.html, lessons/0003-gama-b.html.');
+    expect(await rows(page)).toEqual(before);
+    // …and without the second file, 0003 is the same lesson under its new name.
+    delete files['lessons/0003-gama-b.html'];
     await importCourse(page, C, files);
     const r = await rows(page);
     console.log(`T011F-I1d: ${JSON.stringify(r)}`);
@@ -830,7 +850,7 @@ test.describe('T011F-I1 renamed lesson files', () => {
       ['lesson', '0002', 'lessons/0002-beta.html', 'Бета', 'started', 222],
       ['reference', 'R02', 'reference/R02-beta.html', 'Бета като справочник', 'new', 0],
     ]));
-    expect(r.filter(([, n]) => n === '0003')).toHaveLength(3);
+    expect(r.filter(([, n]) => n === '0003')).toEqual([['lesson', '0003', 'lessons/0003-gama-a.html', 'Гама А', 'new', 0]]);
     // One more import of the same: nothing changes.
     expect((await importCourse(page, C, files)).text).toMatch(/^Без промени/);
     expect(await rows(page)).toEqual(r);
@@ -842,8 +862,10 @@ test.describe('T011F-I1 renamed lesson files', () => {
     delete renamed['lessons/0001-alpha.html'];
     renamed['lessons/0001-alpha-v2.html'] = lessonHtml('Алфа 2');
     await importCourse(page, C, renamed);
-    await db(page, (db, C) => db.setLessonProgress(`${C}/lessons/0001-alpha-v2.html`, { scrollY: 999, lastOpenedAt: '2026-11-19T08:00:00.000Z' }), C);
-    await importCourse(page, C, { ...base(), 'lessons/0001-alpha-v2.html': lessonHtml('Алфа 2') });
+    await db(page, (db, C) => db.setLessonProgress(`${C}/lesson:0001`, { scrollY: 999, lastOpenedAt: '2026-11-19T08:00:00.000Z' }), C);
+    // T-055 (D-039): both files carry the number 0001 → the import is refused, nothing changes.
+    await expect(importCourse(page, C, { ...base(), 'lessons/0001-alpha-v2.html': lessonHtml('Алфа 2') }))
+      .rejects.toThrow('В курса има два урока с номер 0001: lessons/0001-alpha-v2.html, lessons/0001-alpha.html.');
     const r = await rows(page);
     console.log(`T011F-I1e both files: ${JSON.stringify(r)}`);
     const v2 = r.find(([, , p]) => p === 'lessons/0001-alpha-v2.html');
@@ -855,7 +877,7 @@ test.describe('T011F-I1 renamed lesson files', () => {
   });
 
   test('T011F-I1f a lesson open in another tab while its file is renamed by an import: "Маркирай като завършен" there is not lost', async ({ page, context }) => {
-    test.fail(true, 'T011F-D3: the old tab keeps the old lesson id; setLessonProgress() writes into the soft-deleted record (deleted: true, renamedTo) without an error, so the renamed lesson stays "започнат" — the user\'s "завършен" is lost');
+    // T011F-D3 fixed by T-055 (D-039): the id does not change with the file name.
     await seed(page);
     const reader = await context.newPage();
     reader.on('pageerror', (e) => problems.push(`reader pageerror: ${e}`));
@@ -875,7 +897,7 @@ test.describe('T011F-I1 renamed lesson files', () => {
   test('T011F-I1g two courses with the same lesson file and number: a rename in one never touches the other', async ({ page }) => {
     await seed(page);
     await importCourse(page, 'LRN-REN3', { 'INDEX.md': indexMd('LRN-REN3', ['0001']), 'lessons/0001-alpha.html': lessonHtml('Алфа 3') });
-    await db(page, (db) => db.setLessonProgress('LRN-REN3/lessons/0001-alpha.html', { status: 'started', scrollY: 33 }));
+    await db(page, (db) => db.setLessonProgress('LRN-REN3/lesson:0001', { status: 'started', scrollY: 33 }));
     const files = base();
     delete files['lessons/0001-alpha.html'];
     files['lessons/0001-alpha-x.html'] = lessonHtml('Алфа X');

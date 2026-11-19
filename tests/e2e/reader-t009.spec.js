@@ -213,9 +213,9 @@ test.describe('T-009 links', () => {
     const target = await page.evaluate(() => Math.min(900, document.scrollingElement.scrollHeight - innerHeight - 20));
     expect(target).toBeGreaterThan(200);
     await page.evaluate((y) => window.scrollTo(0, y), target);
-    await expect.poll(() => page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/lessons/0001-vidove-chay.html')).progress.scrollY), { timeout: 3000 })
+    await expect.poll(() => page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/lesson:0001')).progress.scrollY), { timeout: 3000 })
       .toBeGreaterThan(target - 200);
-    const saved = await page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/lessons/0001-vidove-chay.html')).progress.scrollY);
+    const saved = await page.evaluate(async () => (await (await import('./src/db.js')).getLesson('LRN-DEMO/lesson:0001')).progress.scrollY);
     await page.goto('./#/c/LRN-DEMO');
     await page.goto('./#/c/LRN-DEMO/read/0001');
     await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(target - 200);

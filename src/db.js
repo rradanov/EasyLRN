@@ -9,6 +9,7 @@
 // - `remove()` soft-deletes, `purge()` deletes for real (e.g. course file blobs).
 // - A DocRef is `{ type: 'lesson'|'subtopic'|'note'|'message', id }` (D-013).
 import { openDB, deleteDB, unwrap } from '../vendor/idb.js';
+import { migrateV4toV5 } from './lesson-id.js';
 
 export const DB_NAME = 'lrn-app';
 
@@ -152,6 +153,10 @@ export const MIGRATIONS = Object.freeze({
   3(db, tx) {
     const raw = unwrap(tx);
     const quizzes = new Map();
+    // T-055: the walk is tracked (beginWalk/endWalk, no change in what it
+    // does), so a later migration of the same upgrade (v5) reads the answers
+    // only after this one has converted them.
+    beginWalk(tx);
     const read = raw.objectStore(STORES.quizzes).openCursor();
     read.onsuccess = () => {
       const cursor = read.result;
@@ -160,6 +165,7 @@ export const MIGRATIONS = Object.freeze({
         if (value.choicesV2 !== undefined) return;
         c.update({ ...value, choices: migrateChoicesV2(quizzes.get(value.id), value.choices), choicesV2: value.choices ?? {} });
       });
+      endWalk(tx);
     };
   },
   // v4 (T-019): the `secrets` store for the API key. A key kept in the
@@ -176,7 +182,94 @@ export const MIGRATIONS = Object.freeze({
       c.update(rest);
     });
   },
+  // v5 (T-055, D-039): lessons, references and quizzes are keyed by course +
+  // number (`<course>/lesson:0003`, `<course>/reference:R01`,
+  // `<course>/quiz:0003-1`), not by path. migrateV4toV5() (src/lesson-id.js,
+  // pure, also for the backup T-031) merges duplicates and the `renamedTo`
+  // records of T-011-fix; the stores are rewritten in this transaction, so
+  // the upgrade is all or nothing.
+  // It reads only after the data walks of earlier migrations in the same
+  // upgrade have finished (whenQuiet): requests run in the order they are
+  // placed, so reading at once would see e.g. v2 answers not yet converted by v3.
+  5(db, tx) {
+    whenQuiet(tx, () => readStores(tx, [STORES.lessons, STORES.annotations, STORES.subtopics, STORES.quizzes, STORES.quizAnswers], (data) => {
+      const out = migrateV4toV5(data);
+      const raw = unwrap(tx);
+      for (const store of [STORES.lessons, STORES.quizzes, STORES.quizAnswers]) {
+        const os = raw.objectStore(store);
+        os.clear();
+        for (const record of out[store]) os.put(record);
+      }
+      for (const a of out.changed.annotations) raw.objectStore(STORES.annotations).put(a);
+      for (const s of out.changed.subtopics) raw.objectStore(STORES.subtopics).put(s);
+      if (out.warnings.length) console.warn(`IndexedDB v5: ${out.warnings.length} record(s) kept as they are:`, out.warnings);
+    }));
+  },
 });
+
+/**
+ * For data migrations: read every record of `stores` (getAll over the raw
+ * upgrade transaction) and call `fn({ [store]: records })` synchronously in
+ * the last success callback, still inside the transaction. An exception in
+ * `fn` aborts the whole upgrade (like eachRecord()).
+ */
+export function readStores(tx, stores, fn) {
+  const raw = unwrap(tx);
+  const data = {};
+  let left = stores.length;
+  beginWalk(tx);
+  for (const store of stores) {
+    const request = raw.objectStore(store).getAll();
+    request.onsuccess = () => {
+      data[store] = request.result;
+      if (--left) return;
+      try {
+        fn(data);
+        endWalk(tx);
+      } catch (err) {
+        failUpgrade(raw, err);
+      }
+    };
+  }
+}
+
+/** Abort the upgrade with `err` (openDb() rejects with it as `cause`). */
+function failUpgrade(raw, err) {
+  upgradeErrors.set(raw, err);
+  console.warn('IndexedDB migration failed, upgrade aborted:', err);
+  try { raw.abort(); } catch { /* already finished */ }
+}
+
+// Data walks in progress per upgrade transaction, and what waits for them.
+const walks = new WeakMap();
+const walkState = (tx) => {
+  const raw = unwrap(tx);
+  if (!walks.has(raw)) walks.set(raw, { active: 0, waiting: [] });
+  return walks.get(raw);
+};
+/** A migration starts reading/writing records over several callbacks. */
+export function beginWalk(tx) { walkState(tx).active++; }
+/** …and is done: what waits in whenQuiet() runs when no walk is left. */
+export function endWalk(tx) {
+  const state = walkState(tx);
+  if (--state.active > 0) return;
+  state.active = 0;
+  const raw = unwrap(tx);
+  while (state.waiting.length && state.active === 0) {
+    const fn = state.waiting.shift();
+    try { fn(); } catch (err) { failUpgrade(raw, err); return; }
+  }
+}
+/**
+ * Run `fn` (synchronously, in the upgrade transaction) once every data walk
+ * started by earlier migrations of this upgrade (eachRecord, readStores, or
+ * one marked with beginWalk/endWalk) has finished; at once if none is running.
+ */
+export function whenQuiet(tx, fn) {
+  const state = walkState(tx);
+  if (state.active === 0) fn();
+  else state.waiting.push(fn);
+}
 
 /** v2 → v3 choices of one quiz: { textHash: index } → { questionKey: option text }. */
 export function migrateChoicesV2(quiz, old) {
@@ -202,9 +295,10 @@ export function migrateChoicesV2(quiz, old) {
  */
 export function eachRecord(tx, store, fn) {
   const request = unwrap(tx).objectStore(store).openCursor();
+  beginWalk(tx);
   request.onsuccess = () => {
     const cursor = request.result;
-    if (!cursor) return;
+    if (!cursor) { endWalk(tx); return; }
     try {
       fn(cursor.value, cursor);
       cursor.continue();
@@ -615,20 +709,18 @@ export const getLesson = (id, opts) => get(STORES.lessons, id, opts);
 
 /**
  * Write the result of a course import in ONE readwrite transaction over
- * courses, files and lessons (T-007): either all of it is stored or nothing.
+ * courses, files, lessons and quizzes (T-007): either all of it is stored or nothing.
  * - course: merged over the stored one (`meta` fields missing in this import are kept);
  * - files: inserted or replaced (`createdAt` kept);
- * - lessons: inserted or replaced; the user's `progress` is always kept.
+ * - lessons: inserted or replaced; the user's `progress` is always kept (read
+ *   in this transaction, so a concurrent setLessonProgress() is never lost).
+ *   Since D-039 a lesson is keyed by its number: a renamed file is the same
+ *   record (new `path`, the old one in `previousPaths`), so nothing has to be
+ *   moved and the user's data (annotations, notes, threads, messages,
+ *   subtopics) is never touched here.
  * Re-importing undeletes a soft-deleted course, file or lesson.
- * - renames (T012-I4, a lesson file renamed, same number): `[{ from, to }]`
- *   lesson ids. The lesson `to` (in `lessons`) takes the progress of `from`,
- *   `from` is soft-deleted (`renamedTo`), and the user's data that names
- *   `from` is moved to `to`: annotations on the lesson (`target`), subtopics
- *   born on it (`parent`) or in its tree (`rootLessonId`). Notes, threads and
- *   messages hang on annotations (by annotation id), so they follow.
- * Otherwise user data (annotations, notes, threads, messages, subtopics) is not touched.
  */
-export async function saveCourseImport({ course, files = [], lessons = [], quizzes = [], renames = [] }) {
+export async function saveCourseImport({ course, files = [], lessons = [], quizzes = [] }) {
   requireString(course?.id, 'course.id');
   for (const f of files) {
     if (f.courseId !== course.id) throw new TypeError('file.courseId must match course.id');
@@ -643,30 +735,19 @@ export async function saveCourseImport({ course, files = [], lessons = [], quizz
     if (q.courseId !== course.id) throw new TypeError('quiz.courseId must match course.id');
     requireString(q.id, 'quiz.id');
   }
-  for (const r of renames) {
-    requireString(r?.from, 'rename.from');
-    requireString(r?.to, 'rename.to');
-    if (!lessons.some((l) => l.id === r.to)) throw new TypeError('rename.to must be one of the lessons');
-  }
   const db = await openDb();
-  const tx = db.transaction(
-    [STORES.courses, STORES.files, STORES.lessons, STORES.quizzes, ...(renames.length ? [STORES.annotations, STORES.subtopics] : [])],
-    'readwrite');
+  const tx = db.transaction([STORES.courses, STORES.files, STORES.lessons, STORES.quizzes], 'readwrite');
   const courses = tx.objectStore(STORES.courses);
   const fileStore = tx.objectStore(STORES.files);
   const lessonStore = tx.objectStore(STORES.lessons);
   const quizStore = tx.objectStore(STORES.quizzes);
   const keys = files.map((f) => fileKey(f.courseId, f.path));
-  const [oldCourse, oldFiles, oldLessons, oldQuizzes, renamedOld] = await Promise.all([
+  const [oldCourse, oldFiles, oldLessons, oldQuizzes] = await Promise.all([
     courses.get(course.id),
     Promise.all(keys.map((k) => fileStore.get(k))),
     Promise.all(lessons.map((l) => lessonStore.get(l.id))),
     Promise.all(quizzes.map((q) => quizStore.get(q.id))),
-    Promise.all(renames.map((r) => lessonStore.get(r.from))),
   ]);
-  // Read in this transaction, so a setLessonProgress() of the old lesson is never lost.
-  const inherited = new Map();
-  renames.forEach((r, i) => { if (renamedOld[i] && !renamedOld[i].deleted) inherited.set(r.to, renamedOld[i]); });
   const courseRecord = stamp(STORES.courses, {
     ...oldCourse,
     ...course,
@@ -680,39 +761,17 @@ export async function saveCourseImport({ course, files = [], lessons = [], quizz
   });
   lessons.forEach((l, i) => {
     const old = oldLessons[i];
-    const from = inherited.get(l.id);
     writes.push(lessonStore.put(stamp(STORES.lessons, {
       kind: 'lesson',
       ...l,
-      createdAt: from?.createdAt ?? old?.createdAt,
+      createdAt: old?.createdAt ?? l.createdAt,
       deleted: false,
-      progress: from ? { ...NEW_PROGRESS, ...from.progress } : old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
+      progress: old?.progress ?? { ...NEW_PROGRESS, ...l.progress },
     })));
   });
-  if (inherited.size) {
-    const annStore = tx.objectStore(STORES.annotations);
-    const subStore = tx.objectStore(STORES.subtopics);
-    for (const [to, from] of inherited) {
-      writes.push(lessonStore.put(stamp(STORES.lessons, { ...from, deleted: true, renamedTo: to })));
-      const [anns, children, tree] = await Promise.all([
-        annStore.index('by_target').getAll(['lesson', from.id]),
-        subStore.index('by_parent').getAll(['lesson', from.id]),
-        subStore.index('by_root').getAll(from.id),
-      ]);
-      for (const a of anns) writes.push(annStore.put(stamp(STORES.annotations, { ...a, target: { ...a.target, id: to } })));
-      const subs = new Map();
-      for (const s of [...children, ...tree]) subs.set(s.id, subs.get(s.id) ?? s);
-      for (const s of subs.values()) {
-        writes.push(subStore.put(stamp(STORES.subtopics, {
-          ...s,
-          parent: s.parent?.type === 'lesson' && s.parent.id === from.id ? { ...s.parent, id: to } : s.parent,
-          rootLessonId: s.rootLessonId === from.id ? to : s.rootLessonId,
-        })));
-      }
-    }
-  }
   // Quiz definitions are replaced; the answers (a separate store, keyed by
-  // question text) are never touched here, so they survive a re-import.
+  // the quiz id and the question content) are never touched here, so they
+  // survive a re-import — also of a renamed quiz file (same id, D-039).
   quizzes.forEach((q, i) => {
     writes.push(quizStore.put(stamp(STORES.quizzes, { ...q, createdAt: oldQuizzes[i]?.createdAt, deleted: false })));
   });
