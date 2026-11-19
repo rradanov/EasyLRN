@@ -258,7 +258,7 @@ function lessonKind(path) {
 
 const QUIZ_LIMITS = Object.freeze({ quizzes: 500, questions: 500, options: 20, q: 4000, option: 1000, why: 4000, src: 500, title: 300, links: 5, label: 200, url: 2048 });
 /** Bump when parseQuiz() reads more from the same file: stored quizzes are parsed again. */
-export const QUIZ_FORMAT = 2; // 0.6.1: links, lesson number normalised, T048-D2
+export const QUIZ_FORMAT = 3; // 0.6.2: T050-D2 (equal options); 0.6.1: links, lesson number normalised, T048-D2
 const quizSlug = (path) => /^quizzes\/([^/]+)\.json$/i.exec(path)?.[1] ?? null;
 const clampText = (value, max) => {
   const s = typeof value === 'string' ? value : String(value ?? '');
@@ -303,7 +303,8 @@ export function parseQuizLinks(value, where, notes) {
  * valid question. All text stays PLAIN TEXT (D-032): the UI shows it with
  * textContent, never innerHTML, so HTML or <script> inside a field cannot run.
  * Invalid questions (bad shape, an option that is not text — T048-D2 —,
- * fewer than 2 options, answer index out of range) are dropped whole with a
+ * fewer than 2 options, two options with the same text — T050-D2 —, answer
+ * index out of range) are dropped whole with a
  * note; limits bound every length and count, and a cut is noted too (the
  * import summary shows the notes, T-048 Н-2).
  */
@@ -336,6 +337,13 @@ export function parseQuiz(courseId, path, bytes, notes = []) {
       notes.push(`${where}: над ${QUIZ_LIMITS.options} опции — останалите пропуснати`);
     }
     const options = q.options.slice(0, QUIZ_LIMITS.options).map((o) => clamp(o, QUIZ_LIMITS.option));
+    // T050-D2: a choice is kept by its text (schema v3), and the user cannot
+    // tell equal options apart either: such a question is a mistake in the
+    // course. Equal = the same text after trimming and collapsing spaces.
+    const seen = new Set();
+    if (options.some((o) => { const k = o.trim().replace(/\s+/g, ' '); if (seen.has(k)) return true; seen.add(k); return false; })) {
+      notes.push(`${where}: две опции с еднакъв текст — въпросът е пропуснат`); return;
+    }
     if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= options.length) { notes.push(`${where}: индексът на отговора е извън диапазона — пропуснат`); return; }
     questions.push({
       q: clamp(q.q, QUIZ_LIMITS.q),

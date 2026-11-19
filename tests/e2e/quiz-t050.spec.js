@@ -221,18 +221,23 @@ test.describe('T-050 marking (D-036)', () => {
     await expect(page.locator('.quiz__option--correct')).toHaveAttribute('aria-label', 'Трето — твоят отговор, верен');
   });
 
-  test('[T050-D2] options with the same text: the tapped option is the one marked and judged', async ({ page }) => {
-    test.fail(true, 'T050-D2: the choice is stored as text and found with indexOf → the first equal option is marked; a tap on the right one is judged wrong');
+  // T050-D2 fixed in T-050-fix by the first way the tester allowed: the import
+  // refuses a question with equal options, with a note (the developer's log
+  // explains the choice); the other questions of the quiz stay.
+  test('[T050-D2] options with the same text: the import drops the question with a note; the rest of the quiz works', async ({ page }) => {
     const line = await importCourse(page, 'LRN-DUP', course('LRN-DUP', { 'quizzes/d.json': json({ lesson: '0001', title: 'Еднакви опции', questions: [
       { q: 'Кой е верният?', options: ['Да', 'Да', 'Не'], answer: 1 },
+      { q: 'С интервали?', options: ['Да ', ' Да', 'Не'], answer: 0 },
+      { q: 'Различни?', options: ['Да', 'да', 'Не'], answer: 1 },
     ] }) }));
     console.log(`T-050 duplicate options import: ${line}`);
+    expect(line).toContain('въпрос 1: две опции с еднакъв текст — въпросът е пропуснат');
+    expect(line).toContain('въпрос 2: две опции с еднакъв текст — въпросът е пропуснат');
+    expect(line).not.toContain('въпрос 3:');
     await page.goto('./#/c/LRN-DUP/quiz/d');
-    await pick(page, 1); // the right one
-    const m = await marks(page);
-    console.log(`T-050 duplicate options after a tap on the right one: ${JSON.stringify(m)}`);
-    // Either the import refuses such a question (with a note) or the tapped option is ✓ "Вярно".
-    expect(m).toEqual({ options: [['0', 'muted', ''], ['1', 'ok', '✓'], ['2', 'muted', '']], verdict: 'Вярно', right: null });
+    await expect(counter(page)).toHaveText('Въпрос 1 от 1 · отговорени 0');
+    await pick(page, 1);
+    expect(await marks(page)).toEqual({ options: [['0', 'muted', ''], ['1', 'ok', '✓'], ['2', 'muted', '']], verdict: 'Вярно', right: null });
   });
 });
 

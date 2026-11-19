@@ -28,6 +28,9 @@
 //   guard reports one it could not remove (`lrn:violation`), and the app reads
 //   the frame count of the lesson window from outside every 250 ms
 //   (`contentWindow.length`, readable across origins, not spoofable by it).
+//   A frame in a shadow root is not in that count (T050-I1): the guard sweeps
+//   every shadow root it has seen, and any message to the app from a window
+//   nested in the lesson stops the lesson too.
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
 
@@ -336,7 +339,25 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     rate.count++;
     return rate.count <= MAX_MESSAGES_PER_SECOND;
   };
+  /** Is `win` a window nested inside the lesson (a frame of the lesson, at any depth)? */
+  const nestedInLesson = (win) => {
+    const lessonWin = frame?.contentWindow;
+    if (!win || !lessonWin || win === lessonWin) return false;
+    try {
+      // `parent` is readable across origins; a lesson cannot fake it for a window of its own.
+      for (let w = win, i = 0; w && i < 20; i++) {
+        const up = w.parent;
+        if (up === lessonWin) return true;
+        if (!up || up === w) return false;
+        w = up;
+      }
+    } catch { /* unreachable window */ }
+    return false;
+  };
   const onMessage = (event) => {
+    // T050-I1: a nested document that talks to the app proves a frame the
+    // frame count cannot see (e.g. inside a shadow root of the lesson).
+    if (!destroyed && frame && nestedInLesson(event.source)) { stopForFrames(); return; }
     if (destroyed || !frame || event.source !== frame.contentWindow || event.origin !== 'null') return;
     heard = true;
     if (!rateOk()) return;

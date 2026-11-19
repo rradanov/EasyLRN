@@ -64,12 +64,14 @@ async function probe(page, course, wait = 2500) {
   const stopped = await wrap.getAttribute('data-lesson-stopped').catch(() => null);
   const state = await wrap.getAttribute('data-lesson-state').catch(() => null);
   const f = page.frames().find((x) => x.url().includes(`/EasyLRN/c/${course}/`));
-  const inner = f ? await f.evaluate(() => ({
+  // As a JSON string: a lesson that replaces Array.prototype.push breaks
+  // Playwright's own serialization of an object result (T-050-fix).
+  const inner = f ? await f.evaluate(() => JSON.stringify({
     hits: window.__hits || null,
     rtc: typeof window.RTCPeerConnection,
     live: document.querySelectorAll('iframe,frame,object,embed,portal,frameset').length,
     frames: window.length,
-  })).catch(() => null) : null;
+  })).then((t) => JSON.parse(t)).catch(() => null) : null;
   const top = await page.evaluate(() => ({ hits: window.__topHits, pwn: window.__t048pwn, appFrames: document.querySelectorAll('iframe').length }));
   return { stopped, state, inner, top, ms: Date.now() - t0 };
 }
@@ -230,7 +232,6 @@ test.describe('T-050 shadow-root frames (information under D-037)', () => {
   // prototype calls (localName of an HTML element is already lower case).
   for (const mode of ['open', 'closed']) {
     test(`[T050-I1] toLowerCase replaced, iframe in a ${mode} shadow root: the lesson is stopped or the frame never runs`, async ({ page }) => {
-      test.fail(true, 'T050-I1 (D-037, informative): the frame stays alive and is not counted by window.length');
       const id = `LRN-SH${mode === 'open' ? 1 : 2}`;
       const R = `<scr` + `ipt>var n=0;setInterval(function(){var m={nested:'shadow-${mode}#'+(n++),rtc:typeof RTCPeerConnection};try{top.postMessage(m,'*')}catch(e){}},500)</scr` + `ipt>`;
       const script = `<script>String.prototype.toLowerCase=function(){return 'x'};const h=document.createElement('div');document.body.append(h);`
@@ -249,7 +250,6 @@ test.describe('T-050 shadow-root frames (information under D-037)', () => {
 // which can be inside a comment after </html>; the lesson then falls back
 // (inner scroll, no highlighting). Not a regression (the same before 0.6.1).
 test('[T050-D1] a trailing comment with "</body" after </html>: the bridge still works (the lesson gets ready)', async ({ page }) => {
-  test.fail(true, 'T050-D1: the bridge lands inside the trailing comment');
   await importCourse(page, 'LRN-TC', { 'INDEX.md': strToU8('# TC\n'), 'lessons/0001-g.html': strToU8('<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8"><title>Урок</title></head><body><h1>Урок</h1><p>Текст.</p></body></html>\n<!-- край на </body> -->\n') });
   const served = await page.evaluate(async () => (await fetch('./c/LRN-TC/lessons/0001-g.html')).text());
   await page.goto('./#/c/LRN-TC');

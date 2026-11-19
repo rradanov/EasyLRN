@@ -33,6 +33,34 @@
   var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   var getPrototypeOf = Object.getPrototypeOf;
   var freeze = Object.freeze;
+  var create = Object.create;
+  var apply = Reflect.apply;
+
+  // T050-I1: after this point the guard calls nothing through a prototype the
+  // lesson can replace (String#toLowerCase, Array#push, RegExp#test (which
+  // reads RegExp#exec), Function#call…): strings are compared character by
+  // character, lists are null-prototype objects with a counter (an Array
+  // could hit a setter on Array.prototype[0]), functions run with the saved
+  // Reflect.apply.
+  function list() { var l = create(null); l.n = 0; return l; }
+  function add(l, v) { l[l.n] = v; l.n = l.n + 1; }
+  var UPPER = create(null);
+  (function () {
+    var up = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', lo = 'abcdefghijklmnopqrstuvwxyz';
+    for (var i = 0; i < 26; i++) UPPER[up[i]] = lo[i];
+  })();
+  /** ASCII lower case of a primitive string, without String.prototype. */
+  function lower(s) {
+    if (typeof s !== 'string') return '';
+    var out = '';
+    for (var i = 0; i < s.length; i++) { var c = s[i]; out += UPPER[c] || c; }
+    return out;
+  }
+  function startsWith(s, p) {
+    if (typeof s !== 'string' || s.length < p.length) return false;
+    for (var i = 0; i < p.length; i++) if (s[i] !== p[i]) return false;
+    return true;
+  }
 
   // --- 1. WebRTC -------------------------------------------------------------
   var RTC_NAMES = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection', 'RTCDataChannel',
@@ -41,28 +69,32 @@
     'RTCPeerConnectionIceEvent', 'RTCPeerConnectionIceErrorEvent', 'RTCDataChannelEvent', 'RTCTrackEvent',
     'RTCErrorEvent', 'RTCError', 'RTCDTMFToneChangeEvent', 'RTCStatsReport', 'RTCEncodedAudioFrame',
     'RTCEncodedVideoFrame', 'RTCRtpScriptTransform', 'RTCIdentityAssertion'];
-  var RTC_NAME = /^(webkit|moz)?RTC/;
+  function isRtcName(n) { return startsWith(n, 'RTC') || startsWith(n, 'webkitRTC') || startsWith(n, 'mozRTC'); }
 
   function lockName(target, name) {
     try {
       defineProperty(target, name, { value: undefined, writable: false, enumerable: false, configurable: false });
     } catch (e) { /* already locked */ }
   }
+  var ObjectProto = Object.prototype;
   function lockRtc(win) {
-    var names = RTC_NAMES.slice();
+    var names = list();
+    for (var k = 0; k < RTC_NAMES.length; k++) add(names, RTC_NAMES[k]);
     try {
       // Every RTC* interface this browser has, also future ones.
-      for (var o = win; o && o !== Object.prototype; o = getPrototypeOf(o)) {
+      for (var o = win; o && o !== ObjectProto; o = getPrototypeOf(o)) {
         var own = getOwnPropertyNames(o);
-        for (var i = 0; i < own.length; i++) if (RTC_NAME.test(own[i])) names.push(own[i]);
+        for (var i = 0; i < own.length; i++) if (isRtcName(own[i])) add(names, own[i]);
       }
     } catch (e) { /* a cross-origin window: nothing to do there */ }
-    for (var j = 0; j < names.length; j++) lockName(win, names[j]);
+    for (var j = 0; j < names.n; j++) lockName(win, names[j]);
   }
   lockRtc(w);
 
   // A nested frame of the lesson (if a browser ever gives the lesson access to
   // one): lock it before the lesson gets its window.
+  var defaultViewGet = null;
+  try { defaultViewGet = getOwnPropertyDescriptor(w.Document.prototype, 'defaultView').get; } catch (e) { defaultViewGet = null; }
   function lockFrames(proto, prop) {
     try {
       var d = getOwnPropertyDescriptor(proto, prop);
@@ -72,9 +104,9 @@
         configurable: false,
         enumerable: d.enumerable,
         get: function () {
-          var v = get.call(this);
+          var v = apply(get, this, []);
           try {
-            var win = prop === 'contentDocument' ? (v && v.defaultView) : v;
+            var win = prop === 'contentDocument' ? (v && defaultViewGet ? apply(defaultViewGet, v, []) : null) : v;
             if (win) lockRtc(win);
           } catch (e) { /* cross-origin: unreachable anyway */ }
           return v;
@@ -106,8 +138,9 @@
   // document itself (a new documentElement is seen too) and every shadow root.
   // If a frame stays anyway, the guard tells the app (`lrn:violation`), which
   // stops the lesson; the app also checks the frame count from outside.
-  var apply = Reflect.apply;
-  var FRAME_TAGS = { iframe: 1, frame: 1, frameset: 1, object: 1, embed: 1, portal: 1 };
+  var FRAME_TAGS = create(null);
+  FRAME_TAGS.iframe = 1; FRAME_TAGS.frame = 1; FRAME_TAGS.frameset = 1;
+  FRAME_TAGS.object = 1; FRAME_TAGS.embed = 1; FRAME_TAGS.portal = 1;
   var FRAME_SELECTOR = 'iframe,frame,frameset,object,embed,portal';
   function getter(proto, name) {
     for (var o = proto; o; o = getPrototypeOf(o)) {
@@ -153,28 +186,45 @@
     return !prop(get.parentNode, node, null);
   }
   var reportViolation = function () {}; // set in section 3 (needs the parent window)
-  function stripFrames(node) {
+  function isFrame(node) {
+    return prop(get.nodeType, node, 0) === 1 && FRAME_TAGS[lower(prop(get.localName, node, ''))] === 1;
+  }
+  // Every shadow root the guard has seen (attachShadow, open roots found in a
+  // sweep): also the closed ones, which no query from outside can reach and
+  // whose frames window.length does not count (T050-I1).
+  var roots = list();
+  function remember(root) {
+    for (var i = 0; i < roots.n; i++) if (roots[i] === root) return;
+    add(roots, root);
+    watch(root);
+  }
+  /** Remove every frame in `node` (and in open shadow roots inside); returns how many were found. */
+  function stripFrames(node, deep) {
     var type = prop(get.nodeType, node, 0);
-    if (type === 1 && FRAME_TAGS[String(prop(get.localName, node, '')).toLowerCase()]) {
+    if (type === 1 && isFrame(node)) {
       if (!removeNode(node)) reportViolation('frame');
-      return;
+      return 1;
     }
     var found = qsa(node, type);
-    if (!found) return;
+    if (!found) return 0;
     var n = prop(get.listLength, found, 0);
-    var all = [];
-    for (var i = 0; i < n; i++) all.push(found[i]);
-    for (var k = 0; k < all.length; k++) if (!removeNode(all[k])) reportViolation('frame');
-    // Open shadow roots inside (closed ones are watched since attachShadow, below).
-    if (type === 1 || type === 9 || type === 11) {
+    var all = list();
+    for (var i = 0; i < n; i++) add(all, found[i]);
+    for (var k = 0; k < all.n; k++) if (!removeNode(all[k])) reportViolation('frame');
+    var count = all.n;
+    // Open shadow roots inside (closed ones are remembered since attachShadow, below).
+    if (deep !== false && (type === 1 || type === 9 || type === 11)) {
       var hosts = null;
       try { hosts = apply(type === 9 ? fn.qsaDocument : type === 11 ? fn.qsaFragment : fn.qsaElement, node, ['*']); } catch (e) { hosts = null; }
       var m = hosts ? prop(get.listLength, hosts, 0) : 0;
+      var srs = list();
       for (var j = 0; j < m; j++) {
         var sr = prop(get.shadowRoot, hosts[j], null);
-        if (sr) { watch(sr); stripFrames(sr); }
+        if (sr) add(srs, sr);
       }
+      for (var q = 0; q < srs.n; q++) { remember(srs[q]); count += stripFrames(srs[q]); }
     }
+    return count;
   }
   function onRecords(records) {
     for (var i = 0; i < records.length; i++) {
@@ -185,16 +235,22 @@
   }
   var observer = null;
   try { observer = new MO(onRecords); } catch (e) { observer = null; }
+  // The options are a null-prototype object: observe() reads absent members
+  // too (attributes, characterDataOldValue…), and a lesson could otherwise set
+  // them on Object.prototype so that observe() throws for a later shadow root.
+  var OBSERVE = create(null);
+  OBSERVE.childList = true; OBSERVE.subtree = true;
   function watch(root) {
-    try { apply(fn.observe, observer, [root, { childList: true, subtree: true }]); } catch (e) { /* ignore */ }
+    try { apply(fn.observe, observer, [root, OBSERVE]); } catch (e) { /* ignore */ }
   }
-  watch(w.document);
+  var docNode = w.document;
+  watch(docNode);
 
   function neuter(create) {
     return function (tagName) {
       var el = apply(create, this, arguments);
       try {
-        if (el && prop(get.nodeType, el, 0) === 1 && FRAME_TAGS[String(prop(get.localName, el, '')).toLowerCase()]) {
+        if (el && isFrame(el)) {
           // A harmless inert element instead; its content never becomes a frame.
           return apply(create, this, ['template']);
         }
@@ -217,7 +273,7 @@
     return function (ns, tagName) {
       var el = apply(create, this, arguments);
       try {
-        if (el && prop(get.nodeType, el, 0) === 1 && FRAME_TAGS[String(prop(get.localName, el, '')).toLowerCase()]) return apply(create, this, [ns, 'span']);
+        if (el && isFrame(el)) return apply(create, this, [ns, 'span']);
       } catch (e) { /* ignore */ }
       return el;
     };
@@ -225,7 +281,7 @@
   // Shadow roots (also closed ones) are watched like the document.
   if (fn.attachShadow) {
     lockMethod(w.Element.prototype, 'attachShadow', function (orig) {
-      return function () { var root = apply(orig, this, arguments); watch(root); stripFrames(root); return root; };
+      return function () { var root = apply(orig, this, arguments); remember(root); stripFrames(root); return root; };
     });
   }
   // Parsers that can build declarative shadow roots the observer cannot see
@@ -265,7 +321,7 @@
     clearTimeout: bind(w.clearTimeout),
     requestAnimationFrame: bind(w.requestAnimationFrame),
     getComputedStyle: bind(w.getComputedStyle),
-    scrollY: function () { try { return scrollYGet ? scrollYGet.call(w) : 0; } catch (e) { return 0; } },
+    scrollY: function () { try { return scrollYGet ? apply(scrollYGet, w, []) : 0; } catch (e) { return 0; } },
   });
   try {
     defineProperty(w, '__easylrn', { value: refs, writable: false, enumerable: false, configurable: false });
@@ -279,13 +335,22 @@
     try { parentWindow.postMessage({ lrn: 1, type: 'lrn:violation', v: 1, what: what }, '*'); } catch (e) { /* ignore */ }
   };
   // A frame that stays in the document (not removable, or out of the
-  // observer's sight): the window's own frame count, read with a saved getter.
+  // observer's sight): the window's own frame count, read with a saved getter,
+  // and a sweep of the document and of every shadow root seen (window.length
+  // does not count frames in shadow trees, T050-I1). A frame found by a sweep
+  // got past the observer: it is removed and the lesson is stopped.
+  var ticks = 0;
   var checkCount = function () {
     try {
       var records = fn.takeRecords && observer ? apply(fn.takeRecords, observer, []) : [];
       if (records && records.length) onRecords(records);
     } catch (e) { /* ignore */ }
-    if (prop(get.winLength, w, 0) > 0) reportViolation('frame');
+    var found = 0;
+    for (var i = 0; i < roots.n; i++) found += stripFrames(roots[i], false);
+    // The whole document (and open shadow roots in it) once a second.
+    if (ticks % 4 === 0) found += stripFrames(docNode);
+    ticks++;
+    if (found > 0 || prop(get.winLength, w, 0) > 0) reportViolation('frame');
     if (!violated) setTimeoutFn(checkCount, 250);
   };
   setTimeoutFn(checkCount, 0);

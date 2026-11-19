@@ -14,8 +14,9 @@
 //   the shell cache) before </body>.
 // - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.6.1'; // keep in sync with src/config.js
-const RENDER_VERSION = 3; // keep in sync with src/lesson-render.js
+const VERSION = '0.6.2'; // keep in sync with src/config.js
+const RENDER_VERSION = 4; // keep in sync with src/lesson-render.js
+const BRIDGE_MARKER = '<!--easylrn:bridge-->'; // the renderer's last child of <body> (T050-D1)
 const CACHE_PREFIX = 'easylrn-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 
@@ -301,11 +302,18 @@ function bridgeScripts() {
 // <head> and every script of the lesson (the parser puts it into <head>).
 const LEADING_DOCTYPE = /^\uFEFF?(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i;
 
-/** The guard first (after the doctype), the bridge right before the last </body> (or at the end). */
+/**
+ * The guard first (after the doctype), the bridge in place of the renderer's
+ * marker, the last child of <body> (T050-D1: only closing tags come after it,
+ * so a "</body" inside a comment or script of the lesson does not matter).
+ * Without a marker (not expected for RENDER_VERSION 4): at the end of the
+ * text, where the parser still puts it into <body>.
+ */
 function withBridge(html, { guard, bridge }) {
   const doctype = LEADING_DOCTYPE.exec(html);
   const cut = doctype ? doctype[0].length : 0;
   const withGuard = `${html.slice(0, cut)}${guard}${html.slice(cut)}`;
-  const at = withGuard.toLowerCase().lastIndexOf('</body');
-  return at === -1 ? `${withGuard}\n${bridge}` : `${withGuard.slice(0, at)}${bridge}\n${withGuard.slice(at)}`;
+  const at = withGuard.lastIndexOf(BRIDGE_MARKER);
+  if (at === -1) return `${withGuard}\n${bridge}`;
+  return `${withGuard.slice(0, at)}${bridge}${withGuard.slice(at + BRIDGE_MARKER.length)}`;
 }

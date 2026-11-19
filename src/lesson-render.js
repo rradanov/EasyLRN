@@ -41,7 +41,7 @@ import { getFile, listCourseFiles, setFileRender } from './db.js';
 import { courseFileUrl, parseCourseUrl } from './lesson-frame.js';
 
 /** Bump when the output changes; must equal RENDER_VERSION in sw.js. */
-export const RENDER_VERSION = 3; // T048-S1c: frames removed by a real HTML parser
+export const RENDER_VERSION = 4; // T050-D1: the bridge marker; T050-I1: no declarative shadow roots
 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 const MAX_CSS_DEPTH = 4;
@@ -368,6 +368,15 @@ const UNSAFE_LESSON = '<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8
 const STRIP_SELECTOR = 'iframe,frame,frameset,object,embed,portal,noscript';
 const MAX_ROUNDS = 4;
 
+/**
+ * Where the Service Worker puts the bridge (T050-D1): a comment that is the
+ * last child of <body>. Comments outside <body> (after </body> or </html>) are
+ * dropped, so after the marker the text has only the closing tags, and a
+ * "</body" written in a lesson's comment, script or attribute is never mistaken
+ * for the real one. Must equal BRIDGE_MARKER in sw.js.
+ */
+export const BRIDGE_MARKER = 'easylrn:bridge';
+
 /** Remove every frame element (and noscript) in a tree and in all template contents. */
 function removeFramesIn(root) {
   let removed = 0;
@@ -376,9 +385,30 @@ function removeFramesIn(root) {
     removed++;
   }
   for (const t of root.querySelectorAll('template')) {
+    // No declarative shadow roots (T050-I1): a closed one is out of the guard's
+    // sight (reachable for the lesson through ElementInternals). Lessons from
+    // lrn-teach never use them; the template stays an inert template.
+    for (const a of ['shadowrootmode', 'shadowroot']) if (t.hasAttribute(a)) t.removeAttribute(a);
     if (t.content) removed += removeFramesIn(t.content);
   }
   return removed;
+}
+
+/** Comments outside <body> go; the bridge marker is the last child of <body>. */
+function placeBridgeMarker(doc) {
+  const html = doc.documentElement;
+  for (const parent of [doc, html]) {
+    if (!parent) continue;
+    for (const node of [...parent.childNodes]) if (node.nodeType === 8) node.remove();
+  }
+  const body = doc.body;
+  if (!body) return;
+  // A marker of the lesson itself (in a comment) is not ours.
+  const walker = doc.createTreeWalker(body, 128 /* NodeFilter.SHOW_COMMENT */);
+  const own = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.data === BRIDGE_MARKER) own.push(n);
+  for (const n of own) n.remove();
+  body.append(doc.createComment(BRIDGE_MARKER));
 }
 
 function serializeDoctype(dt) {
@@ -415,6 +445,7 @@ export function stripFrames(html, newDocument) {
     doc.close();
     const n = removeFramesIn(doc);
     removed += n;
+    placeBridgeMarker(doc);
     const out = serializeDocument(doc);
     if (round > 0 && n === 0 && out === current) return { html: out, removed };
     current = out;
