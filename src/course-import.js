@@ -184,12 +184,20 @@ const courseIdInText = (s) => /\b(LRN-[A-Za-z0-9][A-Za-z0-9_-]*)/.exec(s || '')?
 export function parseIndex(md) {
   const rows = [];
   const artifacts = {};
+  const planned = [];
   let section = null;
   for (const line of String(md || '').split(/\r?\n/)) {
     const heading = /^#{1,6}\s+(.*)$/.exec(line);
     if (heading) {
       const t = heading[1].toLowerCase();
-      section = /урок|уроц|lesson/.test(t) ? 'lesson' : /справоч|reference/.test(t) ? 'reference' : null;
+      section = /урок|уроц|lesson/.test(t) ? 'lesson' : /справоч|reference/.test(t) ? 'reference'
+        : /^(план|plan)(\s|\(|:|$)/.test(t) ? 'plan' : null;
+      continue;
+    }
+    if (section === 'plan') {
+      // T-011: "- 0002: title" / "- R02 — title" — lessons planned but not written yet.
+      const item = /^\s*[-*]\s+(R?\d{1,4}[a-z]?)\s*[:—–-]\s*(.+?)\s*$/i.exec(line);
+      if (item) planned.push({ kind: /^R/i.test(item[1]) ? 'reference' : 'lesson', number: item[1], title: item[2] });
       continue;
     }
     if (!section || !line.trim().startsWith('|')) continue;
@@ -203,7 +211,7 @@ export function parseIndex(md) {
     rows.push({ kind: section, number, title, path: path && cleanPath(path), artifact });
     if (artifact && path) artifacts[artifact] = cleanPath(path);
   }
-  return { rows, artifacts };
+  return { rows, artifacts, planned };
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0' };

@@ -1,0 +1,370 @@
+// T-011 (developer, 0.8.0): the course screen and the progress (UI-DESIGN §3, F1).
+// - one heading per section ("Уроци" once — the T-008 user check saw it twice);
+// - the mission is the text of MISSION.md (rendered Markdown, collapsible),
+//   resources and course notes are there too (collapsed);
+// - the layout uses the width of the tablet: two columns at 1920×1200,
+//   1280×800 and 1200×1920, one column at 800×1280; never a horizontal scroll;
+// - status ○ / ◐ / ●, "скоро" for planned lessons, counters, "Продължи",
+//   "Маркирай като завършен" in the reader, "Последни дейности";
+// - what worked keeps working: "Тестове", "Тест към урока", opening a lesson.
+// Synthetic data only (D-026): tests/fixtures/LRN-DEMO and small in-memory courses.
+import { test, expect } from '@playwright/test';
+import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.mjs';
+import { strToU8 } from '../../vendor/fflate.js';
+
+const FILES = readFixture();
+const LESSON_ID = 'LRN-DEMO/lessons/0001-vidove-chay.html';
+
+let problems;
+let external;
+test.beforeEach(async ({ page, context }) => {
+  problems = [];
+  external = [];
+  page.on('console', (m) => { if (m.type() === 'error') problems.push(m.text()); });
+  page.on('pageerror', (e) => problems.push(`pageerror: ${e}`));
+  await context.route(/^(https?|wss?):\/\/(?!localhost)/, (route) => { external.push(route.request().url()); return route.abort(); });
+  await page.goto('./');
+  await expect(page.locator('[data-screen="courses"]')).toBeVisible();
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+  await page.reload();
+  await expect(page.locator('[data-screen="courses"]')).toBeVisible();
+});
+test.afterEach(() => {
+  expect(problems).toEqual([]);
+  expect(external).toEqual([]);
+});
+
+async function importFiles(page, files) {
+  return page.evaluate(async (files) => {
+    const m = await import('./src/course-import.js');
+    const list = files.map((f) => new File([new Uint8Array(f.bytes)], f.name));
+    return m.describeSummary(await m.importCourse(list));
+  }, files.map((f) => ({ name: f.name, bytes: [...f.buffer] })));
+}
+const importDemo = (page, files = FILES) => importFiles(page, [asFile(DRIVE_ZIP_NAME, makeZip(files))]);
+const course = (page) => page.locator('[data-screen="course"]');
+async function openCourse(page, id = 'LRN-DEMO') {
+  await page.goto(`./#/c/${id}`);
+  await expect(course(page).locator('[data-section="mission"]')).toBeVisible();
+}
+const item = (page, number) => course(page).locator('.course-item', { has: page.locator(`[data-lesson] .import__num:text-is("${number}")`) });
+const progress = (page) => page.evaluate(async (id) => (await (await import('./src/db.js')).getLesson(id)).progress, LESSON_ID);
+const lessonFrame = (page) => page.frameLocator('iframe.lesson-frame');
+async function openLessonFromCourse(page) {
+  await course(page).locator('a.lesson-link', { hasText: 'Какви видове чай' }).click();
+  await expect(page).toHaveURL(/read\/0001$/);
+  await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
+}
+
+test.describe('T-011 the course screen: structure', () => {
+  test('one heading per section; lessons and references in order; planned lessons are "скоро", not links', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    const h2 = await course(page).locator('h2').allTextContents();
+    expect(h2).toEqual(['Уроци', 'Справочници', 'Тестове', 'Мисия', 'Последни дейности', 'Ресурси', 'Бележки на курса']);
+    // "Уроци" exactly once, in any case (was an h2 and an uppercase h3 eyebrow).
+    expect(await course(page).getByText(/^уроци$/i).count()).toBe(1);
+    await expect(course(page).locator('[data-lesson]')).toHaveText(['0001 Какви видове чай има?', 'R01 Температура и време за запарване']);
+    await expect(course(page).locator('[data-section="lessons"] [data-lesson]')).toHaveCount(1);
+    await expect(course(page).locator('[data-section="references"] [data-lesson]')).toHaveCount(1);
+    // INDEX.md "План": 0002 and 0003 are not imported yet.
+    const planned = course(page).locator('[data-section="lessons"] [data-planned]');
+    await expect(planned).toHaveCount(2);
+    await expect(planned.first()).toContainText('0002');
+    await expect(planned.first()).toContainText('зелен чай');
+    await expect(planned.first()).toContainText('Скоро');
+    await expect(planned.locator('a')).toHaveCount(0);
+    await expect(course(page).locator('[data-field="course-title"]')).toHaveText('Основи на чая');
+  });
+
+  test('the mission shows the text of MISSION.md (Markdown, without its title) and folds; resources and notes unfold', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    const mission = course(page).locator('[data-section="mission"]');
+    await expect(mission).toHaveAttribute('open', '');
+    const text = mission.locator('[data-field="mission-text"]');
+    await expect(text).toBeVisible();
+    await expect(text.locator('h3')).toHaveText(['Защо', 'Успехът изглежда така', 'Ниво']);
+    await expect(text).toContainText('Да различавам основните видове чай и да ги запарвам правилно.');
+    await expect(text.locator('li')).toHaveCount(3);
+    await expect(text).not.toContainText('Мисия: Основи на чая');
+    // Fold and unfold with the heading (keyboard too).
+    await mission.locator('summary').click();
+    await expect(text).toBeHidden();
+    await mission.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    await expect(text).toBeVisible();
+    // Resources and notes are collapsed; they open on a tap.
+    for (const [id, snippet] of [['resources', 'Измислена таблица с температури'], ['notes', 'кратки обяснения с примери от кухнята']]) {
+      const box = course(page).locator(`[data-section="${id}"]`);
+      await expect(box).not.toHaveAttribute('open', /.*/);
+      await expect(box.locator(`[data-field="${id}-text"]`)).toBeHidden();
+      await box.locator('summary').click();
+      await expect(box.locator(`[data-field="${id}-text"]`)).toContainText(snippet);
+    }
+    // An https link in RESOURCES.md opens outside the app.
+    const ext = course(page).locator('[data-section="resources"] a[href="https://example.org/tea"]');
+    await expect(ext).toHaveAttribute('target', '_blank');
+    await expect(ext).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  test('hostile Markdown: raw HTML is text, no image is loaded, only https and course links stay links', async ({ page }) => {
+    await page.evaluate(() => { window.__xss = []; });
+    const files = {
+      'INDEX.md': strToU8('# LRN-MDX: индекс\n## Уроци\n| # | Заглавие |\n|---|---|\n| 0001 | Урок |\n'),
+      'MISSION.md': strToU8([
+        '# Мисия: Тест',
+        '<img src=x onerror="__xss.push(1)"> <script>__xss.push(2)</script>',
+        '',
+        '<div style="color:red" onclick="__xss.push(3)">блок</div>',
+        '',
+        '![картинка](https://example.org/x.png) [js](javascript:__xss.push(4)) [data](data:text/html,x) [файл](sources/a.pdf)',
+        '[урокът](lessons/0001-urok.html) [сайт](https://example.org/a "заглавие") [поща](mailto:a@example.org)',
+        '',
+        '- [x] готово',
+        '',
+        '| a | b |\n|---|---|\n| 1 | <b>2</b> |',
+      ].join('\n')),
+      'lessons/0001-urok.html': strToU8('<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8"><title>Урок</title></head><body><h1>Урок</h1><p>Текст.</p></body></html>'),
+    };
+    await importFiles(page, [asFile('LRN-MDX.zip', makeZip(files, { root: 'LRN-MDX' }))]);
+    await openCourse(page, 'LRN-MDX');
+    const text = course(page).locator('[data-field="mission-text"]');
+    await expect(text).toContainText('<img src=x onerror="__xss.push(1)">');
+    await expect(text).toContainText('<div style="color:red"');
+    await expect(text).toContainText('картинка');
+    await expect(course(page).locator('img, script, iframe, [style], [onclick], [onerror]')).toHaveCount(0);
+    const hrefs = await text.locator('a').evaluateAll((as) => as.map((a) => a.getAttribute('href')));
+    expect(hrefs).toEqual(['#/c/LRN-MDX/read/0001', 'https://example.org/a']);
+    await expect(text.locator('input[type="checkbox"]')).toBeDisabled();
+    await text.locator('a', { hasText: 'урокът' }).click();
+    await expect(page).toHaveURL(/#\/c\/LRN-MDX\/read\/0001$/);
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => window.__xss)).toEqual([]);
+  });
+
+  test('a course without MISSION/RESOURCES/NOTES: the mission says so, the other two are not shown', async ({ page }) => {
+    const files = {
+      'INDEX.md': strToU8('# LRN-MIN: индекс\n'),
+      'lessons/0001-a.html': strToU8('<!DOCTYPE html><html lang="bg"><head><meta charset="utf-8"><title>А</title></head><body><h1>А</h1></body></html>'),
+    };
+    await importFiles(page, [asFile('LRN-MIN.zip', makeZip(files, { root: 'LRN-MIN' }))]);
+    await openCourse(page, 'LRN-MIN');
+    await expect(course(page).locator('[data-field="mission-text"]')).toHaveText('Курсът няма MISSION.md.');
+    await expect(course(page).locator('[data-section="resources"], [data-section="notes"], [data-section="references"], [data-list="quizzes"] h2')).toHaveCount(0);
+    await expect(course(page).locator('[data-field="activity-empty"]')).toBeVisible();
+  });
+});
+
+test.describe('T-011 layout: the width of the tablet is used, no horizontal scroll', () => {
+  const sizes = [
+    { name: '1920×1200', width: 1920, height: 1200, columns: 2 },
+    { name: '1280×800', width: 1280, height: 800, columns: 2 },
+    { name: '1200×1920', width: 1200, height: 1920, columns: 2 },
+    { name: '800×1280', width: 800, height: 1280, columns: 1 },
+  ];
+  test('two columns on a wide screen, one on a narrow one; the content fills the width', async ({ page }, info) => {
+    await importDemo(page);
+    // Each project starts with its own viewport (landscape or portrait); both check all sizes,
+    // starting with the project's own one.
+    const own = info.project.name === 'tablet-portrait' ? 2 : 0;
+    for (const size of [sizes[own], ...sizes.filter((_, i) => i !== own)]) {
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await openCourse(page);
+      const box = await page.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const main = r('.course__main');
+        const side = r('.course__side');
+        const screen = r('[data-screen="course"]');
+        return {
+          main, side, screen,
+          scrollW: document.documentElement.scrollWidth,
+          clientW: document.documentElement.clientWidth,
+          wide: [...document.querySelectorAll('[data-screen="course"] *')].filter((e) => e.getBoundingClientRect().right > document.documentElement.clientWidth + 1).map((e) => e.className || e.tagName).slice(0, 5),
+        };
+      });
+      expect(box.scrollW, `${size.name}: no horizontal scroll`).toBeLessThanOrEqual(box.clientW);
+      expect(box.wide, `${size.name}: nothing sticks out`).toEqual([]);
+      // The screen uses (almost) the whole width — at most 1680 px of content (long lines).
+      expect(box.screen.width, `${size.name}: width used`).toBeGreaterThanOrEqual(Math.min(size.width, 1680) - 60);
+      if (size.columns === 2) {
+        expect(box.side.left, `${size.name}: the mission is to the right`).toBeGreaterThanOrEqual(box.main.right);
+        expect(Math.abs(box.side.top - box.main.top), `${size.name}: side by side`).toBeLessThan(2);
+        expect(box.main.width, `${size.name}: the lessons get the wider column`).toBeGreaterThan(box.side.width);
+      } else {
+        expect(box.side.top, `${size.name}: one column`).toBeGreaterThanOrEqual(box.main.bottom);
+        expect(box.side.width).toBeGreaterThan(size.width - 80);
+      }
+    }
+  });
+
+  test('targets are at least 44 px high; the status mark is not read out, the status is', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    // Links inside running text (the Markdown of the mission/resources) are exempt (WCAG 2.5.8 "inline").
+    const heights = await course(page).locator('a:not(.md a), button, summary').evaluateAll((els) => els.filter((e) => e.offsetParent).map((e) => [e.textContent.trim().slice(0, 20), Math.round(e.getBoundingClientRect().height)]));
+    for (const [t, hgt] of heights) expect(hgt, t).toBeGreaterThanOrEqual(44);
+    await expect(course(page).locator('.course-item__mark').first()).toHaveAttribute('aria-hidden', 'true');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 теста');
+    await expect(page.getByRole('link', { name: '0001 Какви видове чай има?' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'За курса' })).toBeVisible();
+    await expect(page.getByRole('progressbar')).toHaveAttribute('max', '1');
+  });
+
+  test('light and dark theme: readable text on the paper in both', async ({ page }) => {
+    await importDemo(page);
+    const lum = (rgb) => {
+      const [r, g, b] = rgb.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number).map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(async (t) => (await import('./src/db.js')).saveSettings({ theme: t }), theme);
+      await openCourse(page);
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      const c = await page.evaluate(() => {
+        const color = (sel, prop = 'color') => getComputedStyle(document.querySelector(sel))[prop];
+        return {
+          bg: getComputedStyle(document.body).backgroundColor,
+          mission: color('[data-field="mission-text"] p'),
+          meta: color('.course-item__meta'),
+          link: color('a.lesson-link'),
+          heading: color('[data-section="mission"] h2'),
+        };
+      });
+      for (const k of ['mission', 'meta', 'link', 'heading']) expect(contrast(c[k], c.bg), `${theme} ${k}`).toBeGreaterThanOrEqual(4.5);
+      if (theme === 'dark') expect(lum(c.bg)).toBeLessThan(0.05);
+      else expect(lum(c.bg)).toBeGreaterThan(0.8);
+    }
+  });
+});
+
+test.describe('T-011 progress: started, finished, "Продължи", recent activity', () => {
+  test('a new course: all ○, "Започни" opens the first lesson, nothing in the activity', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    await expect(course(page).locator('.course-item[data-status="new"] [data-lesson]')).toHaveCount(2);
+    await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 0 от 1 урок');
+    const go = course(page).locator('[data-action="continue"]');
+    await expect(go).toHaveText('Започни: урок 0001 — Какви видове чай има?');
+    await expect(course(page).locator('[data-field="activity-empty"]')).toBeVisible();
+    await go.click();
+    await expect(page).toHaveURL(/read\/0001$/);
+  });
+
+  test('opening → ◐ started; "Маркирай като завършен" → ● finished; pressed again → back to started; survives a reload', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    await openLessonFromCourse(page);
+    await expect.poll(async () => (await progress(page)).status).toBe('started');
+    expect((await progress(page)).lastOpenedAt).toBeTruthy();
+    const done = page.locator('[data-action="complete"]');
+    await expect(done).toHaveText('Маркирай като завършен');
+    await expect(done).toHaveAttribute('aria-pressed', 'false');
+    await page.goBack();
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
+    await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('◐');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/Започнат · отворен днес \d\d:\d\d/);
+    await expect(course(page).locator('[data-action="continue"]')).toHaveText('Продължи: урок 0001 — Какви видове чай има?');
+    await expect(course(page).locator('[data-list="activity"] li').first()).toContainText('Отворен урок 0001 „Какви видове чай има?“ — днес');
+
+    await openLessonFromCourse(page);
+    await done.click();
+    await expect(done).toHaveAttribute('aria-pressed', 'true');
+    await expect(done).toHaveText('✓ Завършен');
+    await expect(page.locator('[data-field="complete-status"]')).toHaveText('Урокът е отбелязан като завършен.');
+    expect(await progress(page)).toMatchObject({ status: 'done' });
+    await page.reload();
+    await expect(page.locator('[data-action="complete"]')).toHaveAttribute('aria-pressed', 'true'); // reopening keeps "done"
+    await page.goto('./#/c/LRN-DEMO');
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('●');
+    await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
+    await expect(course(page).locator('progress')).toHaveAttribute('value', '1');
+    await expect(course(page).locator('[data-list="activity"]')).toContainText('Завършен урок 0001');
+    // The courses list shows the progress too.
+    await page.goto('./#/');
+    await expect(page.locator('[data-course="LRN-DEMO"] [data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 · последно: урок 0001');
+    // Undo.
+    await page.goto('./#/c/LRN-DEMO/read/0001');
+    await page.locator('[data-action="complete"]').click();
+    await expect(page.locator('[data-action="complete"]')).toHaveAttribute('aria-pressed', 'false');
+    expect(await progress(page)).toMatchObject({ status: 'started', completedAt: null });
+  });
+
+  test('"Продължи" returns to the last opened lesson at the same position', async ({ page }) => {
+    const path = 'lessons/0001-vidove-chay.html';
+    const long = strToU8(new TextDecoder().decode(FILES[path]).replace('</body>', '<div style="height:4000px"></div><p id="end">Край.</p></body>'));
+    await importDemo(page, { ...FILES, [path]: long });
+    await openCourse(page);
+    await openLessonFromCourse(page);
+    await page.waitForTimeout(1600); // the lesson has restored its (empty) position
+    await page.evaluate(() => window.scrollTo(0, 2000));
+    await expect.poll(async () => (await progress(page)).scrollY, { timeout: 5000 }).toBeGreaterThan(1000);
+    const y = (await progress(page)).scrollY;
+    // Another lesson opened meanwhile is the newest: "Продължи" follows it…
+    await page.goto('./#/c/LRN-DEMO/read/R01');
+    await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
+    await page.goto('./#/c/LRN-DEMO');
+    await expect(course(page).locator('[data-action="continue"]')).toHaveText(/^Продължи: справочник R01/);
+    // …then back to the lesson.
+    await page.goto('./#/c/LRN-DEMO/read/0001');
+    await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
+    await page.goto('./#/c/LRN-DEMO');
+    await page.reload();
+    await course(page).locator('[data-action="continue"]', { hasText: 'урок 0001' }).click();
+    await expect(page).toHaveURL(/read\/0001$/);
+    await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
+    await expect.poll(() => page.evaluate(() => Math.round(window.scrollY)), { timeout: 5000 }).toBeGreaterThan(y - 150);
+    expect(Math.abs(await page.evaluate(() => window.scrollY) - 2000)).toBeLessThan(200);
+  });
+
+  test('counters from the user data: marks, questions, topics', async ({ page }) => {
+    await importDemo(page);
+    await page.evaluate(async (lessonId) => {
+      const db = await import('./src/db.js');
+      const sel = (exact) => ({ quote: { exact, prefix: '', suffix: '' }, position: { start: 0, end: exact.length } });
+      const target = { type: 'lesson', id: lessonId };
+      const a1 = await db.createAnnotation({ courseId: 'LRN-DEMO', target, selector: sel('чай'), color: 'yellow' });
+      await db.createAnnotation({ courseId: 'LRN-DEMO', target, selector: sel('вода'), color: 'green' });
+      const a3 = await db.createAnnotation({ courseId: 'LRN-DEMO', target, selector: sel('улун'), color: null });
+      await db.createThread({ annotationId: a1.id });
+      await db.createThread({ annotationId: a3.id });
+      await db.createThread({ annotationId: a3.id });
+      await db.createSubTopic({ courseId: 'LRN-DEMO', annotationId: a3.id, parent: target, title: 'Улун — <b>полуферментирал</b>', kind: 'термин', content: '' });
+    }, LESSON_ID);
+    await openCourse(page);
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 маркировки · 3 въпроса · 1 тема · 2 теста');
+    await expect(course(page).locator('[data-list="activity"]')).toContainText('Тема „Улун — <b>полуферментирал</b>“');
+    await expect(course(page).locator('[data-list="activity"] b')).toHaveCount(0);
+  });
+});
+
+test.describe('T-011 what worked keeps working', () => {
+  test('"Тестове" with status and "Нулирай"; "Тест към урока" in the reader; quiz activity', async ({ page }) => {
+    await importDemo(page);
+    await openCourse(page);
+    const quizzes = course(page).locator('[data-list="quizzes"]');
+    await expect(quizzes.locator('h2')).toHaveText('Тестове');
+    await expect(quizzes.locator('[data-quiz]')).toHaveCount(2);
+    await quizzes.locator('a.quiz-list__link').first().click();
+    await expect(page.locator('[data-screen="quiz"]')).toBeVisible();
+    await page.locator('.quiz__option').first().click();
+    await page.goto('./#/c/LRN-DEMO');
+    await expect(quizzes.locator('[data-field="quiz-status"]').first()).toHaveText(/1 от \d+ отговорени/);
+    await expect(quizzes.locator('[data-field="quiz-reset"]').first()).toBeEnabled();
+    await expect(course(page).locator('[data-list="activity"]')).toContainText(/Тест „.+“: 1 от \d+ отговорени — днес/);
+    await openLessonFromCourse(page);
+    await expect(page.locator('[data-field="lesson-quizzes"] a')).toHaveCount(2);
+    await expect(page.locator('[data-field="lesson-quizzes"] h3')).toHaveText('Тестове към урока');
+    await expect(lessonFrame(page).locator('h1')).toBeVisible();
+  });
+
+  test('a re-import keeps the progress and the statuses', async ({ page }) => {
+    await importDemo(page);
+    await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }), LESSON_ID);
+    await importDemo(page);
+    await openCourse(page);
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+  });
+});

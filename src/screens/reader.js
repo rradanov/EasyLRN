@@ -2,6 +2,10 @@
 // number ("0001", "R01") or the lesson id. The lesson or reference is shown in
 // an isolated iframe (T-045, D-029: opaque origin, postMessage bridge); columns
 // come in T-027.
+// Progress (T-011): opening a lesson makes it "започнат" and remembers when;
+// "Маркирай като завършен" makes it "завършен" (pressed again: back to
+// "започнат"). The reading position is kept per lesson (scrollY), so
+// "Продължи" on the course screen returns to the same place.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
 import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson } from '../db.js';
@@ -27,6 +31,10 @@ export function readerScreen({ params, query }) {
   const path = (query.get('path') || '').split('/').filter(Boolean);
   const hash = query.get('at') ? `#${query.get('at')}` : '';
   const quizzesBox = h('div', { class: 'reader__quizzes', 'data-field': 'lesson-quizzes' });
+  const completeButton = h('button', {
+    type: 'button', class: 'button reader__complete', 'data-action': 'complete', 'aria-pressed': 'false', hidden: true,
+  }, 'Маркирай като завършен');
+  const completeStatus = h('span', { class: 'visually-hidden', role: 'status', 'data-field': 'complete-status' });
   const content = h('div', { class: 'reader__content', 'data-field': 'reader-content' },
     h('p', { class: 'muted', text: 'Зареждам…' }));
   let frame = null;
@@ -41,6 +49,36 @@ export function readerScreen({ params, query }) {
         text: course ? 'Урокът не е намерен в курса. Импортирай курса отново.' : 'Курсът още не е импортиран.' }));
       return;
     }
+    // Progress (T-011): opened → "started" (a finished lesson stays finished).
+    let status = lesson.progress?.status === 'done' ? 'done' : 'started';
+    setLessonProgress(lesson.id, { status, lastOpenedAt: new Date().toISOString() })
+      .catch((err) => console.warn('Cannot save the progress:', err));
+    const showStatus = () => {
+      const isDone = status === 'done';
+      completeButton.textContent = isDone ? '✓ Завършен' : 'Маркирай като завършен';
+      completeButton.setAttribute('aria-pressed', String(isDone));
+      completeButton.title = isDone ? 'Натисни, за да върнеш урока като започнат' : '';
+      completeButton.dataset.status = status;
+    };
+    showStatus();
+    completeButton.hidden = false;
+    completeButton.addEventListener('click', async () => {
+      const next = status === 'done' ? 'started' : 'done';
+      completeButton.disabled = true;
+      try {
+        await setLessonProgress(lesson.id, next === 'done'
+          ? { status: next, completedAt: new Date().toISOString() }
+          : { status: next, completedAt: null });
+        status = next;
+        showStatus();
+        completeStatus.textContent = next === 'done' ? 'Урокът е отбелязан като завършен.' : 'Урокът е отбелязан като започнат.';
+      } catch (err) {
+        console.warn('Cannot save the progress:', err);
+        completeStatus.textContent = 'Прогресът не можа да се запише.';
+      } finally {
+        completeButton.disabled = false;
+      }
+    });
     // "Тест към урока" (D-032): a lesson may have several quizzes (field `lesson`).
     if (lesson.number) {
       quizzesForLesson(courseId, lesson.number).then((quizzes) => {
@@ -81,9 +119,13 @@ export function readerScreen({ params, query }) {
       frame?.destroy();
     },
     body: h('section', { class: 'screen screen--reader', 'data-screen': 'reader' },
-      h('nav', { class: 'breadcrumb', 'aria-label': 'Път' },
-        h('span', { text: label(lessonId) }),
-        ...path.map((id) => h('span', { text: ` › ${id}` })),
+      h('div', { class: 'reader__bar' },
+        h('nav', { class: 'breadcrumb', 'aria-label': 'Път' },
+          h('span', { text: label(lessonId) }),
+          ...path.map((id) => h('span', { text: ` › ${id}` })),
+        ),
+        completeButton,
+        completeStatus,
       ),
       content,
       quizzesBox,

@@ -11,6 +11,16 @@ const PHASES = {
   done: 'Готово',
 };
 
+/** "Завършени: 1 от 5 · последно: урок 0003" */
+function progressText(lessons) {
+  const main = lessons.filter((l) => l.kind === 'lesson');
+  const done = main.filter((l) => l.progress?.status === 'done').length;
+  const last = lessons.filter((l) => l.progress?.lastOpenedAt)
+    .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)))[0];
+  const lastText = last ? ` · последно: ${last.kind === 'reference' ? 'справочник' : 'урок'} ${last.number}` : '';
+  return `Завършени: ${done} от ${main.length}${lastText}`;
+}
+
 async function courseCard(course) {
   const lessons = await listLessons(course.id);
   const nLessons = lessons.filter((l) => l.kind === 'lesson').length;
@@ -19,6 +29,8 @@ async function courseCard(course) {
     h('p', { class: 'card__eyebrow', text: course.id }),
     h('p', { class: 'card__title', text: course.title || course.id }),
     h('p', { class: 'card__meta', text: `${plural(nLessons, 'урок', 'урока')} · ${plural(nRefs, 'справочник', 'справочника')}` }),
+    // T-011: the progress of the course.
+    nLessons ? h('p', { class: 'card__meta card__progress', 'data-field': 'course-progress', text: progressText(lessons) }) : null,
   );
 }
 
