@@ -652,7 +652,7 @@ test('T-019 миграция v3 → v4: ключ от settings отива в sec
   let conn = await db.openDb({ name, version: 3, migrations: upTo3 });
   await conn.put(STORES.settings, { id: 'settings', apiKey: 'sk-ant-test-FAKE-OLD1', fontScale: 1.25, model: 'claude-opus-5-5', updatedAt: '2026-11-01T00:00:00.000Z' });
   db.closeDb();
-  conn = await db.openDb({ name, migrations: db.MIGRATIONS });
+  conn = await db.openDb({ name, version: 4, migrations: db.MIGRATIONS }); // T-055: stop at v4 (v5 is tested in e2e/lessonid-t055)
   eq(conn.version, 4, 'version');
   const s = await conn.get(STORES.settings, 'settings');
   eq(['apiKey' in s, s.fontScale, s.model], [false, 1.25, 'claude-opus-5-5'], 'settings without the key');

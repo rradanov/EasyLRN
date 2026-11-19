@@ -153,6 +153,10 @@ export const MIGRATIONS = Object.freeze({
   3(db, tx) {
     const raw = unwrap(tx);
     const quizzes = new Map();
+    // T-055: the walk is tracked (beginWalk/endWalk, no change in what it
+    // does), so a later migration of the same upgrade (v5) reads the answers
+    // only after this one has converted them.
+    beginWalk(tx);
     const read = raw.objectStore(STORES.quizzes).openCursor();
     read.onsuccess = () => {
       const cursor = read.result;
@@ -161,6 +165,7 @@ export const MIGRATIONS = Object.freeze({
         if (value.choicesV2 !== undefined) return;
         c.update({ ...value, choices: migrateChoicesV2(quizzes.get(value.id), value.choices), choicesV2: value.choices ?? {} });
       });
+      endWalk(tx);
     };
   },
   // v4 (T-019): the `secrets` store for the API key. A key kept in the
@@ -183,8 +188,11 @@ export const MIGRATIONS = Object.freeze({
   // pure, also for the backup T-031) merges duplicates and the `renamedTo`
   // records of T-011-fix; the stores are rewritten in this transaction, so
   // the upgrade is all or nothing.
+  // It reads only after the data walks of earlier migrations in the same
+  // upgrade have finished (whenQuiet): requests run in the order they are
+  // placed, so reading at once would see e.g. v2 answers not yet converted by v3.
   5(db, tx) {
-    readStores(tx, [STORES.lessons, STORES.annotations, STORES.subtopics, STORES.quizzes, STORES.quizAnswers], (data) => {
+    whenQuiet(tx, () => readStores(tx, [STORES.lessons, STORES.annotations, STORES.subtopics, STORES.quizzes, STORES.quizAnswers], (data) => {
       const out = migrateV4toV5(data);
       const raw = unwrap(tx);
       for (const store of [STORES.lessons, STORES.quizzes, STORES.quizAnswers]) {
@@ -195,7 +203,7 @@ export const MIGRATIONS = Object.freeze({
       for (const a of out.changed.annotations) raw.objectStore(STORES.annotations).put(a);
       for (const s of out.changed.subtopics) raw.objectStore(STORES.subtopics).put(s);
       if (out.warnings.length) console.warn(`IndexedDB v5: ${out.warnings.length} record(s) kept as they are:`, out.warnings);
-    });
+    }));
   },
 });
 
@@ -209,6 +217,7 @@ export function readStores(tx, stores, fn) {
   const raw = unwrap(tx);
   const data = {};
   let left = stores.length;
+  beginWalk(tx);
   for (const store of stores) {
     const request = raw.objectStore(store).getAll();
     request.onsuccess = () => {
@@ -216,13 +225,50 @@ export function readStores(tx, stores, fn) {
       if (--left) return;
       try {
         fn(data);
+        endWalk(tx);
       } catch (err) {
-        upgradeErrors.set(raw, err);
-        console.warn('IndexedDB migration failed, upgrade aborted:', err);
-        try { raw.abort(); } catch { /* already finished */ }
+        failUpgrade(raw, err);
       }
     };
   }
+}
+
+/** Abort the upgrade with `err` (openDb() rejects with it as `cause`). */
+function failUpgrade(raw, err) {
+  upgradeErrors.set(raw, err);
+  console.warn('IndexedDB migration failed, upgrade aborted:', err);
+  try { raw.abort(); } catch { /* already finished */ }
+}
+
+// Data walks in progress per upgrade transaction, and what waits for them.
+const walks = new WeakMap();
+const walkState = (tx) => {
+  const raw = unwrap(tx);
+  if (!walks.has(raw)) walks.set(raw, { active: 0, waiting: [] });
+  return walks.get(raw);
+};
+/** A migration starts reading/writing records over several callbacks. */
+export function beginWalk(tx) { walkState(tx).active++; }
+/** …and is done: what waits in whenQuiet() runs when no walk is left. */
+export function endWalk(tx) {
+  const state = walkState(tx);
+  if (--state.active > 0) return;
+  state.active = 0;
+  const raw = unwrap(tx);
+  while (state.waiting.length && state.active === 0) {
+    const fn = state.waiting.shift();
+    try { fn(); } catch (err) { failUpgrade(raw, err); return; }
+  }
+}
+/**
+ * Run `fn` (synchronously, in the upgrade transaction) once every data walk
+ * started by earlier migrations of this upgrade (eachRecord, readStores, or
+ * one marked with beginWalk/endWalk) has finished; at once if none is running.
+ */
+export function whenQuiet(tx, fn) {
+  const state = walkState(tx);
+  if (state.active === 0) fn();
+  else state.waiting.push(fn);
 }
 
 /** v2 → v3 choices of one quiz: { textHash: index } → { questionKey: option text }. */
@@ -249,9 +295,10 @@ export function migrateChoicesV2(quiz, old) {
  */
 export function eachRecord(tx, store, fn) {
   const request = unwrap(tx).objectStore(store).openCursor();
+  beginWalk(tx);
   request.onsuccess = () => {
     const cursor = request.result;
-    if (!cursor) return;
+    if (!cursor) { endWalk(tx); return; }
     try {
       fn(cursor.value, cursor);
       cursor.continue();

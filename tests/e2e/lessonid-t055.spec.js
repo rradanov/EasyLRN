@@ -267,6 +267,32 @@ test.describe('T055-U ids and migrateV4toV5()', () => {
     expect(r.backup).toBe(false);
     expect(r.sameAfterReopen).toBe(true);
   });
+
+  test('T055-U4 v2 → v5 in ONE upgrade: v5 reads the answers only after v3 has converted them (index → option text), then moves them to the new id', async ({ page }) => {
+    const r = await db(page, async (db) => {
+      const NAME = 't055-chain';
+      await db.deleteDatabase(NAME);
+      const v2 = await db.openDb({ name: NAME, version: 2 });
+      const questions = [{ q: 'Първи?', options: ['А', 'Б'], answer: 0 }, { q: 'Втори?', options: ['В', 'Г'], answer: 1 }];
+      await v2.put('quizzes', { id: 'K/quizzes/0001-1-k.json', courseId: 'K', path: 'quizzes/0001-1-k.json', slug: '0001-1-k', lesson: '0001', title: 'К', questions, count: 2, order: 1, deleted: false });
+      await v2.put('quizAnswers', { id: 'K/quizzes/0001-1-k.json', courseId: 'K', choices: { [db.legacyQuestionKey('Първи?')]: 0, [db.legacyQuestionKey('Втори?')]: 0 }, cursor: 1, updatedAt: '2026-11-01T00:00:00.000Z' });
+      await v2.put('lessons', { id: 'K/lessons/0001-k.html', courseId: 'K', kind: 'lesson', number: '0001', path: 'lessons/0001-k.html', title: 'К', order: 1, deleted: false, progress: { status: 'started', lastOpenedAt: null, scrollY: 4 } });
+      db.closeDb();
+      const v5 = await db.openDb({ name: NAME });
+      const out = { version: v5.version, answers: await v5.getAll('quizAnswers'), lessons: (await v5.getAll('lessons')).map((l) => [l.id, l.progress.scrollY]) };
+      const quiz = await v5.get('quizzes', 'K/quiz:0001-1');
+      out.score = db.scoreQuiz(quiz, out.answers[0]);
+      db.closeDb();
+      await db.deleteDatabase(NAME);
+      await db.openDb({ name: 'lrn-app' });
+      return out;
+    });
+    expect(r.version).toBe(5);
+    expect(r.answers.map((a) => a.id)).toEqual(['K/quiz:0001-1']);
+    expect(Object.values(r.answers[0].choices).sort()).toEqual(['А', 'В']);
+    expect(r.score).toMatchObject({ answered: 2, correct: 1 });
+    expect(r.lessons).toEqual([['K/lesson:0001', 4]]);
+  });
 });
 
 // ---------------------------------------------------------------------------
