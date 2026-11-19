@@ -34,10 +34,21 @@ jobs:
       - name: Collect app files
         run: |
           mkdir _site
-          cp index.html manifest.webmanifest sw.js _site/
+          cp index.html parser.html manifest.webmanifest sw.js _site/
           cp -r src styles vendor icons _site/
           touch _site/.nojekyll
           find _site -type f | sort
+
+      # Every file the Service Worker precaches must be published, or the
+      # new SW fails to install and users stay on the old version forever.
+      - name: Check precache list
+        run: |
+          missing=0
+          for f in $(sed -n '/^const SHELL = \[/,/^\];/p' sw.js | grep -oE "'\./[^']*'" | tr -d "'" | sed 's#^\./##'); do
+            [ -z "$f" ] && continue
+            if [ ! -e "_site/$f" ]; then echo "MISSING in _site: $f"; missing=1; fi
+          done
+          exit $missing
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v5
