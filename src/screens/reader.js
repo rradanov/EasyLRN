@@ -69,7 +69,8 @@ export function readerScreen({ params, query }) {
   let bar = null;
   // "Маркировки за проверка": the fuzzy ("провери") and orphan marks of this lesson.
   const checkBox = h('details', { class: 'marks-check', 'data-field': 'marks-check', hidden: true });
-  const doc = h('div', { class: 'reader__doc', 'data-field': 'reader-doc' });
+  // The margin for the signs is always there (the first mark does not narrow the lesson and lay it out again).
+  const doc = h('div', { class: 'reader__doc reader__doc--gutter', 'data-field': 'reader-doc' });
   const gutter = h('div', { class: 'marks-gutter', 'data-field': 'marks-gutter', 'aria-label': 'Маркировки в урока', role: 'group', hidden: true });
 
   (async () => {
@@ -258,8 +259,7 @@ export function readerScreen({ params, query }) {
       const list = (frame?.annotations || []).filter((a) => a.anchorState !== 'orphan' && a.color);
       const places = frame?.layout || new Map();
       const el = frame?.frame;
-      if (!el || !list.length) { gutter.hidden = true; mount(gutter); doc.classList.remove('reader__doc--gutter'); return; }
-      doc.classList.add('reader__doc--gutter');
+      if (!el || !list.length) { gutter.hidden = true; mount(gutter); return; }
       const offset = el.getBoundingClientRect().top - doc.getBoundingClientRect().top;
       const rows = list.map((a) => ({ a, top: places.get(a.id)?.top ?? a.anchoredTop })).filter((r) => Number.isFinite(r.top)).sort((x, y) => x.top - y.top);
       let next = -Infinity;

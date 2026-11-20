@@ -368,6 +368,29 @@ test('T-013-fix D4: `within` търси само в дадената част (�
   eq(anchorFind(m, s, { within: [0, 5] }).state, 'orphan');
 });
 
+test('T-015: търсенето през индекса на 4-грамите (текст > 64 000 знака) намира същите места като indexOf', () => {
+  const r = rng(15);
+  const words = 'регламент продукт CRA риск уязвимост доклад срок оценка пазар вносител SBOM CE е и на за с'.split(' ');
+  const parts = [];
+  for (let i = 0; i < 3000; i++) { const w = []; for (let k = 0; k < 8; k++) w.push(words[Math.floor(r() * words.length)]); parts.push(`<p>${w.join(' ')}.</p>`); }
+  const m = modelOf(`<body>${parts.join('')}</body>`);
+  assert(m.text.length > 65536, String(m.text.length));
+  let checked = 0;
+  for (let t = 0; t < 300; t++) {
+    const len = 4 + Math.floor(r() * 60);
+    const at = Math.floor(r() * (m.text.length - len));
+    const s = anchorDescribe(m, at, at + len);
+    if (!s) continue;
+    // Moved: the old position far away, so only the search can find it (no "same version").
+    const f = anchorFind(m, { quote: s.quote, position: { start: 0, end: 1 } });
+    eq([f.state === 'orphan', m.text.slice(f.start, f.end)], [false, s.quote.exact], `case ${t}`);
+    // Its own place when the context is all there (unique with 32 + 32 characters of context).
+    if (anchorFind(m, s).start !== s.position.start) throw new AssertionError(`case ${t}: ${anchorFind(m, s).start} ≠ ${s.position.start}`);
+    checked++;
+  }
+  return `${checked} цитата в ${m.text.length} знака`;
+});
+
 // --- runner -------------------------------------------------------------------
 async function run() {
   ORIGINAL = await (await fetch('./fixtures/LRN-DEMO/lessons/0001-vidove-chay.html')).text();

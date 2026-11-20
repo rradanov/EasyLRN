@@ -345,11 +345,54 @@ const anchorReverse = (s) => {
   return out;
 };
 
+// An index of the 4-grams of a long text (built once per text, on the first
+// search that needs it): a search for a piece looks only at the places of its
+// rarest 4-gram instead of reading the whole text (T014-D3: hundreds of
+// quotes in a 0.5 M-character lesson).
+const ANCHOR_INDEX_MIN = 65536;
+const ANCHOR_GRAM_BITS = 16;
+let anchorIndexCache = null;
+const anchorGram = (T, i) => (((T.charCodeAt(i) * 31 + T.charCodeAt(i + 1)) * 31 + T.charCodeAt(i + 2)) * 31 + T.charCodeAt(i + 3)) & ((1 << ANCHOR_GRAM_BITS) - 1);
+function anchorIndex(T) {
+  if (anchorIndexCache && anchorIndexCache.text === T) return anchorIndexCache;
+  const buckets = 1 << ANCHOR_GRAM_BITS;
+  const n = Math.max(0, T.length - 3);
+  const starts = new Uint32Array(buckets + 1);
+  for (let i = 0; i < n; i++) starts[anchorGram(T, i) + 1]++;
+  for (let b = 0; b < buckets; b++) starts[b + 1] += starts[b];
+  const fill = starts.slice(0, buckets);
+  const pos = new Uint32Array(n);
+  for (let i = 0; i < n; i++) pos[fill[anchorGram(T, i)]++] = i; // ascending within each bucket
+  anchorIndexCache = { text: T, starts, pos };
+  return anchorIndexCache;
+}
+
 /** Up to `max` places of `needle` in T[from, to) (in order). */
 function anchorHits(T, needle, max, from = 0, to = Infinity) {
   const out = [];
   if (!needle) return out;
   from = Math.max(0, from);
+  if (to >= T.length && T.length >= ANCHOR_INDEX_MIN && needle.length >= 4) {
+    // The whole of a long text: through the index.
+    const { starts, pos } = anchorIndex(T);
+    let k = 0;
+    let size = Infinity;
+    const step = Math.max(1, Math.floor((needle.length - 4) / 15));
+    for (let o = 0; o + 4 <= needle.length; o += step) {
+      const g = anchorGram(needle, o);
+      const sz = starts[g + 1] - starts[g];
+      if (sz < size) { size = sz; k = o; if (!sz) return out; }
+    }
+    const g = anchorGram(needle, k);
+    let lo = starts[g];
+    let hi = starts[g + 1];
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pos[mid] < from + k) lo = mid + 1; else hi = mid; }
+    for (let j = lo; j < starts[g + 1] && out.length < max; j++) {
+      const at = pos[j] - k;
+      if (T.startsWith(needle, at)) out.push(at);
+    }
+    return out;
+  }
   if (to < T.length) {
     // A window: search in it only (indexOf would run on to the end of the text).
     const W = T.slice(from, Math.min(T.length, to + needle.length - 1));
