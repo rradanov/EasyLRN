@@ -12,8 +12,14 @@
 // script tag in its text, all names inside the function below (anchor.js
 // shares the module scope).
 //
-// Not here yet: anchoring and painting of annotations (T-013/T-015);
-// `lrn:annotations` answers `lrn:anchored` with an empty list.
+// T-013: the text model, the selectors of a selection and the re-anchoring
+// of the annotations of THIS lesson are done here with src/anchor.js (same
+// module scope: anchorTextModel, anchorDescribeRange, anchorFind,
+// anchorRange). The annotations the app sends are painted with the CSS
+// Custom Highlight API, without any change to the lesson's DOM (D-012), and
+// anchored again when the lesson's own scripts change its text. Not here yet
+// (T-015): the focus frame (`lrn:focus`), the bottom bar and the cards are in
+// the app.
 (function lrnBridge() {
   'use strict';
   // The real references, kept by src/lesson-guard.js before the lesson's scripts
@@ -35,7 +41,9 @@
   const COLORS = ['yellow', 'green', 'blue', 'pink', 'orange'];
   const CSS_COLOR = /^[#a-zA-Z0-9(),.%\s-]{1,64}$/;
   const FAMILY = /^[A-Za-z0-9 _-]{1,64}$/;
-  const BASE_EXCLUDE = 'script, style, textarea, input, button, select, .quiz, [data-lrn-noanno]';
+  const BASE_EXCLUDE = ANCHOR_BASE_EXCLUDE;
+  const MAX_ITEMS = 5000;
+  const ID = /^[A-Za-z0-9_:.-]{1,64}$/;
 
   const send = (type, fields = {}) => {
     try { parentWindow.postMessage({ lrn: PROTOCOL, type, ...fields }, '*'); } catch { /* the lesson broke it */ }
@@ -60,6 +68,8 @@
       const color = state.palette[c] || 'Highlight';
       rules.push(`::highlight(lrn-${c}) { background-color: ${color}; color: inherit; }`);
     }
+    // Found only approximately (D-012 "провери"): a dotted line under it.
+    rules.push('::highlight(lrn-fuzzy) { text-decoration: underline dotted 2px; text-underline-offset: 3px; }');
     style.textContent = rules.join('\n');
   };
   renderStyle();
@@ -86,38 +96,17 @@
   } catch { /* no ResizeObserver: the app falls back to an inner scroll */ }
   window.addEventListener('load', queueSize);
 
-  // --- Text model (offsets for selections; full anchoring in T-013) -----------
+  // --- Text model (src/anchor.js) ---------------------------------------------------
   const excluded = (node) => {
     const el = node.nodeType === 1 ? node : node.parentElement;
     try { return !!el?.closest(state.exclude); } catch { return !!el?.closest(BASE_EXCLUDE); }
   };
+  let cachedModel = null; // dropped at every change of the lesson's DOM (observer below)
   const textModel = () => {
-    const map = [];
-    const index = new Map();
-    let text = '';
-    const body = document.body;
-    if (!body) return { text, map, index };
-    const walker = document.createTreeWalker(body, 4 /* NodeFilter.SHOW_TEXT */, {
-      acceptNode: (n) => (excluded(n) ? 2 /* FILTER_REJECT */ : 1 /* FILTER_ACCEPT */),
-    });
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-      map.push({ node: n, start: text.length });
-      index.set(n, text.length);
-      text += n.data;
+    if (!cachedModel) {
+      cachedModel = document.body ? anchorTextModel(document.body, { exclude: state.exclude }) : { text: '', segs: [], index: new Map(), root: document };
     }
-    return { text, map, index };
-  };
-  const offsetOf = (model, container, offset) => {
-    if (container.nodeType === 3 && model.index.has(container)) {
-      return model.index.get(container) + Math.min(offset, container.data.length);
-    }
-    const probe = document.createRange();
-    try { probe.setStart(container, offset); } catch { return model.text.length; }
-    probe.collapse(true);
-    for (const entry of model.map) {
-      if (probe.comparePoint(entry.node, 0) >= 0) return entry.start;
-    }
-    return model.text.length;
+    return cachedModel;
   };
 
   // --- Selection ------------------------------------------------------------------
@@ -133,24 +122,19 @@
     }
     const range = sel.getRangeAt(0);
     const model = textModel();
-    const start = offsetOf(model, range.startContainer, range.startOffset);
-    let end = offsetOf(model, range.endContainer, range.endOffset);
-    if (end <= start) {
+    const selector = anchorDescribeRange(model, range);
+    if (!selector) {
       if (!lastEmpty) send('lrn:selection', { empty: true });
       lastEmpty = true;
       return;
     }
-    end = Math.min(end, start + 2000);
     const rect = range.getBoundingClientRect();
     lastEmpty = false;
     send('lrn:selection', {
       empty: false,
-      quote: {
-        exact: model.text.slice(start, end),
-        prefix: model.text.slice(Math.max(0, start - 32), start),
-        suffix: model.text.slice(end, end + 32),
-      },
-      position: { start, end },
+      quote: selector.quote,
+      position: selector.position,
+      ...(selector.hint ? { hint: selector.hint.blockPath } : {}),
       rect: { top: Math.round(rect.top + pageY()), bottom: Math.round(rect.bottom + pageY()) },
       inExcluded: excluded(range.startContainer) || excluded(range.endContainer),
     });
@@ -161,7 +145,7 @@
   });
 
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
-  const painted = []; // { id, range } — filled by T-015
+  let painted = []; // { id, range } of the annotations with a colour (hit-test)
   const elementForFragment = (fragment) => {
     let id = fragment;
     try { id = decodeURIComponent(fragment); } catch { /* keep it raw */ }
@@ -195,6 +179,122 @@
     send('lrn:tap', { annotationId: hit ? hit.id : null });
   }, true);
 
+  // --- Annotations: anchor (D-012) and paint (CSS Custom Highlight API) ----------
+  // `items` are the app's list for this lesson (checked here too: the app is
+  // trusted, but a lesson script may post to its own window). `anchored`:
+  // id → { state, start, end, range } of the last anchoring.
+  let items = [];
+  const anchored = new Map();
+  const isInt = (v) => Number.isInteger(v) && v >= 0 && v <= 1e7;
+  const isText = (v, max) => typeof v === 'string' && v.length <= max;
+  function cleanItems(list) {
+    const out = [];
+    const seen = new Set();
+    for (const it of Array.isArray(list) ? list.slice(0, MAX_ITEMS) : []) {
+      if (!it || typeof it !== 'object' || !isText(it.id, 64) || !ID.test(it.id) || seen.has(it.id)) continue;
+      const q = it.selector?.quote;
+      const p = it.selector?.position;
+      if (!q || !isText(q.exact, 2000) || !q.exact || !isText(q.prefix ?? '', 64) || !isText(q.suffix ?? '', 64)) continue;
+      const color = COLORS.includes(it.color) ? it.color : null;
+      const hint = isText(it.selector.hint?.blockPath, 200) ? { blockPath: it.selector.hint.blockPath } : undefined;
+      seen.add(it.id);
+      out.push({
+        id: it.id,
+        color,
+        selector: { quote: { exact: q.exact, prefix: q.prefix ?? '', suffix: q.suffix ?? '' }, position: p && isInt(p.start) && isInt(p.end) ? { start: p.start, end: p.end } : undefined, hint },
+        sameVersion: it.sameVersion === true,
+      });
+    }
+    return out;
+  }
+  const paint = () => {
+    painted = [];
+    if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight !== 'function') return;
+    const byColor = new Map(COLORS.map((c) => [c, []]));
+    const fuzzy = [];
+    for (const it of items) {
+      const a = anchored.get(it.id);
+      if (!a?.range || !it.color) continue;
+      byColor.get(it.color).push(a.range);
+      if (a.state === 'fuzzy') fuzzy.push(a.range);
+      painted.push({ id: it.id, range: a.range });
+    }
+    for (const [c, ranges] of byColor) {
+      if (ranges.length) CSS.highlights.set(`lrn-${c}`, new Highlight(...ranges));
+      else CSS.highlights.delete(`lrn-${c}`);
+    }
+    if (fuzzy.length) CSS.highlights.set('lrn-fuzzy', new Highlight(...fuzzy));
+    else CSS.highlights.delete('lrn-fuzzy');
+  };
+  /** Anchor every item; `again` = after a change of the lesson's own DOM (positions of the last anchoring). */
+  function anchorAll(again) {
+    const model = textModel();
+    const results = [];
+    const previous = new Map(anchored);
+    anchored.clear();
+    for (const it of items) {
+      const last = again ? previous.get(it.id) : null;
+      let found;
+      if (last && last.state !== 'orphan') {
+        // The same text, maybe new nodes: the place of the last anchoring if it still holds.
+        const exact = model.text.slice(last.start, last.end);
+        found = exact && exact === last.exact ? { state: last.state, start: last.start, end: last.end }
+          : anchorFind(model, { ...it.selector, quote: { ...it.selector.quote, exact: last.exact }, position: { start: last.start, end: last.end } }, { sameVersion: true });
+        if (found.state === 'ok' && last.state === 'fuzzy') found = { ...found, state: 'fuzzy' };
+      } else {
+        found = anchorFind(model, it.selector, { sameVersion: it.sameVersion });
+      }
+      const range = found.state !== 'orphan' ? anchorRange(model, found.start, found.end) : null;
+      if (found.state !== 'orphan' && !range) found = { state: 'orphan' };
+      const entry = { state: found.state, start: found.start, end: found.end, exact: range ? model.text.slice(found.start, found.end) : '', range };
+      anchored.set(it.id, entry);
+      const r = { id: it.id, state: found.state };
+      if (range) {
+        const box = range.getBoundingClientRect();
+        r.position = { start: found.start, end: found.end };
+        r.top = Math.max(0, Math.round(box.top + pageY()));
+        r.bottom = Math.max(r.top, Math.round(box.bottom + pageY()));
+      }
+      results.push(r);
+    }
+    paint();
+    send('lrn:anchored', { results, textLength: model.text.length });
+  }
+  // The lesson's own scripts (quiz.js, reflect.js, anything) may change its
+  // DOM at any time: the model is dropped and, if the text outside the
+  // excluded parts changed, the annotations are anchored again (debounced).
+  let reanchorTimer = 0;
+  let lastText = null;
+  const reanchor = () => {
+    reanchorTimer = 0;
+    const before = lastText;
+    cachedModel = null;
+    const model = textModel();
+    lastText = model.text;
+    if (!items.length) return;
+    if (before === model.text) {
+      // Same text: the ranges may point into replaced nodes; rebuild them in place.
+      let lost = false;
+      for (const [id, a] of anchored) {
+        if (a.state === 'orphan') continue;
+        a.range = anchorRange(model, a.start, a.end);
+        if (!a.range) { lost = true; anchored.set(id, { ...a, state: 'orphan' }); }
+      }
+      paint();
+      if (!lost) return;
+    }
+    anchorAll(true);
+  };
+  try {
+    const watch = new MutationObserver((records) => {
+      if (records.every((r) => excluded(r.target))) return; // e.g. quiz.js inside .quiz
+      cachedModel = null;
+      if (reanchorTimer) clearTimeout(reanchorTimer);
+      reanchorTimer = setTimeout(reanchor, 200);
+    });
+    if (document.body) watch.observe(document.body, { childList: true, subtree: true, characterData: true });
+  } catch { /* no observer: anchored once */ }
+
   // --- Messages from the app ------------------------------------------------------
   const fontsLoaded = [];
   const handlers = {
@@ -209,7 +309,7 @@
       if (Array.isArray(m.exclude)) {
         const extra = m.exclude.filter((s) => typeof s === 'string' && s.length <= 200).slice(0, 20);
         const joined = [BASE_EXCLUDE, ...extra].join(', ');
-        try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; } catch { /* invalid: keep */ }
+        try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; cachedModel = null; lastText = null; } catch { /* invalid: keep */ }
       }
       renderStyle();
       sendSize(true);
@@ -243,11 +343,17 @@
       send('lrn:fonts-ok', { loaded });
       queueSize();
     },
-    'lrn:annotations'() {
-      // T-013/T-015: anchor and paint. Until then nothing is anchored.
-      send('lrn:anchored', { results: [] });
+    'lrn:annotations'(m) {
+      items = cleanItems(m.items);
+      anchorAll(false);
     },
     'lrn:scroll-to'(m) {
+      if (typeof m.annotationId === 'string' && m.annotationId.length <= 64) {
+        const found = anchored.get(m.annotationId);
+        const top = found?.range ? Math.round(found.range.getBoundingClientRect().top + pageY()) : null;
+        send('lrn:position', { top: top !== null && top >= 0 ? top : null });
+        return;
+      }
       if (typeof m.fragment === 'string' && m.fragment.length <= 512) {
         const el = elementForFragment(m.fragment.replace(/^#/, ''));
         if (el && state.inner) { el.scrollIntoView({ block: 'start' }); send('lrn:position', { top: null }); return; }
@@ -276,7 +382,9 @@
 
   // --- Ready ------------------------------------------------------------------------
   function sendReady() {
-    send('lrn:ready', { v: PROTOCOL, title: String(document.title || '').slice(0, 300), textLength: textModel().text.length });
+    const model = textModel();
+    if (lastText === null) lastText = model.text;
+    send('lrn:ready', { v: PROTOCOL, title: String(document.title || '').slice(0, 300), textLength: model.text.length });
   }
   const fontsReady = document.fonts?.ready ?? Promise.resolve();
   Promise.race([fontsReady, new Promise((r) => setTimeout(r, 1500))]).then(() => {

@@ -34,6 +34,7 @@
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
 import { resolveLessonPath } from './lesson-id.js';
+import { lessonAnnotations, bridgeItems, checkAnchored, anchorSaver, annotateSelection } from './annotations.js';
 
 const SANDBOX = 'allow-scripts';
 const ALLOW = 'clipboard-write *';
@@ -112,7 +113,8 @@ const CHECK = {
     };
   },
   'lrn:tap': (m) => (m.annotationId === null || isStr(m.annotationId, 64) ? { annotationId: m.annotationId } : null),
-  'lrn:anchored': (m) => (Array.isArray(m.results) && m.results.length <= 10000 ? { results: m.results } : null),
+  'lrn:anchored': (m) => (Array.isArray(m.results) && m.results.length <= 10000
+    && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { results: m.results, textLength: m.textLength ?? null } : null),
   'lrn:layout': (m) => (Array.isArray(m.items) && m.items.length <= 10000 && isNum(m.height, 0, MAX_COORD) ? { items: m.items, height: m.height } : null),
   'lrn:position': (m) => (m.top === null || isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
   'lrn:anchor': (m) => (isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
@@ -147,11 +149,13 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  * Create the lesson frame.
  * @param {{ course: object, lesson: object, lessons: object[], fontScale?: number,
  *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
- *   onScroll?: (y: number) => void }} opts
+ *   onScroll?: (y: number) => void, onTap?: (annotation: object|null) => void,
+ *   onAnchored?: (annotations: object[]) => void }} opts
  * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
- *   readonly selection: object|null, setFontScale: (scale: number) => void, destroy: () => void }}
+ *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
+ *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -164,6 +168,21 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   let destroyed = false;
   let scale = fontScale;
   let selection = null;
+  // T-013: the annotations of THIS lesson (id → record) and the text length the
+  // bridge reported (limits of the positions it may send back).
+  let known = new Map();
+  let textLength = null;
+  const saver = anchorSaver(lesson);
+  let annotationsRun = 0;
+  const sendAnnotations = async () => {
+    const run = ++annotationsRun;
+    let list = [];
+    try { list = await lessonAnnotations(lesson); } catch (err) { console.warn('Cannot read the annotations:', err?.name || err); }
+    if (destroyed || run !== annotationsRun || !initialized) return;
+    known = new Map(list.map((a) => [a.id, a]));
+    // No secrets (§5.1): quotes of this lesson itself, colours, positions.
+    post({ type: 'lrn:annotations', items: bridgeItems(list, lesson) });
+  };
 
   // Per frame (a recreated frame starts again).
   let loads = 0;
@@ -313,17 +332,17 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     post({ type: 'lrn:init', palette: palette(), fontScale: scale, exclude: [] });
   };
   const handlers = {
-    'lrn:ready'() {
+    'lrn:ready'({ textLength: reported }) {
       if (!initSent) { sendInit(); return; }
       if (initialized) return;
       initialized = true;
+      textLength = reported;
       selfNavigations = 0;
       clearTimeout(readyTimer);
       status.hidden = true;
       if (element.getAttribute('data-lesson-state') !== 'ready') setState('ready');
-      // No secrets: an empty list until T-015 (annotations are quotes of the lesson itself).
-      post({ type: 'lrn:annotations', items: [] });
       restore();
+      sendAnnotations();
     },
     'lrn:hello'() { /* `heard` is set for every message */ },
     'lrn:violation'() { stopForFrames(); },
@@ -343,8 +362,25 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       if (!innerScroll) frame.style.height = `${height}px`;
     },
     'lrn:selection'(m) { selection = m.empty ? null : m; },
-    'lrn:tap'() { /* T-015: only known annotation ids open a card; there are none yet. */ },
-    'lrn:anchored'() { /* T-015 */ },
+    'lrn:tap'({ annotationId }) {
+      // Only a known id of this lesson opens anything (T-015: the card).
+      if (annotationId !== null && !known.has(annotationId)) { warn('unknown annotation: lrn:tap'); return; }
+      onTap?.(annotationId === null ? null : known.get(annotationId));
+    },
+    'lrn:anchored'({ results, textLength: reported }) {
+      // The text may grow after lrn:ready (the lesson's scripts): the new length is the limit.
+      if (Number.isInteger(reported)) textLength = reported;
+      const limit = textLength;
+      const clean = checkAnchored(results, known, limit);
+      if (results.length && !clean.length) warn('no known annotation: lrn:anchored');
+      saver.add(known, clean);
+      for (const r of clean) {
+        const a = known.get(r.id);
+        if (a) { a.anchorState = r.state; a.anchoredTop = r.top; a.anchoredBottom = r.bottom; }
+      }
+      element.setAttribute('data-anchored', String(clean.length));
+      onAnchored?.([...known.values()]);
+    },
     'lrn:layout'() { /* T-017 */ },
     'lrn:fonts-ok'() {},
     'lrn:position'({ top }) {
@@ -542,6 +578,19 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     ready,
     /** The last selection reported by the lesson (checked), or null. Used by T-015. */
     get selection() { return selection; },
+    /** The annotations of this lesson with their last anchoring (`anchorState`). */
+    get annotations() { return [...known.values()]; },
+    /**
+     * A new annotation from the last selection (T-015's bottom bar calls this;
+     * no button here yet), then the whole list goes to the lesson again.
+     */
+    async annotate(color = null) {
+      const created = await annotateSelection({ course, lesson, selection, color });
+      await sendAnnotations();
+      return created;
+    },
+    /** Read the annotations again and send them to the lesson (after a change elsewhere). */
+    reloadAnnotations: () => sendAnnotations(),
     setFontScale(next) {
       if (typeof next !== 'number' || !Number.isFinite(next)) return;
       scale = next;
@@ -552,6 +601,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       recording = false;
       clearTimeout(saveTimer);
       flush(); // the last value recorded from a scroll event, never re-measured here
+      saver.flush();
       destroyed = true;
       clearTimeout(readyTimer);
       clearTimeout(silentTimer);

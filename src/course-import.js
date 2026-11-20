@@ -600,7 +600,8 @@ export async function importCourse(files, { onProgress } = {}) {
   ]);
   const warnings = [];
 
-  const lessonStats = { added: [], changed: [], unchanged: [], retired: [], restored: [] };
+  const lessonStats = { added: [], changed: [], unchanged: [], retired: [], restored: [], reanchor: [] };
+  const marked = new Set(annotations.filter((a) => a.target?.type === 'lesson' && !a.deleted).map((a) => a.target.id));
   const lessonsToWrite = [];
   for (const l of all) {
     const old = oldLessonById.get(l.id);
@@ -632,6 +633,8 @@ export async function importCourse(files, { onProgress } = {}) {
       && old.kind === l.kind && (old.indexTitle ?? null) === l.indexTitle && (old.artifactId ?? null) === l.artifactId;
     if (same) { lessonStats.unchanged.push(label); continue; }
     if (old.sha256 !== l.sha256 || old.deleted || old.path !== l.path) lessonStats.changed.push(label); else lessonStats.unchanged.push(label);
+    // D-039 §А.2 / D-012 (T-013): new content of a lesson with annotations → they are anchored again when it opens.
+    if (!old.deleted && old.sha256 !== l.sha256 && marked.has(l.id)) lessonStats.reanchor.push(l.number);
     lessonsToWrite.push(record);
   }
 
@@ -826,7 +829,10 @@ export function describeSummary(s) {
   ].join('');
   const warnings = s.warnings?.length ? ` Внимание: ${s.warnings.slice(0, 3).join(' ')}${s.warnings.length > 3 ? ` (и още ${s.warnings.length - 3})` : ''}` : '';
   const info = s.notes?.length ? ` Бележка: ${s.notes.slice(0, 5).join('; ')}${s.notes.length > 5 ? `; … (общо ${s.notes.length})` : ''}.` : '';
-  const tail = `${retired}${notes}${warnings}${info}`;
+  const reanchor = s.lessons?.reanchor?.length
+    ? ` Маркировките ${s.lessons.reanchor.length === 1 ? 'на' : 'в'} ${s.lessons.reanchor.slice(0, 5).join(', ')}${s.lessons.reanchor.length > 5 ? ' и др.' : ''} ще се проверят при отваряне (текстът е променен).`
+    : '';
+  const tail = `${retired}${reanchor}${notes}${warnings}${info}`;
   if (s.status === 'new') return `Курсът ${s.courseId} е импортиран: ${content}.${tail}`;
   if (s.status === 'unchanged') return `Без промени. Курсът ${s.courseId} вече е актуален (${content}).${tail}`;
   const quizChanges = s.quizzes && (s.quizzes.added || s.quizzes.changed)

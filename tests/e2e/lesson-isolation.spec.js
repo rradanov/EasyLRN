@@ -443,8 +443,11 @@ test.describe('T-045 П-3 bridge protocol and the checks in the app (§5.3)', ()
     await expect.poll(() => page.evaluate(() => window.__sel.length)).toBeGreaterThan(0);
     const sel = await page.evaluate(() => window.__sel.at(-1));
     expect(sel.empty).toBe(false);
-    expect(sel.quote.exact.length).toBe(20);
-    expect(sel.position.end - sel.position.start).toBe(20);
+    // T-013: the quote is in the normalized text model (D-012, ARCHITECTURE §4.2):
+    // white space runs are one space and the spaces at the ends are left out.
+    const raw = await f.evaluate(() => document.querySelectorAll('main p')[1].firstChild.data.slice(4, 24));
+    expect(sel.quote.exact).toBe(raw.replace(/\s+/g, ' ').trim());
+    expect(sel.position.end - sel.position.start).toBe(sel.quote.exact.length);
     expect(typeof sel.quote.prefix).toBe('string');
   });
 
