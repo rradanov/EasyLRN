@@ -542,7 +542,10 @@
       if (Array.isArray(m.exclude)) {
         const extra = m.exclude.filter((s) => typeof s === 'string' && s.length <= 200).slice(0, 20);
         const joined = [BASE_EXCLUDE, ...extra].join(', ');
-        try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; cachedModel = null; lastText = null; } catch { /* invalid: keep */ }
+        // The same exclusions as now (the usual case): keep the model built for lrn:ready.
+        if (joined !== state.exclude) {
+          try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; cachedModel = null; lastText = null; } catch { /* invalid: keep */ }
+        }
       }
       renderStyle();
       sendSize(true);
