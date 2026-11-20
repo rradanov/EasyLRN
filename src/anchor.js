@@ -13,8 +13,8 @@
 //   else the exact quote, the best by context and nearness → ok (a short quote
 //   with none of its context, found once or in several places → fuzzy); else
 //   an approximate search → fuzzy: edit distance (bit-parallel), similarity
-//   ≥ 0.8 (a short quote needs its context too), or ≥ 0.7 when the context
-//   on both sides is intact; else orphan. Nothing is ever dropped: an orphan
+//   ≥ 0.8 (a short quote needs its context too), or ≥ 0.7 when the 16
+//   characters on both sides of it are intact; else orphan. Nothing is ever dropped: an orphan
 //   keeps its selector and is listed apart (T-015/T-029).
 // - T-013-fix (0.12.1): a <br> is a space in the model like a block border
 //   (T014-D2); the approximate search first tries the places where the ends
@@ -273,6 +273,8 @@ function anchorContext(T, s, e, prefix, suffix) {
     score: total ? (i + k) / total : 1,
     pre: prefix.length ? i / prefix.length : 1,
     post: suffix.length ? k / suffix.length : 1,
+    before: i,
+    after: k,
     intact: i + k,
   };
 }
@@ -481,7 +483,20 @@ function anchorFuzzy(T, exact, prefix, suffix, oldStart, hintStart) {
     R = R || anchorPattern(anchorReverse(exact));
     const revText = anchorReverse(T.slice(from, end));
     const back = anchorScan(revText, 0, revText.length, R, false, m);
-    consider(end - back.end, end, Math.max(dist, back.dist));
+    const start = end - back.end;
+    consider(start, end, Math.max(dist, back.dist));
+    // The edit distance alone may cut a word off an end ("Производителят
+    // внимателно оценява" vs "Производителят оценява": dropping the first word
+    // costs about as much as the insertion). Where the first / last characters
+    // of the quote are still there, those ends are tried too; the context
+    // decides between them.
+    if (m >= 16) {
+      const k = 8;
+      const starts = anchorHits(T, exact.slice(0, k), 4, Math.max(0, end - maxLen), Math.max(0, end - minLen + 1)).filter((x) => x !== start);
+      const ends = anchorHits(T, exact.slice(m - k), 4, start + minLen - k, Math.min(T.length, start + maxLen - k + 1)).map((x) => x + k).filter((x) => x !== end);
+      for (const st of starts) consider(st, end, anchorScan(T, st, end, P, true).dist);
+      for (const e of ends) consider(start, e, anchorScan(T, start, e, P, true).dist);
+    }
   }
   return best;
 }
@@ -599,10 +614,12 @@ export function anchorFind(model, selector, { sameVersion = false, within = null
     const c = found.context;
     // ≥ 0.8; a short quote (< 12) needs half of its context too.
     const close = found.similarity >= ANCHOR_FUZZY_MIN && (exact.length >= 12 || c.score >= 0.5);
-    // ≥ 0.7 when it is at its very place: the context on both sides is still
-    // there (≥ 90 % of each side, ≥ 16 characters in all). A word inserted in
-    // a short quote ("CRA се прилага само ако отговорът" + 11 characters = 0.75).
-    const placed = found.similarity >= ANCHOR_FUZZY_PLACED && exact.length >= 12 && c.pre >= 0.9 && c.post >= 0.9 && c.intact >= 16;
+    // ≥ 0.7 when it is at its very place: the 16 characters right before AND
+    // right after it are still there (all of a side if it is shorter: the
+    // start or the end of the text), ≥ 16 in all. A word inserted in a short
+    // quote ("CRA се прилага само ако отговорът" + 11 characters = 0.75).
+    const side = (n, len) => n >= Math.min(16, len);
+    const placed = found.similarity >= ANCHOR_FUZZY_PLACED && exact.length >= 12 && side(c.before, prefix.length) && side(c.after, suffix.length) && c.intact >= 16;
     if (close || placed) {
       return at({ state: 'fuzzy', start: found.start, end: found.end, similarity: Math.round(found.similarity * 1000) / 1000 });
     }

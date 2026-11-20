@@ -178,6 +178,11 @@
     selectionTimer = setTimeout(reportSelection, 150);
   });
 
+  // Escape inside the lesson (a keyboard selection): the app closes its bar (T-015).
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !event.defaultPrevented) send('lrn:escape');
+  });
+
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
   let painted = []; // { id, range } of the annotations with a colour (hit-test)
   const elementForFragment = (fragment) => {

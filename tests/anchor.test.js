@@ -313,7 +313,7 @@ test('T-013-fix D3: побитовото търсене (Myers/Hyyrö) дава 
     for (const g of [false, true]) eq(anchorScan(x, from, to, pat(p), g, near), ref(x, from, to, p, near, g), `case ${t} ${g}`);
   }
 });
-test('T-013-fix праг: ≥ 0.7, когато контекстът от двете страни е цял (≥ 16 знака); иначе 0.8; без фалшиво ok', () => {
+test('T-013-fix праг: ≥ 0.7, когато 16-те знака от двете страни са непокътнати; иначе 0.8; без фалшиво ok', () => {
   const pre = 'Тук започва раздел за обхвата и ';
   const post = ', а останалото е по-нататък в текста.';
   const q = 'CRA се прилага само ако отговорът';
@@ -324,9 +324,15 @@ test('T-013-fix праг: ≥ 0.7, когато контекстът от две
   const ins = modelOf(`<body><p>${pre}CRA се прилага (редакция) само ако отговорът${post}</p><p>Друг абзац без връзка.</p></body>`);
   const r1 = anchorFind(ins, s);
   eq([r1.state, r1.similarity, ins.text.slice(r1.start, r1.end)], ['fuzzy', 0.75, 'CRA се прилага (редакция) само ако отговорът']);
-  // The same edit, but the context changed too → orphan (0.75 < 0.8).
+  // As in LRN-CRA-changed: a paragraph inserted before (the far part of the prefix is gone), the 16 characters around intact → fuzzy.
+  const far = modelOf(`<body><p>Тук започва раздел за обхвата.</p><p>Вмъкнат абзац, който го нямаше, и ${pre.slice(-16)}CRA се прилага (редакция) само ако отговорът${post}</p></body>`);
+  eq(anchorFind(far, s).state, 'fuzzy');
+  // The same edit, but the context right around it changed too → orphan (0.75 < 0.8).
   const both = modelOf(`<body><p>Нов увод тук. CRA се прилага (редакция) само ако отговорът е друг.</p></body>`);
   eq(anchorFind(both, s).state, 'orphan');
+  // Only one side intact → orphan.
+  const one = modelOf(`<body><p>${pre}CRA се прилага (редакция) само ако отговорът и съвсем друг край на изречението.</p></body>`);
+  eq(anchorFind(one, s).state, 'orphan');
   // 35 % of the quote changed, the context intact → orphan (< 0.7).
   const many = modelOf(`<body><p>${pre}CRA ## прилага ##### ### #ко отговорът${post}</p></body>`);
   eq(anchorFind(many, s).state, 'orphan');

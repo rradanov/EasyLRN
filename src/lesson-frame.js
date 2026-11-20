@@ -31,14 +31,19 @@
 //   A frame in a shadow root is not in that count (T050-I1): the guard sweeps
 //   every shadow root it has seen, and any message to the app from a window
 //   nested in the lesson stops the lesson too.
+// - T-015: the marks. `lrn:selection` / `lrn:tap` / `lrn:layout` /
+//   `lrn:described` are checked here and handed to the reader (the bottom
+//   bar and the card, D-019); the reader acts only on a button of the user.
+//   To the lesson go only its own annotations (id, colour, selector), the
+//   focus id and `lrn:describe` for one of its own ids.
 import { h } from './dom.js';
 import { ensureRendered } from './lesson-render.js';
 import { resolveLessonPath } from './lesson-id.js';
 import { lessonAnnotations, bridgeItems, checkAnchored, anchorSaver, annotateSelection } from './annotations.js';
+import { HIGHLIGHT_PALETTE } from './highlight.js';
 
 const SANDBOX = 'allow-scripts';
 const ALLOW = 'clipboard-write *';
-const HIGHLIGHTS = ['yellow', 'green', 'blue', 'pink', 'orange'];
 const ARTIFACT = /^https:\/\/claude\.ai\/(?:public\/)?artifacts?\/([A-Za-z0-9_-]+)/;
 const SW_TIMEOUT_MS = 8000;
 const READY_TIMEOUT_MS = 8000;
@@ -98,13 +103,19 @@ const CHECK = {
     if (m.empty === true) return { empty: true };
     const q = m.quote;
     const p = m.position;
+    const rectOf = (r) => (isPlain(r) && isNum(r.top, -MAX_COORD, MAX_COORD) && isNum(r.bottom, -MAX_COORD, MAX_COORD) ? { top: r.top, bottom: r.bottom } : null);
+    // Only inside an excluded part (a quiz, data-lrn-noanno): a quote, no position, no mark (T-015).
+    if (m.excludedOnly === true) {
+      if (!isPlain(q) || !isStr(q.exact, 2000) || !q.exact || p !== undefined) return null;
+      return { empty: false, excludedOnly: true, quote: { exact: q.exact, prefix: '', suffix: '' }, position: null, hint: null, rect: rectOf(m.rect), inExcluded: true };
+    }
     if (!isPlain(q) || !isPlain(p) || !isStr(q.exact, 2000) || !q.exact || !isStr(q.prefix ?? '', 64) || !isStr(q.suffix ?? '', 64)) return null;
     if (!isInt(p.start, 0, 1e7) || !isInt(p.end, 0, 1e7) || p.start >= p.end) return null;
     if (m.hint !== undefined && !isStr(m.hint, 200)) return null;
-    const rect = isPlain(m.rect) && isNum(m.rect.top, -MAX_COORD, MAX_COORD) && isNum(m.rect.bottom, -MAX_COORD, MAX_COORD)
-      ? { top: m.rect.top, bottom: m.rect.bottom } : null;
+    const rect = rectOf(m.rect);
     return {
       empty: false,
+      excludedOnly: false,
       quote: { exact: q.exact, prefix: q.prefix ?? '', suffix: q.suffix ?? '' },
       position: { start: p.start, end: p.end },
       hint: m.hint ?? null,
@@ -112,21 +123,27 @@ const CHECK = {
       inExcluded: m.inExcluded === true,
     };
   },
+  'lrn:escape': () => ({}),
   'lrn:tap': (m) => (m.annotationId === null || isStr(m.annotationId, 64) ? { annotationId: m.annotationId } : null),
   'lrn:anchored': (m) => (Array.isArray(m.results) && m.results.length <= 10000
     && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { results: m.results, textLength: m.textLength ?? null } : null),
   'lrn:layout': (m) => (Array.isArray(m.items) && m.items.length <= 10000 && isNum(m.height, 0, MAX_COORD) ? { items: m.items, height: m.height } : null),
+  'lrn:described': (m) => {
+    if (!isStr(m.annotationId, 64) || !m.annotationId) return null;
+    if (m.quote === null) return { annotationId: m.annotationId, quote: null, position: null, hint: null };
+    const q = m.quote;
+    const p = m.position;
+    if (!isPlain(q) || !isStr(q.exact, 2000) || !q.exact || !isStr(q.prefix ?? '', 64) || !isStr(q.suffix ?? '', 64)) return null;
+    if (!isPlain(p) || !isInt(p.start, 0, 1e7) || !isInt(p.end, 0, 1e7) || p.start >= p.end) return null;
+    if (m.hint !== undefined && !isStr(m.hint, 200)) return null;
+    return { annotationId: m.annotationId, quote: { exact: q.exact, prefix: q.prefix ?? '', suffix: q.suffix ?? '' }, position: { start: p.start, end: p.end }, hint: m.hint ?? null };
+  },
   'lrn:position': (m) => (m.top === null || isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
   'lrn:anchor': (m) => (isNum(m.top, 0, MAX_COORD) ? { top: m.top } : null),
   'lrn:link': (m) => (isStr(m.href, 2048) && m.href ? { href: m.href } : null),
   'lrn:fonts-ok': (m) => (isInt(m.loaded, 0, 64) ? { loaded: m.loaded } : null),
 };
 
-/** Highlight colours of the app (CSS variables), for `lrn:init`. */
-function palette() {
-  const root = getComputedStyle(document.documentElement);
-  return Object.fromEntries(HIGHLIGHTS.map((c) => [c, root.getPropertyValue(`--hl-${c}`).trim() || 'Highlight']));
-}
 
 // T051-I3: what a lesson sends (a URL it built, maybe from text typed into it,
 // even a key typed into a phishing lesson) never goes into the console of the
@@ -150,12 +167,13 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  * @param {{ course: object, lesson: object, lessons: object[], fontScale?: number,
  *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
  *   onScroll?: (y: number) => void, onTap?: (annotation: object|null) => void,
- *   onAnchored?: (annotations: object[]) => void }} opts
+ *   onAnchored?: (annotations: object[]) => void, onSelection?: (selection: object|null) => void,
+ *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void }} opts
  * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
  *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
  *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -172,6 +190,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   // bridge reported (limits of the positions it may send back).
   let known = new Map();
   let textLength = null;
+  let layout = new Map(); // id → {top, bottom} from lrn:layout
+  let describing = null; // { id, resolve, timer } while waiting for lrn:described
+  let focused = null;
   const saver = anchorSaver(lesson);
   let annotationsRun = 0;
   const sendAnnotations = async () => {
@@ -329,7 +350,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   // --- Messages ----------------------------------------------------------------------
   const sendInit = () => {
     initSent = true;
-    post({ type: 'lrn:init', palette: palette(), fontScale: scale, exclude: [] });
+    post({ type: 'lrn:init', palette: { ...HIGHLIGHT_PALETTE.light }, paletteDark: { ...HIGHLIGHT_PALETTE.dark }, fontScale: scale, exclude: [] });
   };
   const handlers = {
     'lrn:ready'({ textLength: reported }) {
@@ -343,6 +364,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       if (element.getAttribute('data-lesson-state') !== 'ready') setState('ready');
       restore();
       sendAnnotations();
+      if (focused) post({ type: 'lrn:focus', annotationId: focused });
     },
     'lrn:hello'() { /* `heard` is set for every message */ },
     'lrn:violation'() { stopForFrames(); },
@@ -361,7 +383,11 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       }
       if (!innerScroll) frame.style.height = `${height}px`;
     },
-    'lrn:selection'(m) { selection = m.empty ? null : m; },
+    'lrn:selection'(m) {
+      selection = m.empty ? null : m;
+      onSelection?.(selection);
+    },
+    'lrn:escape'() { onEscape?.(); },
     'lrn:tap'({ annotationId }) {
       // Only a known id of this lesson opens anything (T-015: the card).
       if (annotationId !== null && !known.has(annotationId)) { warn('unknown annotation: lrn:tap'); return; }
@@ -381,7 +407,25 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       element.setAttribute('data-anchored', String(clean.length));
       onAnchored?.([...known.values()]);
     },
-    'lrn:layout'() { /* T-017 */ },
+    'lrn:layout'({ items, height }) {
+      // Places of the marks (the margin of the reader): known ids only, numbers only.
+      const places = new Map();
+      for (const it of items.slice(0, 10000)) {
+        if (!isPlain(it) || !isStr(it.id, 64) || !known.has(it.id) || places.has(it.id)) continue;
+        if (!isNum(it.top, 0, MAX_COORD) || !isNum(it.bottom, 0, MAX_COORD)) continue;
+        places.set(it.id, { top: it.top, bottom: Math.max(it.top, it.bottom) });
+      }
+      layout = places;
+      onLayout?.(places, height);
+    },
+    'lrn:described'(m) {
+      // Only the answer to our own pending question, for that id.
+      const wait = describing;
+      if (!wait || wait.id !== m.annotationId) { warn('unasked: lrn:described'); return; }
+      describing = null;
+      clearTimeout(wait.timer);
+      wait.resolve(m.quote ? { quote: m.quote, position: m.position, hint: m.hint } : null);
+    },
     'lrn:fonts-ok'() {},
     'lrn:position'({ top }) {
       const why = positionWanted;
@@ -584,10 +628,38 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
      * A new annotation from the last selection (T-015's bottom bar calls this;
      * no button here yet), then the whole list goes to the lesson again.
      */
-    async annotate(color = null) {
-      const created = await annotateSelection({ course, lesson, selection, color });
+    async annotate(color = null, from = selection) {
+      const created = await annotateSelection({ course, lesson, selection: from, color });
       await sendAnnotations();
       return created;
+    },
+    /** The places of the marks from the last `lrn:layout` (frame coordinates). */
+    get layout() { return layout; },
+    /** The frame around the active mark (`lrn:focus`), or none. */
+    focus(id) {
+      focused = typeof id === 'string' && known.has(id) ? id : null;
+      if (initialized) post({ type: 'lrn:focus', annotationId: focused });
+    },
+    /** Clear the selection in the lesson (after a mark is made: the system menu goes away). */
+    clearSelection() {
+      selection = null;
+      if (initialized) post({ type: 'lrn:clear-selection' });
+    },
+    /** Scroll the app window to a mark of this lesson. */
+    scrollToAnnotation(id) {
+      const place = layout.get(id) || (known.get(id)?.anchoredTop != null ? { top: known.get(id).anchoredTop } : null);
+      if (place) scrollToLessonY(Math.max(0, place.top - Math.round(window.innerHeight / 3)));
+      return Boolean(place);
+    },
+    /** The selector of a mark at the place the bridge found it now (for "Да, тук е"), or null. */
+    describe(id) {
+      if (!known.has(id) || !initialized) return Promise.resolve(null);
+      if (describing) { clearTimeout(describing.timer); describing.resolve(null); }
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { if (describing?.id === id) describing = null; resolve(null); }, 3000);
+        describing = { id, resolve, timer };
+        post({ type: 'lrn:describe', annotationId: id });
+      });
     },
     /** Read the annotations again and send them to the lesson (after a change elsewhere). */
     reloadAnnotations: () => sendAnnotations(),
@@ -612,6 +684,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       window.removeEventListener('hashchange', stopRecording, true);
       window.removeEventListener('message', onMessage);
       window.removeEventListener('easylrn:settings', onSettings);
+      if (describing) { clearTimeout(describing.timer); describing.resolve(null); describing = null; }
       resolveReady();
     },
   };

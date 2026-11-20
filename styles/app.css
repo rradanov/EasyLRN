@@ -29,6 +29,7 @@
   --radius: 10px;
   --bar-h: 56px;
   --touch: 44px;
+  --markbar-h: 0px; /* the height of the bottom bar of the reader when it is shown (T-015) */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -165,7 +166,7 @@ button:focus-visible,
 .app-main {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 24px max(24px, env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  padding: 24px max(24px, env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom) + var(--markbar-h)) max(24px, env(safe-area-inset-left));
 }
 .app-main:focus { outline: none; }
 
@@ -278,7 +279,7 @@ a.card:active { background: var(--paper); }
 .update-banner {
   position: fixed;
   left: 50%;
-  bottom: calc(16px + env(safe-area-inset-bottom));
+  bottom: calc(16px + env(safe-area-inset-bottom) + var(--markbar-h));
   transform: translateX(-50%);
   z-index: 20;
   display: flex;
@@ -816,3 +817,163 @@ ol.activity { list-style: none; }
    one line next to each other: they wrap and shrink instead of overflowing. */
 .screen--course .quiz-list__actions { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .screen--course .quiz-list__actions > .button { max-width: 100%; }
+
+/* ---- Marks (T-015, D-019, UI-DESIGN §5) ---- */
+/* The bottom bar: fixed at the bottom, never a floating menu (the Android
+   selection menu would cover it). Buttons ≥ 48 px. */
+.markbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px max(16px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
+  box-shadow: 0 -2px 14px rgb(0 0 0 / 0.16);
+  font-family: var(--font-sans);
+}
+.markbar__top { display: flex; align-items: flex-start; gap: 8px; touch-action: none; } /* a swipe down here closes the bar */
+.markbar__quote {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 6px 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.markbar__close {
+  flex: 0 0 auto;
+  min-width: 48px;
+  min-height: 48px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+.markbar__close:active { background: var(--paper-2); }
+.markbar__note { margin: 0 0 8px; color: var(--ink-muted); font-size: 0.9rem; }
+.markbar__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
+.markbar__colors { display: flex; flex-wrap: wrap; gap: 6px; }
+.markbar__color {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 4px 12px 4px 8px;
+  border: 2px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.markbar__color:disabled { opacity: 0.4; cursor: not-allowed; }
+.markbar__color[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); font-weight: 600; }
+/* Not only a colour: the pressed one has a tick. */
+.markbar__color[aria-pressed="true"]::after { content: "✓"; }
+.markbar__swatch {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgb(0 0 0 / 0.3);
+  forced-color-adjust: none;
+}
+.markbar__color[data-color="yellow"] .markbar__swatch, .marks-check__swatch[data-color="yellow"], .marks-gutter__sign[data-color="yellow"] .marks-gutter__dot { background: var(--hl-yellow); }
+.markbar__color[data-color="green"] .markbar__swatch, .marks-check__swatch[data-color="green"], .marks-gutter__sign[data-color="green"] .marks-gutter__dot { background: var(--hl-green); }
+.markbar__color[data-color="blue"] .markbar__swatch, .marks-check__swatch[data-color="blue"], .marks-gutter__sign[data-color="blue"] .marks-gutter__dot { background: var(--hl-blue); }
+.markbar__color[data-color="pink"] .markbar__swatch, .marks-check__swatch[data-color="pink"], .marks-gutter__sign[data-color="pink"] .marks-gutter__dot { background: var(--hl-pink); }
+.markbar__color[data-color="orange"] .markbar__swatch, .marks-check__swatch[data-color="orange"], .marks-gutter__sign[data-color="orange"] .marks-gutter__dot { background: var(--hl-orange); }
+.markbar__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.markbar__actions .button { min-height: 48px; }
+.markbar__soon[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.markbar__soon-tag { margin-left: 6px; padding: 0 6px; border: 1px solid currentColor; border-radius: 999px; font-size: 0.7rem; }
+.markbar__delete { color: #b3261e; border-color: #b3261e; }
+.markbar__confirm:empty { display: none; }
+.markbar__confirm .quiz__confirm { margin: 10px 0 0; }
+.markbar__status { margin: 6px 0 0; color: var(--ink-muted); font-size: 0.85rem; }
+.markbar__status:empty { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .markbar__delete { color: #ff8a80; border-color: #ff8a80; }
+  :root:not([data-theme="light"]) .markbar__swatch { border-color: rgb(255 255 255 / 0.35); }
+}
+:root[data-theme="dark"] .markbar__delete { color: #ff8a80; border-color: #ff8a80; }
+:root[data-theme="dark"] .markbar__swatch { border-color: rgb(255 255 255 / 0.35); }
+@media (forced-colors: active) {
+  .markbar { border-top: 2px solid CanvasText; }
+  .markbar__color[aria-pressed="true"] { border-color: Highlight; }
+}
+
+/* Signs in the margin, next to the line of each mark (ARCHITECTURE §4.4). */
+.reader__doc { position: relative; }
+.reader__doc--gutter .lesson-frame { width: calc(100% - 40px); }
+.marks-gutter {
+  position: absolute;
+  top: 0;
+  right: calc(-1 * max(24px, env(safe-area-inset-left)));
+  width: 40px;
+  height: 100%;
+  pointer-events: none;
+}
+.marks-gutter__sign {
+  position: absolute;
+  left: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.marks-gutter__sign:active { background: var(--paper-2); }
+.marks-gutter__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--ink-muted);
+  forced-color-adjust: none;
+}
+.marks-gutter__sign[data-state="fuzzy"] .marks-gutter__dot { border-style: dashed; border-color: var(--ink); }
+
+/* "Маркировки за проверка": found only approximately, or not found. */
+.marks-check {
+  margin: 0 0 16px;
+  padding: 4px 14px;
+  border-left: 4px solid #b06d00;
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  font-family: var(--font-sans);
+}
+.marks-check__summary { min-height: var(--touch); padding: 10px 0; cursor: pointer; }
+.marks-check__hint { margin: 0 0 6px; color: var(--ink-muted); font-size: 0.9rem; }
+.marks-check__list { list-style: none; margin: 0 0 10px; padding: 0; }
+.marks-check__item { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+.marks-check__item:last-child { border-bottom: 0; }
+.marks-check__quote { flex: 1 1 auto; min-width: 0; font-family: var(--font-serif); font-style: italic; overflow-wrap: anywhere; }
+.marks-check__swatch { flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--ink-muted); forced-color-adjust: none; }
+
+/* Marks in the app's own documents (src/highlight.js; notes, answers, topics from T-017). */
+::highlight(lrn-app-yellow) { background-color: var(--hl-yellow); }
+::highlight(lrn-app-green) { background-color: var(--hl-green); }
+::highlight(lrn-app-blue) { background-color: var(--hl-blue); }
+::highlight(lrn-app-pink) { background-color: var(--hl-pink); }
+::highlight(lrn-app-orange) { background-color: var(--hl-orange); }
+::highlight(lrn-app-fuzzy) { text-decoration: underline dotted 2px; }
+::highlight(lrn-app-focus) { text-decoration: underline solid 3px var(--focus); }
