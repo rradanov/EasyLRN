@@ -140,7 +140,12 @@ function runQuiz(root, courseId, quiz, answers, atQ = null) {
       yes: restart ? 'Изчисти и започни' : 'Изтрий',
       label: restart ? 'Започване отначало' : 'Нулиране на отговорите',
       onYes: doReset,
-      onNo: () => { dialog = null; render(); },
+      onNo: () => {
+        // Back to the button that opened it (also after Escape, T-061).
+        dialog = null;
+        render();
+        root.querySelector(restart ? '.quiz__restart' : '.quiz__reset')?.focus();
+      },
     });
   };
   const openDialog = (kind) => {

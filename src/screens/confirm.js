@@ -1,6 +1,6 @@
 // A small inline confirmation box (T-049, T-048 Н-5): the safe answer
 // ("Отказ") gets the focus, so Enter never deletes anything by accident; the
-// destructive one is shown in red, not as the primary button.
+// destructive one is shown in red, not as the primary button; Escape cancels.
 import { h } from '../dom.js';
 
 /**
@@ -15,6 +15,13 @@ export function confirmBox({ text, yes, label = 'Потвърждение', onYe
       cancel,
       h('button', { type: 'button', class: 'button button--danger', 'data-field': 'confirm-yes', onclick: onYes }, yes),
     ));
+  // T060 И-2 (T-061): Escape is "Отказ" (role=alertdialog), never "yes".
+  box.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onNo?.();
+  });
   box.focusCancel = () => cancel.focus();
   return box;
 }

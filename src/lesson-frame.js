@@ -214,8 +214,22 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     pendingSave = false;
     onScroll?.(lastY);
   };
+  // T060-D1: the reader's own jump to the restored place (a fragment `?at=`
+  // or the saved position) is not a scroll of the user. Its scroll event comes
+  // after startRecording(); while the window is still where that jump put it,
+  // the event is ignored, so the history keeps the fragment until the user
+  // really scrolls.
+  let ownJumpY = null;
+  const jumpTo = (top) => {
+    window.scrollTo({ top: Math.max(0, top) });
+    ownJumpY = Math.round(window.scrollY);
+  };
   const onWindowScroll = () => {
     if (!recording || destroyed || !frame) return;
+    if (ownJumpY != null) {
+      if (Math.abs(Math.round(window.scrollY) - ownJumpY) <= 1) return;
+      ownJumpY = null;
+    }
     lastY = Math.max(0, Math.round(window.scrollY - (frameTop() - barHeight())));
     pendingSave = true;
     if (!saveTimer) saveTimer = setTimeout(flush, 400);
@@ -253,7 +267,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       askPosition(fragment, 'restore');
       return;
     }
-    if (initialScroll > 0) window.scrollTo({ top: Math.max(0, frameTop() - barHeight() + initialScroll) });
+    if (initialScroll > 0) jumpTo(frameTop() - barHeight() + initialScroll);
     startRecording();
   };
 
@@ -338,9 +352,13 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       if (!why) return; // never asked: ignore
       positionWanted = null;
       clearTimeout(positionTimer);
+      if (why === 'restore') {
+        if (top != null) jumpTo(frameTop() + top - barHeight() - 8);
+        startRecording();
+        return;
+      }
       if (top != null) scrollToLessonY(top);
-      else if (why === 'fragment') scrollToLessonTop();
-      if (why === 'restore') startRecording();
+      else scrollToLessonTop();
     },
     'lrn:anchor'({ top }) {
       if (!navigator.userActivation?.isActive) { warn('no user gesture: lrn:anchor'); return; }

@@ -553,7 +553,9 @@ test.describe('T-012 edge courses', () => {
     await expect(page.locator('[data-course="LRN-QONLY"] [data-field="course-progress"]')).toHaveCount(0);
   });
 
-  test('only references: no "Уроци", no lesson progress bar, "Започни: справочник R01"; opening it is "◐" and "Продължи"', async ({ page }) => {
+  // D-041 addendum (T-061): "Продължи/Започни" goes only to lessons, so a course of
+  // references only has none; the references are opened from their list.
+  test('only references: no "Уроци", no lesson progress bar, no "Продължи/Започни" (D-041 addendum); opening one is "◐"', async ({ page }) => {
     await importCourse(page, 'LRN-REF', {
       'INDEX.md': '# LRN-REF: индекс\n## Справочници\n| # | Заглавие |\n|---|---|\n| R01 | Първи |\n| R02 | Втори |\n',
       'MISSION.md': '# Мисия: Справочници\n\nСамо справочници.',
@@ -565,14 +567,14 @@ test.describe('T-012 edge courses', () => {
     await expect(course(page).locator('[data-section="references"] [data-lesson]')).toHaveCount(2);
     await expect(course(page).locator('progress')).toHaveCount(0);
     const go = course(page).locator('[data-action="continue"]');
-    await expect(go).toHaveText('Започни: справочник R01 — Първи справочник');
+    await expect(go).toHaveCount(0);
     await course(page).locator('a.lesson-link', { hasText: 'Втори' }).click();
     await waitReady(page);
     await page.goBack();
     await expect(item(page, 'R02')).toHaveAttribute('data-status', 'started');
-    await expect(go).toHaveText('Продължи: справочник R02 — Втори справочник');
+    await expect(go).toHaveCount(0);
     // A reference can be marked as finished too, but it is not counted as a lesson.
-    await go.click();
+    await course(page).locator('a.lesson-link', { hasText: 'Втори' }).click();
     await waitReady(page);
     await page.locator('[data-action="complete"]').click();
     await expect(page.locator('[data-action="complete"]')).toHaveAttribute('aria-pressed', 'true');

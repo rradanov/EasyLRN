@@ -87,11 +87,12 @@ const lessonLabel = (l) => (l.kind === 'reference' ? `справочник ${l.n
  */
 export function continueTarget(all, stateOf = (l) => lessonState(l)) {
   // D-039: never to a lesson that is no longer in the course.
-  const lessons = all.filter((l) => !l.retired);
+  // D-041 (addendum, T-061): only to lessons, never to a reference.
+  const lessons = all.filter((l) => !l.retired && l.kind === 'lesson');
   const opened = lessons.filter((l) => l.progress?.lastOpenedAt)
     .sort((a, b) => String(b.progress.lastOpenedAt).localeCompare(String(a.progress.lastOpenedAt)));
   if (opened.length) return { lesson: opened[0], resume: true };
-  const first = lessons.find((l) => l.kind === 'lesson' && stateOf(l).status !== 'done') || lessons[0];
+  const first = lessons.find((l) => stateOf(l).status !== 'done') || lessons[0];
   return first ? { lesson: first, resume: false } : null;
 }
 

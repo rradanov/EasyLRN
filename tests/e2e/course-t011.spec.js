@@ -331,11 +331,12 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
     await page.evaluate(() => window.scrollTo(0, 2000));
     await expect.poll(async () => (await progress(page)).scrollY, { timeout: 5000 }).toBeGreaterThan(1000);
     const y = (await progress(page)).scrollY;
-    // Another lesson opened meanwhile is the newest: "Продължи" follows it…
+    // A reference opened meanwhile is the newest, but "Продължи" goes only to
+    // lessons (D-041 addendum, T-061)…
     await page.goto('./#/c/LRN-DEMO/read/R01');
     await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
     await page.goto('./#/c/LRN-DEMO');
-    await expect(course(page).locator('[data-action="continue"]')).toHaveText(/^Продължи: справочник R01/);
+    await expect(course(page).locator('[data-action="continue"]')).toHaveText(/^Продължи: урок 0001/);
     // …then back to the lesson.
     await page.goto('./#/c/LRN-DEMO/read/0001');
     await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });

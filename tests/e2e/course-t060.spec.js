@@ -711,7 +711,6 @@ test.describe('T060-H history of places', () => {
   });
 
   test('T060-H8 (T060-D1) a place opened at a fragment and NOT scrolled by the user keeps the fragment (T-059 log §1.4), so it is exact at another width or text size', async ({ page }) => {
-    test.fail(true, 'T060-D1: the reader\'s own jump to the fragment is recorded as a scroll: the fragment becomes pixels at once');
     await importCourse(page, C, base());
     await page.goto(`./#/c/${C}/read/R01?at=sredata`);
     await waitReady(page);

@@ -345,7 +345,9 @@ test.describe('T056-S migration v4 → v5', () => {
       await expect(course.locator('[data-kind="lesson"] .course-item')).toHaveCount(3);
       await expect(course.locator('[data-kind="reference"] .course-item')).toHaveCount(1);
       await expect(course.locator(`[data-item="${T}/lesson:0003"] [data-field="lesson-meta"]`)).toContainText('2 маркировки');
-      await expect(course.locator('[data-action="continue"]')).toContainText('справочник R01');
+      // D-041 addendum (T-061): "Продължи" goes only to lessons, never to R01.
+      await expect(course.locator('[data-action="continue"]')).toContainText('урок ');
+      await expect(course.locator('[data-action="continue"]')).not.toContainText('справочник');
 
       // The old 0.8.1 tab: it let the upgrade through (blocking → close) and now cannot open v5.
       const oldErrors = [];

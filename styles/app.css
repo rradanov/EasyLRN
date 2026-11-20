@@ -792,6 +792,17 @@ a.card:active { background: var(--paper); }
   :root:not([data-theme="light"]) .quiz-mark[data-state="passed"] { --quiz-mark: #81c784; }
 }
 :root[data-theme="dark"] .quiz-mark[data-state="passed"] { --quiz-mark: #81c784; }
+/* T060 И-1 (T-061): high contrast (forced colours) drops the fills, and the
+   squares of "не са започнати" and "започнати" looked the same. Here they
+   differ by shape, in system colours: dashed empty / solid half / solid full
+   with a tick. */
+@media (forced-colors: active) {
+  .quiz-mark__icon { forced-color-adjust: none; border-color: CanvasText; background: Canvas; }
+  .quiz-mark[data-state="new"] .quiz-mark__icon { border-style: dashed; }
+  .quiz-mark[data-state="started"] .quiz-mark__icon { background: linear-gradient(135deg, CanvasText 50%, Canvas 50%); }
+  .quiz-mark[data-state="passed"] .quiz-mark__icon { background: CanvasText; }
+  .quiz-mark[data-state="passed"] .quiz-mark__icon::after { border-color: Canvas; }
+}
 .screen--course .quiz-list__count { white-space: nowrap; }
 
 /* "Последни дейности" is a numbered history list (newest first) without numbers. */
