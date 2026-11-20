@@ -318,7 +318,7 @@ test.describe('T056-S migration v4 → v5', () => {
       await updateTo(page, old.url, NOW_VERSION);
       await expect(page.locator('[data-screen="courses"]')).toBeVisible();
       await expect(page.locator('#db-error')).toBeHidden();
-      await expect.poll(async () => (await dump(page)).version, { timeout: 15000 }).toBe(5);
+      await expect.poll(async () => (await dump(page)).version, { timeout: 15000 }).toBe(6);
       const v5 = await dump(page);
       const issues = checkNoLoss(v4, v5);
       console.log(`T056-S1 issues: ${JSON.stringify(issues)}`);
@@ -358,7 +358,7 @@ test.describe('T056-S migration v4 → v5', () => {
       // Whatever the old tab did, the v5 data is unchanged.
       const v5b = await dump(page);
       expect(JSON.stringify(v5b.stores.lessons.map((l) => [l.id, l.progress]))).toBe(JSON.stringify(v5.stores.lessons.map((l) => [l.id, l.progress])));
-      expect(v5b.version).toBe(5);
+      expect(v5b.version).toBe(6);
       await oldTab.close();
 
       // The same v2 ZIP again in 0.9.0: it has duplicates (0003, R01, quiz 0001-1) → refused, nothing written.
@@ -435,13 +435,13 @@ test.describe('T056-S migration v4 → v5', () => {
       await db.openDb({ name: 'lrn-app' });
       return out;
     });
-    expect(r.v1.version).toBe(5);
+    expect(r.v1.version).toBe(6);
     expect(r.v1.lessons.sort()).toEqual([['V/lesson:0002', 'done', 9], ['V/reference:R03', 'started', 2]]);
     expect(r.v1.ann).toEqual(['V/reference:R03']);
     expect(r.v1.sub).toEqual([['V/lesson:0002', 'V/lesson:0002']]);
     expect(r.v1.key).toEqual(['sk-ant-FAKE-t056-v1']);
     expect(r.v1.settings[0].apiKey).toBeUndefined();
-    expect(r.v3.version).toBe(5);
+    expect(r.v3.version).toBe(6);
     expect(r.v3.quizzes).toEqual(['V/quiz:0004-2']);
     expect(r.v3.answers.sort()).toEqual([['V/quiz:0004-2', ['Б', 'Г'], '2026-02-02T00:00:00.000Z'], ['V/quiz:path:quizzes/stray.json', ['Да'], '2026-02-02T00:00:00.000Z']]);
     expect(r.v3.score).toMatchObject({ answered: 2, correct: 1 });
@@ -509,7 +509,7 @@ test.describe('T056-S migration v4 → v5', () => {
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
     const t0 = Date.now();
     await page.goto('./');
-    await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 120000, intervals: [100] }).toBe(5);
+    await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 120000, intervals: [100] }).toBe(6);
     const ms = Date.now() - t0;
     await expect(page.locator('[data-screen="courses"] .card--course').first()).toBeVisible({ timeout: 60000 });
     const ms2 = Date.now() - t0;
@@ -564,7 +564,7 @@ test.describe('T056-S migration v4 → v5', () => {
           expect(JSON.stringify(state), `after ${how} at +${delay} ms the v4 database changed`).toBe(v4json);
           outcomes.push(`+${delay} ms: v4 (unchanged)`);
         } else {
-          expect(state.version).toBe(5);
+          expect(state.version).toBe(6);
           expect(checkNoLoss(v4, state).slice(0, 5), `after ${how} at +${delay} ms`).toEqual([]);
           outcomes.push(`+${delay} ms: v5 (complete)`);
           break; // nothing left to interrupt
@@ -573,7 +573,7 @@ test.describe('T056-S migration v4 → v5', () => {
       console.log(`T056-S4 ${how}: ${outcomes.join('; ')}`);
       // Opening the app at last completes the upgrade with nothing lost.
       await page.goto('./');
-      await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 120000 }).toBe(5);
+      await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 120000 }).toBe(6);
       await expect(page.locator('#db-error')).toBeHidden();
       const v5 = await dump(page);
       expect(checkNoLoss(v4, v5).slice(0, 5)).toEqual([]);
@@ -581,11 +581,11 @@ test.describe('T056-S migration v4 → v5', () => {
     });
   }
 
-  test('T056-S5 a database of a NEWER version (6): the screen shows the error, nothing is changed', async ({ page }) => {
+  test('T056-S5 a database of a NEWER version (7; v6 is 0.11.0, T-059): the screen shows the error, nothing is changed', async ({ page }) => {
     allowed.push(/IndexedDB/, /VersionError/, /Failed to load resource/);
     await page.goto('./manifest.webmanifest');
     await page.evaluate(() => new Promise((ok) => {
-      const r = indexedDB.open('lrn-app', 6);
+      const r = indexedDB.open('lrn-app', 7);
       r.onupgradeneeded = () => { r.result.createObjectStore('lessons', { keyPath: 'id' }).put({ id: 'X/lesson:0001', progress: { status: 'done' } }); };
       r.onsuccess = () => { r.result.close(); ok(); };
     }));
@@ -593,7 +593,7 @@ test.describe('T056-S migration v4 → v5', () => {
     await expect(page.locator('#db-error')).toBeVisible({ timeout: 15000 });
     console.log(`T056-S5 screen: ${await page.locator('#db-error').innerText()}`);
     const d = await dump(page);
-    expect(d.version).toBe(6);
+    expect(d.version).toBe(7);
     expect(d.stores.lessons).toEqual([{ id: 'X/lesson:0001', progress: { status: 'done' } }]);
   });
 
@@ -619,7 +619,7 @@ test.describe('T056-S migration v4 → v5', () => {
     console.log(`T056-S6 blocked for 5 s: ${JSON.stringify(shown)}`);
     expect(shown.version).toBe(4);
     await holder.evaluate(() => window.__hold.close());
-    await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 15000 }).toBe(5);
+    await expect.poll(() => page.evaluate(async () => (await indexedDB.databases()).find((d) => d.name === 'lrn-app')?.version), { timeout: 15000 }).toBe(6);
     const d = await dump(page);
     expect(d.stores.lessons.map((l) => [l.id, l.progress.status])).toEqual([['LRN-BL/lesson:0001', 'done']]);
     await holder.close();
@@ -653,7 +653,7 @@ test.describe('T056-S migration v4 → v5', () => {
       await page.waitForTimeout(1500);
       seen.course = (await page.locator('#main').innerText()).slice(0, 200);
       console.log(`T056-S7 0.8.1 on a v5 database: ${JSON.stringify(seen)}`);
-      expect(seen.version).toBe(5);
+      expect(seen.version).toBe(6);
     } finally { await stop(); }
     stop = await serve(REPO, old.port);
     try {
@@ -662,9 +662,10 @@ test.describe('T056-S migration v4 → v5', () => {
       expect(JSON.stringify(back.stores.lessons)).toBe(JSON.stringify(v5.stores.lessons));
       expect(JSON.stringify(back.stores.quizAnswers)).toBe(JSON.stringify(v5.stores.quizAnswers));
       await page.goto(`${old.url}#/c/LRN-DEMO`);
-      // D-040 (T-057, 0.10.0): 0001 is marked, but its two quizzes are not answered → ◐ "Завършен", not counted.
-      await expect(page.locator('[data-field="course-progress"]')).toHaveText('Завършени: 0 от 1 урок');
-      await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-meta"]')).toContainText('Завършен · ');
+      // D-041 (T-059, 0.11.0): 0001 is marked → ● and counted (as in 0.9.0); its quizzes have their own mark.
+      await expect(page.locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
+      await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"]')).toHaveAttribute('data-status', 'done');
+      await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-meta"]')).toHaveText('Статус: Завършен');
     } finally { await stop(); }
     rmSync(old.dir, { recursive: true, force: true });
     test.info().annotations.push({ type: 'T056-I3', description: JSON.stringify(seen) });
@@ -865,7 +866,9 @@ test.describe('T056-I re-import by number', () => {
     expect(q.sort()).toEqual([['quiz:0001-1', '0001'], ['quiz:0002-1', '0001'], ['quiz:0003-1', '0003'], ['quiz:0009-1', '0009']]);
     await openCourse(page);
     await expect(course(page).locator('.quiz-list__item')).toHaveCount(4);
-    await expect(course(page).locator(`.quiz-list__item[data-quiz="${C}/quiz:0001-1"] [data-field="quiz-status"]`)).toHaveText(/резултат: \d от 3 верни/);
+    // D-041 (T-059): "резултат: c от 3 верни" is now "минат" + "c от 3 верни (p %)".
+    await expect(course(page).locator(`.quiz-list__item[data-quiz="${C}/quiz:0001-1"] [data-field="quiz-status"]`)).toHaveText('минат');
+    await expect(course(page).locator(`.quiz-list__item[data-quiz="${C}/quiz:0001-1"] [data-field="quiz-correct"]`)).toHaveText(/^\d от 3 верни \(\d+\s%\)$/);
     await page.goto(`./#/c/${C}/quiz/0009-1-nyama`);
     await expect(page.locator('[data-screen="quiz"]')).toContainText('Тест без урок');
     // D-039 §А.2.5: "тест, чийто lesson сочи несъществуващ номер → тестът се импортира, бележка в резюмето".

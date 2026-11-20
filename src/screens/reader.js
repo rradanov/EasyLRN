@@ -6,9 +6,12 @@
 // "Маркирай като завършен" makes it "завършен" (pressed again: back to
 // "започнат"). The reading position is kept per lesson (scrollY), so
 // "Продължи" on the course screen returns to the same place.
+// History (T-059, D-041): every opening is a visit in "Последни дейности"
+// with its position; `?y=<px>` opens at a position of the history, `?at=` at
+// a fragment.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
-import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson } from '../db.js';
+import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson, visitPlace, movePlace } from '../db.js';
 import { createLessonFrame } from '../lesson-frame.js';
 import { quizLink } from './quiz-link.js';
 import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
@@ -36,6 +39,8 @@ export function readerScreen({ params, query }) {
   const { courseId, lessonId } = params;
   const path = (query.get('path') || '').split('/').filter(Boolean);
   const hash = query.get('at') ? `#${query.get('at')}` : '';
+  // A position from the history (T-059): whole pixels from the lesson top.
+  const atY = /^\d{1,9}$/.test(query.get('y') || '') ? Number(query.get('y')) : null;
   const quizzesBox = h('div', { class: 'reader__quizzes', 'data-field': 'lesson-quizzes' });
   const completeButton = h('button', {
     type: 'button', class: 'button reader__complete', 'data-action': 'complete', 'aria-pressed': 'false', hidden: true,
@@ -63,6 +68,12 @@ export function readerScreen({ params, query }) {
     let status = lesson.progress?.status === 'done' ? 'done' : 'started';
     setLessonProgress(lesson.id, { status, lastOpenedAt: new Date().toISOString() })
       .catch((err) => console.warn('Cannot save the progress:', err));
+    const startY = hash ? 0 : atY ?? (lesson.progress?.scrollY || 0);
+    // The visit is written before any position change of this reader (movePlace keeps the order).
+    const visited = visitPlace({
+      courseId, kind: lesson.kind === 'reference' ? 'reference' : 'lesson', id: lesson.id,
+      scrollY: startY, anchor: hash ? hash.slice(1) : null,
+    }).catch((err) => console.warn('Cannot save the history:', err));
     const showStatus = () => {
       const isDone = status === 'done';
       completeButton.textContent = isDone ? '✓ Завършен' : 'Маркирай като завършен';
@@ -105,7 +116,7 @@ export function readerScreen({ params, query }) {
       lesson,
       lessons,
       fontScale: settings.fontScale,
-      initialScroll: lesson.progress?.scrollY || 0,
+      initialScroll: startY,
       hash,
       onNavigate: (other, otherHash) => {
         const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
@@ -113,6 +124,7 @@ export function readerScreen({ params, query }) {
       },
       onScroll: (y) => {
         setLessonProgress(lesson.id, { scrollY: y }).catch((err) => console.warn('Cannot save the position:', err));
+        visited.then(() => movePlace(lesson.id, { scrollY: y })).catch((err) => console.warn('Cannot save the history:', err));
       },
     });
     mount(content, frame.element);

@@ -97,14 +97,16 @@ test('T-051 migration v3 → v4 with a real 0.6.2 profile: courses, answers, pro
       };
     });
     console.log(`T-051 migrate v3→v4: ${JSON.stringify({ ...after, key: after.key ? `${after.key.length} chars` : '' })}`);
-    expect(after.v).toBe(5); // T-055 (0.9.0): v4 → v5 runs right after v3 → v4
+    expect(after.v).toBe(6); // T-055 (0.9.0): v4 → v5 runs right after v3 → v4
     expect(after.rawHasKey).toBe(false);
     expect(after.key).toBe(OLD_KEY);
     expect(after.settings).toEqual([1.25, 'claude-opus-5-5', 12.5, 'system', false]);
     expect(after.choices).toEqual(['А', 'А']);
     await expect(page.locator('[data-screen="courses"]')).toContainText('LRN-M4');
     await page.goto(`${url}#/c/LRN-M4`);
-    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция 4' }).locator('[data-field="quiz-status"]')).toHaveText('резултат: 1 от 2 верни');
+    // D-041 (T-059): "резултат: 1 от 2 верни" is now "минат" + "1 от 2 верни (50 %)".
+    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция 4' }).locator('[data-field="quiz-status"]')).toHaveText('минат');
+    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция 4' }).locator('[data-field="quiz-correct"]')).toHaveText('1 от 2 верни (50 %)');
     await page.goto(`${url}#/settings`);
     await expect(page.locator('[data-screen="settings"]')).toHaveAttribute('data-loaded', 'yes');
     await expect(page.locator('[data-field="key-status"]')).toHaveText('Запазен ключ: •••• 0062');

@@ -250,7 +250,7 @@ test.describe('T055-U ids and migrateV4toV5()', () => {
       await db.openDb({ name: 'lrn-app' });
       return out;
     });
-    expect(r.version).toBe(5);
+    expect(r.version).toBe(6);
     expect(r.lessons.map((l) => [l.id, l.path, l.previousPaths ?? null, l.deleted, l.progress.status, l.progress.scrollY, l.progress.completedAt ?? null, 'renamedTo' in l]))
       .toEqual([
         ['S/lesson:0001', 'lessons/0001-b.html', ['lessons/0001-a.html'], false, 'done', 10, '2026-11-01T11:00:00.000Z', false],
@@ -287,7 +287,7 @@ test.describe('T055-U ids and migrateV4toV5()', () => {
       await db.openDb({ name: 'lrn-app' });
       return out;
     });
-    expect(r.version).toBe(5);
+    expect(r.version).toBe(6);
     expect(r.answers.map((a) => a.id)).toEqual(['K/quiz:0001-1']);
     expect(Object.values(r.answers[0].choices).sort()).toEqual(['А', 'В']);
     expect(r.score).toMatchObject({ answered: 2, correct: 1 });
@@ -416,7 +416,7 @@ test.describe('T055-M migration of a real 0.8.1 profile', () => {
         };
       }, { C: REAL, ids: before });
       console.log(`T055-M1 v5 state: ${JSON.stringify({ ...after, updated: undefined })}`);
-      expect(after.version).toBe(5);
+      expect(after.version).toBe(6);
       expect(after.lessons.sort()).toEqual([
         ['lesson:0001', 'lessons/0001-alpha-v2.html', ['lessons/0001-alpha.html'], false, 'done', 111, '2026-11-18T10:00:00.000Z', '2026-11-18T10:00:00.000Z', false],
         ['lesson:0002', 'lessons/0002-beta.html', null, false, 'started', 222, null, '2026-11-18T11:00:00.000Z', false],
@@ -442,8 +442,12 @@ test.describe('T055-M migration of a real 0.8.1 profile', () => {
       await expect(course(page).locator('[data-section="retired"]')).toHaveCount(0);
       await expect(course(page).locator('[data-item="LRN-T55/lesson:0001"] [data-field="lesson-meta"]')).toContainText('1 маркировка');
       await expect(course(page).locator('[data-item="LRN-T55/lesson:0001"] [data-field="lesson-meta"]')).toContainText('1 тема');
-      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0002-1"] [data-field="quiz-status"]')).toHaveText('1 от 2 отговорени');
-      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0001-1"] [data-field="quiz-status"]')).toHaveText(/резултат: \d от 2 верни/);
+      // D-041 (T-059): "1 от 2 отговорени" is now "Въпроси 1 от 2" + the state word.
+      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0002-1"] [data-field="quiz-count"]')).toHaveText('Въпроси 1 от 2');
+      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0002-1"] [data-field="quiz-status"]')).toHaveText('започнат');
+      // D-041 (T-059): "резултат: c от 2 верни" is now "минат" + "c от 2 верни (p %)".
+      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0001-1"] [data-field="quiz-status"]')).toHaveText('минат');
+      await expect(course(page).locator('.quiz-list__item[data-quiz="LRN-T55/quiz:0001-1"] [data-field="quiz-correct"]')).toHaveText(/^\d от 2 верни \(\d+\s%\)$/);
       // The old quiz address (earlier file name) still opens the quiz.
       await page.goto(`${url}#/c/${REAL}/quiz/0002-1-beta`);
       await expect(page.locator('[data-screen="quiz"]')).toContainText('Тест бета');
@@ -564,7 +568,9 @@ test.describe('T055-R re-import by number', () => {
     await openCourse(page, C);
     await expect(course(page).locator('[data-kind="lesson"] .course-item')).toHaveCount(3);
     await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 3 урока');
-    await expect(course(page).locator('.quiz-list__item [data-field="quiz-status"]')).toHaveText(/резултат: \d от 3 верни/);
+    // D-041 (T-059): "резултат: c от 3 верни" is now "минат" + "c от 3 верни (p %)".
+    await expect(course(page).locator('.quiz-list__item [data-field="quiz-status"]')).toHaveText('минат');
+    await expect(course(page).locator('.quiz-list__item [data-field="quiz-correct"]')).toHaveText(/^\d от 3 верни \(\d+\s%\)$/);
     // Renamed back to the first name: still the same lesson, both paths remembered.
     expect((await importCourse(page, C, base())).ok).toBe(true);
     const back = await rows(page);
@@ -753,7 +759,9 @@ test.describe('T055-R re-import by number', () => {
     }, id);
     expect((await importCourse(page, C, files)).text).toMatch(/^Без промени/);
     await openCourse(page, C);
-    await expect(course(page).locator(`.quiz-list__item[data-quiz="${id}"] [data-field="quiz-status"]`)).toHaveText('1 от 2 отговорени');
+    // D-041 (T-059): "1 от 2 отговорени" is now "Въпроси 1 от 2" + the state word.
+    await expect(course(page).locator(`.quiz-list__item[data-quiz="${id}"] [data-field="quiz-count"]`)).toHaveText('Въпроси 1 от 2');
+    await expect(course(page).locator(`.quiz-list__item[data-quiz="${id}"] [data-field="quiz-status"]`)).toHaveText('започнат');
   });
 
   test('T055-R8 T011F-D3: a lesson open in another tab while its file is renamed by an import: "Маркирай като завършен" there is kept', async ({ page, context }) => {

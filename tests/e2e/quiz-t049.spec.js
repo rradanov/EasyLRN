@@ -183,20 +183,28 @@ test.describe('T-049 "Отначало" and "Нулирай" (D-035)', () => {
     await page.goto('./#/c/LRN-N');
     await unfoldLessons(page);
     const item = (id) => page.locator(`[data-quiz="LRN-N/quiz:path:quizzes/${id}.json"]`);
-    await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('1 от 3 отговорени');
+    // D-041 (T-059): "1 от 3 отговорени" is now "Въпроси 1 от 3" + the state word.
+    await expect(item('a').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 1 от 3');
+    await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await item('a').getByRole('button', { name: /Нулирай/ }).click();
     await expect(item('a').getByRole('alertdialog')).toContainText('Да изтрия ли отговорите на „Три въпроса“?');
     await expect(item('a').getByRole('button', { name: 'Отказ', exact: true })).toBeFocused();
     await item('a').getByRole('button', { name: 'Отказ', exact: true }).click();
-    await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('1 от 3 отговорени');
+    // D-041 (T-059): "1 от 3 отговорени" is now "Въпроси 1 от 3" + the state word.
+    await expect(item('a').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 1 от 3');
+    await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await item('a').getByRole('button', { name: /Нулирай/ }).click();
     await item('a').getByRole('button', { name: 'Изтрий' }).click();
     await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
     await expect(item('a').getByRole('button', { name: /Нулирай/ })).toBeDisabled();
-    await expect(item('b').locator('[data-field="quiz-status"]')).toHaveText('1 от 3 отговорени');
+    // D-041 (T-059): "1 от 3 отговорени" is now "Въпроси 1 от 3" + the state word.
+    await expect(item('b').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 1 от 3');
+    await expect(item('b').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await page.reload();
     await expect(item('a').locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
-    await expect(item('b').locator('[data-field="quiz-status"]')).toHaveText('1 от 3 отговорени');
+    // D-041 (T-059): "1 от 3 отговорени" is now "Въпроси 1 от 3" + the state word.
+    await expect(item('b').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 1 от 3');
+    await expect(item('b').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     for (const h of await page.locator('[data-list="quizzes"] button, [data-list="quizzes"] a').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) expect(h).toBeGreaterThanOrEqual(44);
   });
 });

@@ -13,6 +13,11 @@
 //   no horizontal scroll; the real course only through T058_REAL_ZIP (outside
 //   the repository; D-026).
 // Synthetic data only (D-026). Known defects: test.fail(true, 'T058-D…').
+// T-059 (developer, 0.11.0): D-041 changed the rule tested in T058-S* (● = the
+// material is marked; the quizzes have their own mark "Тестове: …" and the
+// counter "Въпроси x от y", the share of right answers only when all are
+// answered) and "Последни дейности" (a history of places). The steps are the
+// same; the expectations follow D-041. T058-D1, D3, D4 are fixed: test.fail removed.
 import { test, expect } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import { DRIVE_ZIP_NAME, readFixture, makeZip, asFile } from '../fixtures/zips.mjs';
@@ -78,6 +83,8 @@ async function openCourse(page, id) {
 const item = (page, number) => course(page).locator('.course-item', { has: page.locator(`[data-lesson] .import__num:text-is("${number}")`) });
 const toggleOf = (page, number) => item(page, number).locator('[data-field="lesson-toggle"]');
 const meta = (page, number) => item(page, number).locator('[data-field="lesson-meta"]');
+// D-041 (T-059): the quizzes of a lesson have their own line ("Тестове: … Въпроси x от y").
+const quizLine = (page, number) => item(page, number).locator('[data-field="lesson-quiz-line"]');
 const qrow = (page, number, title) => item(page, number).locator('.quiz-list__item', { has: page.locator(`.quiz-list__title:text-is("${title}")`) });
 const progressLine = (page) => course(page).locator('[data-field="course-progress"]');
 const continueBtn = (page) => course(page).locator('[data-action="continue"]');
@@ -134,33 +141,38 @@ const base = (extra = {}) => ({
 // T058-S the status rule and its consistency on every place
 // ---------------------------------------------------------------------------
 test.describe('T058-S the status of a lesson with its quizzes', () => {
-  test('T058-S1 answering every question in the quiz screen: the lesson line, the quiz rows and the quiz screen give the same numbers; ● only after the last quiz; count, "Започни", card and activity follow', async ({ page }) => {
+  test('T058-S1 answering every question in the quiz screen: the quiz line, the quiz rows and the quiz screen give the same numbers; ● from the mark alone (D-041); "минати" and the share only after the last question; count, "Започни", card and activity follow', async ({ page }) => {
     await importCourse(page, C, base());
     await mark(page, `${C}/lesson:0001`);
     await openCourse(page, C);
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
-    await expect(meta(page, '0001')).toHaveText('Статус: Завършен · Тестове 0 от 2');
-    await expect(progressLine(page)).toHaveText('Завършени: 0 от 3 урока');
-    await expect(continueBtn(page)).toHaveText('Започни: урок 0001 — Първи урок');
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(meta(page, '0001')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: не са започнати Въпроси 0 от 5');
+    await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
+    await expect(continueBtn(page)).toHaveText('Започни: урок 0002 — Втори урок');
     // The first quiz: 3 questions, the second one wrong.
     await toggleOf(page, '0001').click();
     await qrow(page, '0001', 'Основен 1').getByRole('link', { name: 'Отвори теста „Основен 1“' }).click();
     const r1 = await answerInQuizScreen(page, [0, 1, 0]);
     expect(r1).toEqual({ count: 'Въпрос 3 от 3 · отговорени 3', score: 'Резултат: 2 от 3 верни' });
     await page.goBack();
-    await expect(qrow(page, '0001', 'Основен 1').locator('[data-field="quiz-status"]')).toHaveText('резултат: 2 от 3 верни');
-    await expect(qrow(page, '0001', 'Основен 1').locator('[data-field="quiz-correct"]')).toHaveText('');
-    await expect(meta(page, '0001')).toHaveText('Статус: Завършен · Тестове 1 от 2 · 2/3 верни');
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
-    await expect(progressLine(page)).toHaveText('Завършени: 0 от 3 урока');
+    await expect(qrow(page, '0001', 'Основен 1').locator('[data-field="quiz-status"]')).toHaveText('минат');
+    await expect(qrow(page, '0001', 'Основен 1').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 3 от 3');
+    await expect(qrow(page, '0001', 'Основен 1').locator('[data-field="quiz-correct"]')).toHaveText('2 от 3 верни (67 %)');
+    await expect(meta(page, '0001')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: започнати Въпроси 3 от 5');
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
     // The second quiz: one of two answered, then both.
     await qrow(page, '0001', 'Преговор 1').getByRole('link', { name: 'Отвори теста „Преговор 1“' }).click();
     await page.locator('.quiz__option').first().click();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 1 от 2 · отговорени 1');
     await page.goBack();
-    await expect(qrow(page, '0001', 'Преговор 1').locator('[data-field="quiz-status"]')).toHaveText('1 от 2 отговорени');
-    await expect(qrow(page, '0001', 'Преговор 1').locator('[data-field="quiz-correct"]')).toHaveText(' · 1 верен');
-    await expect(meta(page, '0001')).toHaveText('Статус: Завършен · Тестове 1 от 2 · 3/4 верни');
+    await expect(qrow(page, '0001', 'Преговор 1').locator('[data-field="quiz-status"]')).toHaveText('започнат');
+    await expect(qrow(page, '0001', 'Преговор 1').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 1 от 2');
+    // D-041: no share of right answers while a question is left.
+    await expect(qrow(page, '0001', 'Преговор 1').locator('[data-field="quiz-correct"]')).toHaveText('');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: започнати Въпроси 4 от 5');
     await qrow(page, '0001', 'Преговор 1').getByRole('link', { name: 'Отвори теста „Преговор 1“' }).click();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 1 от 2 · отговорени 1');
     await page.getByRole('button', { name: 'Напред' }).click();
@@ -170,18 +182,20 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await page.goBack();
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
     await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('●');
-    await expect(meta(page, '0001')).toHaveText('Статус: Завършен · Тестове 2 от 2 · 3/5 верни');
+    await expect(meta(page, '0001')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: минати Въпроси 5 от 5 · 60 % верни');
+    await expect(item(page, '0001').locator('[data-field="lesson-quiz-mark"]')).toHaveAttribute('data-state', 'passed');
     await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
     await expect(course(page).locator('progress')).toHaveAttribute('value', '1');
     // Nothing opened through the reader → "Започни" goes to the first lesson that is not ●.
     await expect(continueBtn(page)).toHaveText('Започни: урок 0002 — Втори урок');
-    await expect(activity(page)).toContainText('Тест „Преговор 1“: резултат: 1 от 2 верни');
-    await expect(activity(page)).toContainText('Тест „Основен 1“: резултат: 2 от 3 верни');
+    // D-041: the history of places, newest first, each quiz at its question.
+    await expect(activity(page).locator('li')).toHaveText([/^Тест „Преговор 1“ · въпрос 2 от 2 — днес \d\d:\d\d$/, /^Тест „Основен 1“ · въпрос 3 от 3 — днес \d\d:\d\d$/]);
     await page.goto('./#/');
     await expect(cardProgress(page, C)).toHaveText('Завършени: 1 от 3');
   });
 
-  test('T058-S2 "Нулирай" of a finished quiz: the quiz, the lesson (● → ◐), the count, "Започни" and the card change; "Отказ" changes nothing', async ({ page }) => {
+  test('T058-S2 "Нулирай" of a finished quiz: the quiz and the quiz line change; the lesson stays ● (D-041), the count, "Започни" and the card stay; "Отказ" changes nothing', async ({ page }) => {
     await importCourse(page, C, base());
     await mark(page, `${C}/lesson:0001`);
     await answer(page, `${C}/quiz:0001-1`, 3, 1);
@@ -207,37 +221,44 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await row.locator('[data-field="quiz-reset"]').click();
     await row.locator('[data-field="confirm-yes"]').click();
     await expect(row.locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
-    await expect(meta(page, '0001')).toHaveText('Статус: Завършен · Тестове 1 от 2 · 2/2 верни');
-    await expect(progressLine(page)).toHaveText('Завършени: 0 от 3 урока');
-    await expect(continueBtn(page)).toHaveText('Започни: урок 0001 — Първи урок');
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(meta(page, '0001')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: започнати Въпроси 2 от 5');
+    await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
+    await expect(continueBtn(page)).toHaveText('Започни: урок 0002 — Втори урок');
     expect(await db(page, async (db, id) => Object.keys((await db.getQuizAnswers(id)).choices).length, `${C}/quiz:0001-1`)).toBe(0);
     // The quiz screen says the same.
     await row.getByRole('link', { name: 'Отвори теста „Основен 1“' }).click();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 1 от 3 · отговорени 0');
     await page.goto('./#/');
-    await expect(cardProgress(page, C)).toHaveText('Завършени: 0 от 3');
+    await expect(cardProgress(page, C)).toHaveText('Завършени: 1 от 3');
   });
 
   test('T058-S3 "Последни дейности" right after "Нулирай" (no reload) no longer shows the old result of the quiz', async ({ page }) => {
     await importCourse(page, C, base());
     await answer(page, `${C}/quiz:0002-1`, 2);
+    // D-041 (T-059): the history has places; the quiz is one once it was opened.
+    await page.goto(`./#/c/${C}/quiz/0002-1-osnoven`);
+    await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 2 · отговорени 2');
     await openCourse(page, C);
-    await expect(activity(page)).toContainText('Тест „Основен 2“: резултат: 2 от 2 верни');
+    await expect(activity(page).locator('li')).toHaveText([/^Тест „Основен 2“ · въпрос 2 от 2 — днес \d\d:\d\d$/]);
     await toggleOf(page, '0002').click();
     const row = qrow(page, '0002', 'Основен 2');
     await row.locator('[data-field="quiz-reset"]').click();
     await row.locator('[data-field="confirm-yes"]').click();
     await expect(row.locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
-    await expect(meta(page, '0002')).toHaveText('Статус: Нов · Тестове 0 от 1');
-    // After a reload the activity is right (the answers are gone) …
+    await expect(meta(page, '0002')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: не са започнати Въпроси 0 от 2');
+    // A freshly opened screen and this one say the same (no result is in the history at all).
     const fresh = await page.context().newPage();
     await fresh.goto(`./#/c/${C}`);
-    await expect(fresh.locator('[data-screen="course"] [data-section="activity"]')).not.toContainText('Основен 2');
+    await expect(fresh.locator('[data-screen="course"] [data-section="activity"] li').first()).toBeVisible({ timeout: 15000 });
+    const freshText = await fresh.locator('[data-screen="course"] [data-section="activity"]').innerText();
     await fresh.close();
-    // … but on this screen the side column still says "резултат: 2 от 2 верни".
-    known('T058-D1: after "Нулирай" on the course screen only the quiz row, the lesson line and the progress/"Продължи" box are redrawn (onChange → renderStatus); "Последни дейности" keeps "Тест „…“: резултат: 2 от 2 верни" until the screen is reloaded');
-    await expect(activity(page)).not.toContainText('Тест „Основен 2“: резултат');
+    // Fixed in 0.11.0 (T-059): test.fail removed; the history is read again after "Нулирай".
+    await expect(activity(page)).not.toContainText('резултат');
+    await expect(activity(page)).not.toContainText('верни');
+    expect(await activity(page).innerText()).toBe(freshText);
   });
 
   test('T058-S4 unmarking "завършен" in the reader: ● → ◐ "Започнат", the count and the card drop; marking again brings ● back', async ({ page }) => {
@@ -253,7 +274,9 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await expect(btn).toHaveAttribute('aria-pressed', 'false');
     await page.goBack();
     await expect(item(page, '0002')).toHaveAttribute('data-status', 'started');
-    await expect(meta(page, '0002')).toHaveText(/^Статус: Започнат · отворен днес \d\d:\d\d · Тестове 1 от 1 · 2\/2 верни$/);
+    // D-041: no "отворен днес …"; the quizzes are on their own line.
+    await expect(meta(page, '0002')).toHaveText('Статус: Започнат');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: минати Въпроси 2 от 2 · 100 % верни');
     await expect(progressLine(page)).toHaveText('Завършени: 0 от 3 урока');
     await expect(continueBtn(page)).toHaveText('Продължи: урок 0002 — Втори урок');
     await page.goto('./#/');
@@ -267,7 +290,7 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
   });
 
-  test('T058-S5 a re-import adds a question to a fully answered quiz: it is no longer answered to the end (row, lesson ● → ◐, count, card); the old answers stay', async ({ page }) => {
+  test('T058-S5 a re-import adds a question to a fully answered quiz: it is no longer answered to the end (row, quiz line "минати" → "започнати"; the lesson stays ●, D-041); the old answers stay', async ({ page }) => {
     await importCourse(page, C, base());
     await mark(page, `${C}/lesson:0002`);
     await answer(page, `${C}/quiz:0002-1`, 2);
@@ -277,20 +300,23 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     const r = await importCourse(page, C, base({ 'quizzes/0002-1-osnoven.json': more }));
     expect(r.error).toBeUndefined();
     await openCourse(page, C);
-    await expect(item(page, '0002')).toHaveAttribute('data-status', 'started');
-    await expect(meta(page, '0002')).toHaveText('Статус: Завършен · Тестове 0 от 1 · 2/2 верни');
+    await expect(item(page, '0002')).toHaveAttribute('data-status', 'done');
+    await expect(meta(page, '0002')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: започнати Въпроси 2 от 3');
     await toggleOf(page, '0002').click();
-    await expect(qrow(page, '0002', 'Основен 2').locator('[data-field="quiz-status"]')).toHaveText('2 от 3 отговорени');
-    await expect(progressLine(page)).toHaveText('Завършени: 0 от 3 урока');
+    await expect(qrow(page, '0002', 'Основен 2').locator('[data-field="quiz-status"]')).toHaveText('започнат');
+    await expect(qrow(page, '0002', 'Основен 2').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 3');
+    await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
     await qrow(page, '0002', 'Основен 2').getByRole('link', { name: 'Отвори теста „Основен 2“' }).click();
     await expect(page.locator('.quiz__count')).toHaveText(/ от 3 · отговорени 2$/);
     await page.goto('./#/');
-    await expect(cardProgress(page, C)).toHaveText('Завършени: 0 от 3');
-    // Answering the new question makes it ● again.
+    await expect(cardProgress(page, C)).toHaveText('Завършени: 1 от 3');
+    // Answering the new question makes the quizzes "минати" again.
     await answer(page, `${C}/quiz:0002-1`, 3);
     await openCourse(page, C);
     await expect(item(page, '0002')).toHaveAttribute('data-status', 'done');
-    await expect(meta(page, '0002')).toHaveText('Статус: Завършен · Тестове 1 от 1 · 3/3 верни');
+    await expect(meta(page, '0002')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: минати Въпроси 3 от 3 · 100 % верни');
   });
 
   test('T058-S6 a quiz with 0 questions is refused by the import; one with 0 questions in the store does not hold the lesson back and says "без въпроси"', async ({ page }) => {
@@ -306,24 +332,28 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await openCourse(page, C);
     await expect(item(page, '0003')).toHaveAttribute('data-status', 'done');
     await expect(meta(page, '0003')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0003')).toBeHidden(); // D-041: no quiz with questions → no quiz mark
     await toggleOf(page, '0003').click();
     await expect(qrow(page, '0003', 'Без въпроси').locator('[data-field="quiz-status"]')).toHaveText('без въпроси');
     await expect(qrow(page, '0003', 'Без въпроси').locator('[data-field="quiz-reset"]')).toBeDisabled();
     await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
   });
 
-  test('T058-S7 a lesson with 12 quizzes: all under it in natural order (…9, 10, 11, 12), "Тестове 0 от 12", every row with "Отвори"/"Нулирай" ≥ 44 px, no scroll at 360 px', async ({ page }) => {
+  test('T058-S7 a lesson with 12 quizzes: all under it in natural order (…9, 10, 11, 12), "Въпроси 0 от 12", every row with "Отвори"/"Нулирай" ≥ 44 px, no scroll at 360 px', async ({ page }) => {
     const extra = {};
     for (let i = 1; i <= 12; i++) extra[`quizzes/0003-${i}-t${i}.json`] = quiz('0003', `Тест ${i}`, 1);
     await importCourse(page, C, base(extra));
     await openCourse(page, C);
-    await expect(meta(page, '0003')).toHaveText('Статус: Нов · Тестове 0 от 12');
+    await expect(meta(page, '0003')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0003')).toHaveText('Тестове: не са започнати Въпроси 0 от 12');
     await toggleOf(page, '0003').click();
     const titles = await item(page, '0003').locator('.quiz-list__title').allTextContents();
     expect(titles.length).toBe(12);
     await answer(page, `${C}/quiz:0003-7`, 1);
     await openCourse(page, C);
-    await expect(meta(page, '0003')).toHaveText('Статус: Започнат · Тестове 1 от 12 · 1/1 верни');
+    // D-041: a quiz answered does not start the material.
+    await expect(meta(page, '0003')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0003')).toHaveText('Тестове: започнати Въпроси 1 от 12');
     for (const el of await item(page, '0003').locator('.quiz-list__item a, .quiz-list__item button').all()) {
       const b = await el.boundingBox();
       expect(b.height).toBeGreaterThanOrEqual(44);
@@ -342,6 +372,7 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await expect(toggleOf(page, '0003')).toHaveCount(0);
     await expect(item(page, '0003').locator('[data-field="lesson-quiz-panel"]')).toHaveCount(0);
     await expect(meta(page, '0003')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0003')).toBeHidden();
     await mark(page, `${C}/lesson:0003`);
     await openCourse(page, C);
     await expect(item(page, '0003')).toHaveAttribute('data-status', 'done');
@@ -360,7 +391,7 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     const r = await importCourse(page, C, files);
     expect(r.error).toBeUndefined();
     await openCourse(page, C);
-    await expect(meta(page, '0001')).toContainText('Тестове 0 от 4');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: не са започнати Въпроси 0 от 8'); // 3 + 2 + 2 + 1 questions of 4 quizzes
     await toggleOf(page, '0001').click();
     expect(await item(page, '0001').locator('.quiz-list__title').allTextContents()).toEqual(expect.arrayContaining(['Низ 1', 'Число 1']));
     const ref = page.getByRole('button', { name: 'Тестове към справочник R01' });
@@ -394,7 +425,8 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await openCourse(page, C);
     await expect(course(page).locator('[data-section="retired"]')).toHaveCount(0);
     await expect(item(page, '0002')).toHaveAttribute('data-status', 'done');
-    await expect(meta(page, '0002')).toHaveText('Статус: Завършен · Тестове 1 от 1 · 2/2 верни');
+    await expect(meta(page, '0002')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: минати Въпроси 2 от 2 · 100 % верни');
     await expect(progressLine(page)).toHaveText('Завършени: 1 от 3 урока');
   });
 
@@ -432,7 +464,8 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await row.locator('[data-field="confirm-yes"]').dblclick();
     await expect(row.locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
     await expect(row.locator('.quiz__confirm')).toHaveCount(0);
-    await expect(meta(page, '0001')).toHaveText('Статус: Нов · Тестове 0 от 2');
+    await expect(meta(page, '0001')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: не са започнати Въпроси 0 от 5');
   });
 
   test('T058-S12 focus after "Изтрий": not lost to the page (the reset button becomes disabled and the box goes away)', async ({ page }) => {
@@ -449,8 +482,9 @@ test.describe('T058-S the status of a lesson with its quizzes', () => {
     await expect(row.locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
     const where = await page.evaluate(() => (document.activeElement === document.body ? 'body' : document.activeElement.outerHTML.slice(0, 80)));
     test.info().annotations.push({ type: 'T058-I focus after Изтрий', description: where });
-    known('T058-D3: after "Изтрий" on the course screen the confirmation box (with the focused button) is removed and "Нулирай" becomes disabled; the focus falls to <body> — a keyboard or screen-reader user starts again at the top of the page');
+    // Fixed in 0.11.0 (T-059): test.fail removed; the focus goes to "Отвори" of the same quiz.
     expect(where).not.toBe('body');
+    await expect(row.getByRole('link', { name: 'Отвори теста „Основен 2“' })).toBeFocused();
   });
 
   test('T058-S13 the session memory: corrupted JSON, a non-array, a foreign id; two courses with the same numbers keep their own memory', async ({ page }) => {
@@ -532,7 +566,7 @@ test.describe('T058-X HTML and script are text', () => {
     await expect(other.locator('.quiz-list__lesson *')).toHaveCount(0);
     await expect(other.locator('.quiz-list__title')).toHaveCount(2);
     await expect(course(page).locator('img, script:not([src]), b')).toHaveCount(0);
-    await expect(meta(page, '0001')).toContainText('Тестове 0 от 1 · 1/1 верни');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: започнати Въпроси 1 от 2');
     await page.goto('./#/');
     await expect(page.locator('img, b')).toHaveCount(0);
     expect(await page.evaluate(() => window.__xss)).toBeUndefined();
@@ -803,8 +837,7 @@ test.describe('T058-V layout', () => {
       await db(page, (db, t) => db.saveSettings({ theme: t }), theme);
       for (const scale of ['100%', '160%']) {
         for (const [w, hgt] of SIZES) {
-          // 360×800 at 160 %: T058-D4, in T058-V1b.
-          if (scale === '160%' && w === 360) continue;
+          // 360×800 at 160 % was T058-D4 (in T058-V1b); fixed in 0.11.0, checked here too.
           const tag = `${theme} ${scale} ${w}×${hgt}`;
           await page.setViewportSize({ width: w, height: hgt });
           await openCourse(page, id);
@@ -830,8 +863,10 @@ test.describe('T058-V layout', () => {
       }
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
-    await expect(meta(page, '0001')).toHaveText(/^Статус: Завършен · отворен .* · Тестове 1 от 2 · 6\/9 верни$/);
-    await expect(meta(page, '0002')).toHaveText('Статус: Започнат · Тестове 0 от 2 · 2/3 верни');
+    await expect(meta(page, '0001')).toHaveText('Статус: Завършен');
+    await expect(quizLine(page, '0001')).toHaveText('Тестове: започнати Въпроси 9 от 13');
+    await expect(meta(page, '0002')).toHaveText('Статус: Нов');
+    await expect(quizLine(page, '0002')).toHaveText('Тестове: започнати Въпроси 3 от 13');
   });
 
   test('T058-V1b 360×800 at 160 %, a lesson unfolded: the "Нулирай" buttons stay inside the screen (no horizontal scroll)', async ({ page }) => {
@@ -848,8 +883,9 @@ test.describe('T058-V layout', () => {
       return { sw: document.documentElement.scrollWidth, cw, wide: [...new Set(wide)] };
     });
     test.info().annotations.push({ type: 'T058-I 360@160%', description: JSON.stringify(r) });
-    known('T058-D4: at 360×800 with the text at 160 %, the actions of an unfolded quiz row ("Отвори" + "Нулирай", .quiz-list__actions) are 1 px wider than the screen (right edge 361.1 px): the course screen scrolls sideways by 1 px');
+    // Fixed in 0.11.0 (T-059): test.fail removed.
     expect(r.sw).toBeLessThanOrEqual(r.cw);
+    expect(r.wide).toEqual([]);
   });
 
   test('T058-V2 the real course LRN-CRA (only with T058_REAL_ZIP, outside the repository): 17 lessons × 2 quizzes, 0 notes, no "Други тестове", no scroll at 5 sizes', async ({ page }) => {

@@ -816,8 +816,10 @@ test.describe('T-012 progress and navigation', () => {
     expect((await triangles()).map(([, e]) => e)).toEqual([true]);
   });
 
-  test('recent activity: at most 6, newest first, with "днес"/"вчера"/date; links open the right thing', async ({ page }) => {
-    const nums = Array.from({ length: 8 }, (_, i) => pad4(i + 1));
+  // D-041 (T-059): "Последни дейности" is the history of places — 10 shown (of up to 50
+  // kept), newest first, each place once; was "at most 6" of the opened/finished events.
+  test('recent activity: at most 10, newest first, with "днес"/"вчера"/date; links open the right thing', async ({ page }) => {
+    const nums = Array.from({ length: 12 }, (_, i) => pad4(i + 1));
     const files = { 'INDEX.md': indexMd('LRN-ACT', nums), 'MISSION.md': '# Мисия: Дейности\n\nТекст.' };
     for (const n of nums) files[`lessons/${n}-u.html`] = lessonHtml(`Урок ${n}`);
     await importCourse(page, 'LRN-ACT', files);
@@ -825,24 +827,29 @@ test.describe('T-012 progress and navigation', () => {
       const db = await import('./src/db.js');
       const now = Date.now();
       for (const [i, n] of nums.entries()) {
-        await db.setLessonProgress(`LRN-ACT/lesson:${n}`, { status: 'started', lastOpenedAt: new Date(now - (i * 3 + 1) * 3600 * 1000 * 4).toISOString() });
+        const at = new Date(now - (i * 3 + 1) * 3600 * 1000 * 4).toISOString();
+        await db.setLessonProgress(`LRN-ACT/lesson:${n}`, { status: 'started', lastOpenedAt: at });
+        await db.visitPlace({ courseId: 'LRN-ACT', kind: 'lesson', id: `LRN-ACT/lesson:${n}`, scrollY: 0, at });
       }
     }, nums);
     await openCourse(page, 'LRN-ACT');
     const rows = course(page).locator('[data-list="activity"] li');
-    await expect(rows).toHaveCount(6);
+    await expect(rows).toHaveCount(10);
     const texts = await rows.allTextContents();
     console.log(`T012 activity: ${JSON.stringify(texts)}`);
-    expect(texts[0]).toContain('урок 0001');
-    expect(texts[5]).toContain('урок 0006');
+    expect(texts[0]).toContain('Урок 0001');
+    expect(texts[5]).toContain('Урок 0006');
+    expect(texts[9]).toContain('Урок 0010');
     expect(texts.join('\n')).toMatch(/(днес|вчера) \d\d:\d\d/);
     expect(texts.join('\n')).toMatch(/\d\d\.\d\d\.\d{4} \d\d:\d\d/);
     await rows.nth(2).locator('a').click();
-    await expect(page).toHaveURL(/#\/c\/LRN-ACT\/read\/0003$/);
+    await expect(page).toHaveURL(/#\/c\/LRN-ACT\/read\/0003\?y=0$/);
     await waitReady(page);
     await page.goBack();
-    // Opening 0003 made it the newest.
-    await expect(rows.first()).toContainText('урок 0003');
+    // Opening 0003 made it the newest, and it is there once.
+    await expect(rows.first()).toContainText('Урок 0003');
+    await expect(rows).toHaveCount(10);
+    await expect(rows.filter({ hasText: 'Урок 0003' })).toHaveCount(1);
     await expect(course(page).locator('[data-action="continue"]')).toHaveText('Продължи: урок 0003 — Урок 0003');
   });
 

@@ -60,6 +60,9 @@ const pick = (page, i) => page.locator(`.quiz__option[data-option="${i}"]`).clic
 const next = (page) => page.getByRole('button', { name: 'Напред' }).click();
 const back = (page) => page.getByRole('button', { name: 'Назад' }).click();
 const status = (page, quizId) => page.locator(`[data-list="quizzes"] [data-quiz="${quizId}"] [data-field="quiz-status"]`);
+// D-041 (T-059): the counter "Въпроси x от n" and, once all are answered, "c от n верни (p %)" are fields of their own.
+const count = (page, quizId) => page.locator(`[data-list="quizzes"] [data-quiz="${quizId}"] [data-field="quiz-count"]`);
+const correct = (page, quizId) => page.locator(`[data-list="quizzes"] [data-quiz="${quizId}"] [data-field="quiz-correct"]`);
 
 // A 3-question course used by most tests.
 const BASIC = (extra = {}) => ({
@@ -322,7 +325,8 @@ test.describe('T-048 the quiz screen', () => {
     await page.reload();
     await expect(page.locator('[data-screen="quiz"]')).toBeVisible();
     await openCourse(page, 'LRN-Q');
-    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toContainText('3 от 3');
+    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('минат');
+    await expect(count(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('Въпроси 3 от 3');
     // Reset: confirm.
     await openQuiz(page, 'LRN-Q', '0001-a');
     await page.goto('./#/c/LRN-Q/quiz/0001-a');
@@ -360,7 +364,8 @@ test.describe('T-048 the quiz screen', () => {
     await back(page);
     await expect(page.locator('.quiz__verdict')).toHaveText('Грешно');
     await page.goto('./#/c/LRN-Q');
-    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('резултат: 2 от 3 верни');
+    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('минат');
+    await expect(correct(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('2 от 3 верни (67 %)');
     await context.setOffline(false);
   });
 });
@@ -394,7 +399,8 @@ test.describe('T-048 re-import and several quizzes per lesson', () => {
     console.log(`T-048 re-import: ${r.line}`);
     expect(r.line).toContain('отговорите на тестовете са запазени');
     await openCourse(page, 'LRN-Q');
-    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toContainText('1 от 3');
+    await expect(status(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('започнат');
+    await expect(count(page, 'LRN-Q/quiz:path:quizzes/0001-a.json')).toHaveText('Въпроси 1 от 3');
     await openQuiz(page, 'LRN-Q', '0001-a');
     await page.goto('./#/c/LRN-Q/quiz/0001-a');
     while (await page.locator('.quiz__question').textContent() !== 'Едно?') await back(page);
@@ -472,7 +478,8 @@ test.describe('T-048 re-import and several quizzes per lesson', () => {
     await openCourse(page, 'LRN-M');
     await expect(status(page, 'LRN-M/quiz:0001-1')).toHaveText('не е започнат');
     await expect(status(page, 'LRN-M/quiz:0002-1')).toHaveText('не е започнат');
-    await expect(status(page, 'LRN-M/quiz:0001-2')).toContainText('1 от 1');
+    await expect(status(page, 'LRN-M/quiz:0001-2')).toHaveText('минат');
+    await expect(count(page, 'LRN-M/quiz:0001-2')).toHaveText('Въпроси 1 от 1');
     console.log(`T-048 statuses: ${JSON.stringify(await page.locator('[data-list="quizzes"] li').allTextContents())}`);
   });
 });
@@ -566,6 +573,6 @@ test.describe('T-048 real course (T048_REAL_DIR, outside the repository)', () =>
     await page.emulateMedia({ colorScheme: 'light' });
     await openCourse(page, courseId);
     console.log(`T-048 real statuses: ${JSON.stringify(await page.locator('[data-list="quizzes"] li').allTextContents())}`);
-    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toContainText('от 9');
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-count"]').first()).toContainText('от 9');
   });
 });

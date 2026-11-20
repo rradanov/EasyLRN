@@ -375,10 +375,10 @@ test.describe('T012-I4: a renamed lesson file is the same lesson', () => {
     expect(after.onNew).toEqual([ids.a]);
     await openCourse(page);
     await expect(course(page).locator('[data-section="lessons"] [data-lesson]')).toHaveText(['0001 Какви видове чай има?']);
-    // D-040 (T-057): marked as finished, but its two quizzes are not answered → ◐ with "Завършен".
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText('Завършен · ');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText('1 маркировка · 1 въпрос · 1 тема · Тестове 0 от 2');
+    // D-041 (T-059): marked as finished → ● again (as before D-040); its quizzes have their own mark.
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Завършен · 1 маркировка · 1 въпрос · 1 тема');
+    await expect(item(page, '0001').locator('[data-field="lesson-quiz-line"]')).toHaveText(/^Тестове: не са започнати Въпроси 0 от \d+$/);
     // "Продължи" opens the renamed file at the same place.
     await course(page).locator('[data-action="continue"]').click();
     await expect(page.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });

@@ -58,14 +58,14 @@ async function seedTree() {
 test('схема v1: всички хранилища и индекси', async () => {
   const conn = await db.openDb();
   eq(conn.version, db.SCHEMA_VERSION, 'version');
-  eq(db.SCHEMA_VERSION, 5, 'SCHEMA_VERSION'); // v5 (T-055, D-039): ids by number
+  eq(db.SCHEMA_VERSION, 6, 'SCHEMA_VERSION'); // v6 (T-059, D-041): history; v5 (T-055, D-039): ids by number
   eq([...conn.objectStoreNames].sort(), Object.values(STORES).sort(), 'stores');
   const expected = {
     files: ['by_course'], lessons: ['by_course'], annotations: ['by_course', 'by_target'],
     notes: ['by_annotation'], threads: ['by_annotation'], messages: ['by_thread'],
     subtopics: ['by_annotation', 'by_course', 'by_parent', 'by_root'], usage: ['by_at'],
     quizzes: ['by_course', 'by_lesson'], quizAnswers: [],
-    courses: [], settings: [], secrets: [],
+    courses: [], settings: [], secrets: [], history: ['by_course'],
   };
   const tx = conn.transaction(Object.values(STORES));
   for (const [store, indexes] of Object.entries(expected)) {
@@ -161,6 +161,7 @@ const SAMPLES = {
   quizzes: () => ({ id: `${COURSE}/quiz:0001-1`, courseId: COURSE, path: 'quizzes/0001-1.json', slug: '0001-1', lesson: '0001', title: 'Тест', count: 1, order: 1, questions: [{ q: 'Въпрос?', options: ['А', 'Б'], answer: 0, why: '', src: '' }], sha256: 'q' }),
   quizAnswers: () => ({ id: `${COURSE}/quiz:0001-1`, courseId: COURSE, choices: { abc: 0 }, cursor: 0 }),
   secrets: () => ({ id: 'apiKey', value: 'sk-ant-test-CRUD-0000' }), // T-019 (generic CRUD; the app uses getApiKey/saveApiKey)
+  history: () => ({ id: LESSON, courseId: COURSE, kind: 'lesson', visitedAt: new Date().toISOString(), scrollY: 120, anchor: null, question: null }), // T-059 (the app uses visitPlace/movePlace)
 };
 
 for (const store of Object.values(STORES)) {

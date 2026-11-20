@@ -218,7 +218,9 @@ test.describe('T-011 layout: the width of the tablet is used, no horizontal scro
     const heights = await course(page).locator('a:not(.md a), button, summary').evaluateAll((els) => els.filter((e) => e.offsetParent).map((e) => [e.textContent.trim().slice(0, 20), Math.round(e.getBoundingClientRect().height)]));
     for (const [t, hgt] of heights) expect(hgt, t).toBeGreaterThanOrEqual(44);
     await expect(course(page).locator('.course-item__mark').first()).toHaveAttribute('aria-hidden', 'true');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · Тестове 0 от 2'); // D-040: the quizzes of the lesson
+    // D-041 (T-059): the line of the material; the quizzes have their own line and mark.
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов');
+    await expect(item(page, '0001').locator('[data-field="lesson-quiz-line"]')).toHaveText(/^Тестове: не са започнати Въпроси 0 от \d+$/);
     await expect(page.getByRole('link', { name: '0001 Какви видове чай има?' })).toBeVisible();
     await expect(page.getByRole('complementary', { name: 'За курса' })).toBeVisible();
     await expect(page.getByRole('progressbar')).toHaveAttribute('max', '1');
@@ -279,9 +281,10 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
     await page.goBack();
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
     await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('◐');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/Започнат · отворен днес \d\d:\d\d/);
+    // D-041 (T-059): no "отворен днес …" in the line; the history says where the user was.
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Започнат');
     await expect(course(page).locator('[data-action="continue"]')).toHaveText('Продължи: урок 0001 — Какви видове чай има?');
-    await expect(course(page).locator('[data-list="activity"] li').first()).toContainText('Отворен урок 0001 „Какви видове чай има?“ — днес');
+    await expect(course(page).locator('[data-list="activity"] li').first()).toHaveText(/^Урок 0001 „Какви видове чай има\?“ — днес \d\d:\d\d$/);
 
     await openLessonFromCourse(page);
     await done.click();
@@ -292,18 +295,22 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
     await page.reload();
     await expect(page.locator('[data-action="complete"]')).toHaveAttribute('aria-pressed', 'true'); // reopening keeps "done"
     await page.goto('./#/c/LRN-DEMO');
-    // D-040 (T-057): marked, but its two quizzes are not answered → still ◐, the line says "Завършен".
-    await expect(item(page, '0001')).toHaveAttribute('data-status', 'started');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/^Статус: Завършен · отворен днес \d\d:\d\d · Тестове 0 от 2$/);
-    await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 0 от 1 урок');
+    // D-041 (T-059): the material alone makes it ● (as before D-040); its two quizzes,
+    // not answered, have their own mark "не са започнати" and do not hold it back.
+    await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
+    await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('●');
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Завършен');
+    await expect(item(page, '0001').locator('[data-field="lesson-quiz-mark"]')).toHaveText(/Тестове: не са започнати$/);
+    await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
     await answerAll(page, 'LRN-DEMO');
     await page.reload();
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
     await expect(item(page, '0001').locator('.course-item__mark')).toHaveText('●');
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toContainText(/Завършен · .* · Тестове 2 от 2 · \d+\/\d+ верни$/);
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Завършен');
+    await expect(item(page, '0001').locator('[data-field="lesson-quiz-line"]')).toHaveText(/^Тестове: минати Въпроси (\d+) от \1 · 100\s% верни$/);
     await expect(course(page).locator('[data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 урок');
     await expect(course(page).locator('progress')).toHaveAttribute('value', '1');
-    await expect(course(page).locator('[data-list="activity"]')).toContainText('Завършен урок 0001');
+    await expect(course(page).locator('[data-list="activity"] li').first()).toHaveText(/^Урок 0001 „Какви видове чай има\?“ — днес \d\d:\d\d$/);
     // The courses list shows the progress too.
     await page.goto('./#/');
     await expect(page.locator('[data-course="LRN-DEMO"] [data-field="course-progress"]')).toHaveText('Завършени: 1 от 1 · последно: урок 0001');
@@ -356,9 +363,12 @@ test.describe('T-011 progress: started, finished, "Продължи", recent act
       await db.createSubTopic({ courseId: 'LRN-DEMO', annotationId: a3.id, parent: target, title: 'Улун — <b>полуферментирал</b>', kind: 'термин', content: '' });
     }, LESSON_ID);
     await openCourse(page);
-    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 маркировки · 3 въпроса · 1 тема · Тестове 0 от 2');
-    await expect(course(page).locator('[data-list="activity"]')).toContainText('Тема „Улун — <b>полуферментирал</b>“');
-    await expect(course(page).locator('[data-list="activity"] b')).toHaveCount(0);
+    await expect(item(page, '0001').locator('[data-field="lesson-meta"]')).toHaveText('Статус: Нов · 2 маркировки · 3 въпроса · 1 тема');
+    // D-041 (T-059): "Последни дейности" is the history of places (lessons, references,
+    // quizzes); a topic is not a place, so nothing is listed before a visit. The
+    // title with HTML is nowhere an element (HTML in history titles: course-t059 H4).
+    await expect(course(page).locator('[data-field="activity-empty"]')).toBeVisible();
+    await expect(course(page).locator('b')).toHaveCount(0);
   });
 });
 
@@ -378,9 +388,11 @@ test.describe('T-011 what worked keeps working', () => {
     await expect(page.locator('[data-screen="quiz"]')).toBeVisible();
     await page.locator('.quiz__option').first().click();
     await page.goto('./#/c/LRN-DEMO');
-    await expect(quizzes.locator('[data-field="quiz-status"]').first()).toHaveText(/1 от \d+ отговорени/);
+    // D-041 (T-059): "Въпроси 1 от n" and the state word; the history has the quiz at its question.
+    await expect(quizzes.locator('[data-field="quiz-count"]').first()).toHaveText(/^Въпроси 1 от \d+$/);
+    await expect(quizzes.locator('[data-field="quiz-status"]').first()).toHaveText('започнат');
     await expect(quizzes.locator('[data-field="quiz-reset"]').first()).toBeEnabled();
-    await expect(course(page).locator('[data-list="activity"]')).toContainText(/Тест „.+“: 1 от \d+ отговорени — днес/);
+    await expect(course(page).locator('[data-list="activity"] li').first()).toHaveText(/^Тест „.+“ · въпрос 1 от \d+ — днес \d\d:\d\d$/);
     await openLessonFromCourse(page);
     await expect(page.locator('[data-field="lesson-quizzes"] a')).toHaveCount(2);
     await expect(page.locator('[data-field="lesson-quizzes"] h3')).toHaveText('Тестове към урока');
@@ -390,7 +402,7 @@ test.describe('T-011 what worked keeps working', () => {
   test('a re-import keeps the progress and the statuses', async ({ page }) => {
     await importDemo(page);
     await page.evaluate(async (id) => (await import('./src/db.js')).setLessonProgress(id, { status: 'done', completedAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }), LESSON_ID);
-    await answerAll(page, 'LRN-DEMO'); // D-040: done = marked AND all its quizzes answered
+    await answerAll(page, 'LRN-DEMO'); // D-040 (T-057); kept under D-041: the answers survive the re-import too
     await importDemo(page);
     await openCourse(page);
     await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');

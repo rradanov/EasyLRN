@@ -740,6 +740,11 @@ test.describe('T011F-I1 renamed lesson files', () => {
   test('T011F-I1a rename + changed content, then the same ZIP again, then renamed back and forth 3 times: one row, progress, quiz answers and activity follow; old records hidden', async ({ page }) => {
     test.setTimeout(90000);
     await seed(page);
+    // D-041 (T-059): the history of places — a visit of 0001 (and of its quiz) before the renames.
+    await db(page, async (db, C) => {
+      await db.visitPlace({ courseId: C, kind: 'lesson', id: `${C}/lesson:0001`, scrollY: 111, at: '2026-11-18T10:00:00.000Z' });
+      await db.visitPlace({ courseId: C, kind: 'quiz', id: (await db.listQuizzes(C))[0].id, question: 0, at: '2026-11-18T10:05:00.000Z' });
+    }, C);
     const score0 = await quizAnswered(page);
     const names = ['0001-alpha-v2.html', '0001-alpha-v3.html', '0001-alpha.html', '0001-alpha-v2.html'];
     for (const [i, n] of names.entries()) {
@@ -754,9 +759,13 @@ test.describe('T011F-I1 renamed lesson files', () => {
       expect(r).toHaveLength(4);
       expect(await screenRows(page)).toEqual([`0001 Алфа (вариант ${i})`, '0002 Бета', '0003 Гама', 'R01 Справочник']);
       await expect(item(page, '0001')).toHaveAttribute('data-status', 'done');
-      // "Последни дейности": the same entries as before the rename (opened + completed), with the new title; never the old file.
+      // "Последни дейности" (D-041: the history of places): the same places as before the rename,
+      // with the new title, at the same position; never the old file.
       const acts = await course(page).locator('[data-section="activity"] a').allTextContents();
-      expect(acts.filter((t) => /урок 0001/.test(t)), JSON.stringify(acts)).toEqual([`Завършен урок 0001 „Алфа (вариант ${i})“`, `Отворен урок 0001 „Алфа (вариант ${i})“`]);
+      expect(acts.filter((t) => /Урок 0001/.test(t)), JSON.stringify(acts)).toEqual([`Урок 0001 „Алфа (вариант ${i})“`]);
+      expect(acts).toHaveLength(2);
+      expect(await course(page).locator('[data-section="activity"] a').first().getAttribute('href')).toMatch(/\/quiz\/[^/?]+\?q=1$/);
+      expect(await course(page).locator('[data-section="activity"] a').nth(1).getAttribute('href')).toBe(`#/c/${C}/read/0001?y=111`);
       const hrefs = await course(page).locator('[data-section="activity"] a').evaluateAll((as) => as.map((a) => a.getAttribute('href')));
       for (const h of hrefs) expect(h).not.toMatch(/alpha/);
       expect(await quizAnswered(page)).toEqual(score0);

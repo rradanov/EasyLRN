@@ -57,7 +57,8 @@ test.describe('T-047 import and validation', () => {
     await expect(list.locator('[data-field="quiz-status"]').first()).toHaveText('не е започнат');
     await expect(list).toContainText('Видове чай');
     await expect(list).toContainText('Температура на запарване');
-    await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-meta"]')).toContainText('Тестове 0 от 2');
+    // D-041 (T-059): the quizzes of the lesson are on their own line.
+    await expect(page.locator('.course-item[data-item="LRN-DEMO/lesson:0001"] [data-field="lesson-quiz-line"]')).toHaveText(/^Тестове: не са започнати Въпроси 0 от \d+$/);
   });
 
   test('validation and limits: bad JSON, no questions, bad answer index, too few options, HTML kept as text, long text', async ({ page }) => {
@@ -200,7 +201,9 @@ test.describe('T-047 the answers survive', () => {
       await expect(quizScreen(page)).toBeVisible();
       await expect(page.locator('.quiz__count')).toContainText('отговорени 2');
       await openCourse(page, 'LRN-DEMO');
-      await expect(page.locator('[data-quiz] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
+      // D-041 (T-059): "2 от 3 отговорени" is now "Въпроси 2 от 3" + the state word.
+      await expect(page.locator('[data-quiz] [data-field="quiz-count"]').first()).toHaveText('Въпроси 2 от 3');
+      await expect(page.locator('[data-quiz] [data-field="quiz-status"]').first()).toHaveText('започнат');
     } finally {
       await context.setOffline(false);
     }

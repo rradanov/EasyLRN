@@ -55,7 +55,7 @@ test.describe('data layer (IndexedDB)', () => {
     expect(after).toEqual({ course: 'Демо', lessons: 1, file: '<p>здравей</p>', annotation: true, note: true, fontScale: 1.1 });
   });
 
-  test('the app opens lrn-app v5 and requests persistent storage at start', async ({ page }) => {
+  test('the app opens lrn-app v6 and requests persistent storage at start', async ({ page }) => {
     await page.addInitScript(() => {
       window.__persistCalls = 0;
       const original = navigator.storage.persist.bind(navigator.storage);
@@ -69,14 +69,14 @@ test.describe('data layer (IndexedDB)', () => {
     await expect.poll(() => page.evaluate(async () => {
       const dbs = await indexedDB.databases();
       return dbs.find((d) => d.name === 'lrn-app')?.version ?? null;
-    })).toBe(5); // v5 (T-055, D-039): lesson ids by number (v4, T-019: the secrets store)
+    })).toBe(6); // v6 (T-059, D-041): the history store; v5 (T-055, D-039): lesson ids by number (v4, T-019: the secrets store)
     await expect.poll(() => page.evaluate(() => window.__persistCalls)).toBeGreaterThanOrEqual(1);
     const stores = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('lrn-app');
       req.onsuccess = () => { const names = [...req.result.objectStoreNames].sort(); req.result.close(); resolve(names); };
       req.onerror = () => reject(req.error);
     }));
-    expect(stores).toEqual(['annotations', 'courses', 'files', 'lessons', 'messages', 'notes', 'quizAnswers', 'quizzes', 'secrets', 'settings', 'subtopics', 'threads', 'usage']);
+    expect(stores).toEqual(['annotations', 'courses', 'files', 'history', 'lessons', 'messages', 'notes', 'quizAnswers', 'quizzes', 'secrets', 'settings', 'subtopics', 'threads', 'usage']);
     expect(problems).toEqual([]);
   });
 });

@@ -164,7 +164,9 @@ test.describe('T-048-fix quizzes', () => {
     const v2 = { lesson: '0001', questions: [{ q: 'Едно?', options: ['В', 'А', 'Б'], answer: 2 }, { q: 'Две?', options: ['Да', 'Не', 'Не знам'], answer: 0 }, { q: 'Три?', options: ['x', 'y'], answer: 0 }] };
     await importCourse(page, 'LRN-D1', course('LRN-D1', { 'quizzes/a.json': json(v2) }));
     await page.goto('./#/c/LRN-D1');
-    await expect(page.locator('[data-field="quiz-status"]')).toHaveText('2 от 3 отговорени');
+    // D-041 (T-059): "2 от 3 отговорени" is now "Въпроси 2 от 3" + the state word.
+    await expect(page.locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 3');
+    await expect(page.locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await page.goto('./#/c/LRN-D1/quiz/a');
     await page.getByRole('button', { name: 'Назад' }).click();
     await page.getByRole('button', { name: 'Назад' }).click();

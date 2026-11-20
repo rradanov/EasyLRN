@@ -312,21 +312,29 @@ test.describe('T-050 "Отначало" and "Нулирай" (D-035)', () => {
     await page.goto('./#/c/LRN-N');
     await unfoldLessons(page);
     const item = (t) => page.locator('.quiz-list__item', { hasText: t });
-    await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('2 от 5 отговорени');
+    // D-041 (T-059): "2 от 5 отговорени" is now "Въпроси 2 от 5" + the state word.
+    await expect(item('Тест А').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 5');
+    await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await expect(item('Тест В').locator('[data-field="quiz-reset"]')).toBeDisabled();
     await item('Тест А').locator('[data-field="quiz-reset"]').click();
     await expect(item('Тест А').locator('.quiz__confirm')).toBeVisible();
     await expect(item('Тест А').locator('[data-field="confirm-no"]')).toBeFocused();
     await item('Тест А').locator('[data-field="confirm-no"]').click();
-    await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('2 от 5 отговорени');
+    // D-041 (T-059): "2 от 5 отговорени" is now "Въпроси 2 от 5" + the state word.
+    await expect(item('Тест А').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 5');
+    await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await item('Тест А').locator('[data-field="quiz-reset"]').click();
     await item('Тест А').locator('[data-field="confirm-yes"]').click();
     await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
-    await expect(item('Тест Б').locator('[data-field="quiz-status"]')).toHaveText('2 от 5 отговорени');
+    // D-041 (T-059): "2 от 5 отговорени" is now "Въпроси 2 от 5" + the state word.
+    await expect(item('Тест Б').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 5');
+    await expect(item('Тест Б').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await page.reload();
     await expect(item('Тест А').locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
     await expect(item('Тест А').locator('[data-field="quiz-reset"]')).toBeDisabled();
-    await expect(item('Тест Б').locator('[data-field="quiz-status"]')).toHaveText('2 от 5 отговорени');
+    // D-041 (T-059): "2 от 5 отговорени" is now "Въпроси 2 от 5" + the state word.
+    await expect(item('Тест Б').locator('[data-field="quiz-count"]')).toHaveText('Въпроси 2 от 5');
+    await expect(item('Тест Б').locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await page.goto('./#/c/LRN-N/quiz/a');
     await expect(counter(page)).toHaveText('Въпрос 1 от 5 · отговорени 0');
   });

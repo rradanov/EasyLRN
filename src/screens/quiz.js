@@ -19,6 +19,7 @@ import { link } from '../router.js';
 import {
   getCourse, listQuizzes, getQuizAnswers, saveQuizChoice, saveQuizCursor,
   resetQuizAnswers, clearQuizChoices, scoreQuiz, questionKeys, choiceIndex,
+  visitPlace, movePlace,
 } from '../db.js';
 import { confirmBox } from './confirm.js';
 
@@ -58,8 +59,10 @@ export function sourceLine(question) {
   return question.src ? h('p', { class: 'quiz__src', 'data-field': 'quiz-src', text: `Източник: ${question.src}` }) : null;
 }
 
-export function quizScreen({ params }) {
+export function quizScreen({ params, query }) {
   const { courseId, quizId } = params;
+  // A question from the history (T-059, D-041): `?q=3` = the 3rd question.
+  const atQ = /^\d{1,6}$/.test(query?.get('q') || '') ? Number(query.get('q')) - 1 : null;
   const body = h('div', { class: 'quiz', 'data-field': 'quiz' }, h('p', { class: 'muted', text: 'Зареждам…' }));
   let destroyed = false;
 
@@ -74,7 +77,7 @@ export function quizScreen({ params }) {
     }
     const answers = await getQuizAnswers(quiz.id);
     if (destroyed) return;
-    runQuiz(body, courseId, quiz, answers);
+    runQuiz(body, courseId, quiz, answers, atQ);
   })().catch((err) => {
     console.warn('Cannot open the quiz:', err);
     mount(body, h('p', { class: 'empty', text: 'Тестът не може да се отвори.' }));
@@ -89,7 +92,7 @@ export function quizScreen({ params }) {
 }
 
 /** The interactive quiz, once the data is loaded. */
-function runQuiz(root, courseId, quiz, answers) {
+function runQuiz(root, courseId, quiz, answers, atQ = null) {
   const questions = quiz.questions;
   // Answers by content (T048-D1/D3): key from the question, its options and
   // the right one; the stored choice is the TEXT of the chosen option.
@@ -100,8 +103,20 @@ function runQuiz(root, courseId, quiz, answers) {
   // `order` is which questions this run goes through (all, or only the wrong
   // ones for "Опитай пак грешните"); `pos` is the position inside it.
   let order = questions.map((_, i) => i);
-  let pos = Math.max(0, order.indexOf(answers.cursor ?? 0));
+  const start = atQ != null && atQ >= 0 && atQ < questions.length ? atQ : (answers.cursor ?? 0);
+  let pos = Math.max(0, order.indexOf(start));
   if (pos === -1) pos = 0;
+  if (atQ != null && start === atQ && atQ !== (answers.cursor ?? 0)) saveQuizCursor(quiz.id, atQ).catch(() => {});
+  // History (T-059): this quiz is the newest place; the question shown is its position.
+  const visited = visitPlace({ courseId, kind: 'quiz', id: quiz.id, question: order[pos] ?? 0 })
+    .catch((err) => console.warn('Cannot save the history:', err));
+  let shownQ = order[pos] ?? 0;
+  const followPosition = () => {
+    const qi = order[pos] ?? 0;
+    if (qi === shownQ) return;
+    shownQ = qi;
+    visited.then(() => movePlace(quiz.id, { question: qi })).catch((err) => console.warn('Cannot save the history:', err));
+  };
   let view = 'quiz';
   let dialog = null; // the open confirmation: 'restart' | 'reset' | null
 
@@ -138,6 +153,7 @@ function runQuiz(root, courseId, quiz, answers) {
 
   const render = () => {
     if (view === 'results') { renderResults(); return; }
+    followPosition();
     const qi = order[pos];
     const question = questions[qi];
     const chosen = chosenIndex(qi);

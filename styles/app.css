@@ -546,7 +546,7 @@ a.card:active { background: var(--paper); }
 .course__status:empty { display: none; }
 .course__progress { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; width: 100%; min-width: 0; }
 .course__bar { flex: 1 1 160px; max-width: 320px; min-width: 80px; height: 10px; accent-color: var(--accent); }
-.course__progress-text { white-space: nowrap; margin: 0; color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.95rem; }
+.course__progress-text { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.95rem; }
 .course__continue {
   display: inline-flex;
   align-items: center;
@@ -729,3 +729,79 @@ a.card:active { background: var(--paper); }
   text-decoration: none;
 }
 .screen--course .quiz-list__status { flex-basis: auto; }
+
+/* ---- Course: material and quizzes apart (D-041, T-059) ---- */
+/* The second line of a lesson with quizzes: their own mark (a square, never
+   only a colour: the words "Тестове: …" are visible and are its name) and
+   "Въпроси 7 от 26" (+ "81 % верни" once all are answered). */
+.course-item__quizline {
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  min-width: 0;
+}
+.course-item__quizline[hidden] { display: none; }
+.course-item__quizcount { overflow-wrap: anywhere; min-width: 0; }
+.quiz-mark {
+  --quiz-mark: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 1px 8px 1px 6px;
+  border: 1px solid var(--quiz-mark);
+  border-radius: 999px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.quiz-mark[data-state="new"] { border-color: transparent; padding-left: 0; color: var(--ink-muted); }
+.quiz-mark[data-state="started"] { --quiz-mark: var(--accent); }
+.quiz-mark[data-state="passed"] { --quiz-mark: #2e7d32; }
+/* The square is drawn with CSS (the glyphs ☐ ◩ ☑ are missing from many fonts):
+   empty / half / full with a tick; the words next to it carry the meaning. */
+.quiz-mark__icon {
+  position: relative;
+  flex: 0 0 auto;
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 2px solid var(--quiz-mark);
+  border-radius: 2px;
+  font-size: 0;
+  color: transparent;
+  overflow: hidden;
+}
+.quiz-mark[data-state="started"] .quiz-mark__icon { background: linear-gradient(135deg, var(--quiz-mark) 50%, transparent 50%); }
+.quiz-mark[data-state="passed"] .quiz-mark__icon { background: var(--quiz-mark); }
+.quiz-mark[data-state="passed"] .quiz-mark__icon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  width: 0.22rem;
+  height: 0.42rem;
+  border-right: 2px solid var(--paper);
+  border-bottom: 2px solid var(--paper);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .quiz-mark[data-state="passed"] { --quiz-mark: #81c784; }
+}
+:root[data-theme="dark"] .quiz-mark[data-state="passed"] { --quiz-mark: #81c784; }
+.screen--course .quiz-list__count { white-space: nowrap; }
+
+/* "Последни дейности" is a numbered history list (newest first) without numbers. */
+ol.activity { list-style: none; }
+/* The text of a place flows (wraps like a sentence); the link stays ≥ 44 px high. */
+.activity__link { display: inline-block; padding: 10px 0; line-height: 1.5; }
+.activity__when { white-space: nowrap; }
+.activity__where { color: var(--ink-muted); font-family: var(--font-sans); font-size: 0.85rem; }
+
+/* T058-D4: at 360 px and 160 % text the buttons of a quiz row may not fit on
+   one line next to each other: they wrap and shrink instead of overflowing. */
+.screen--course .quiz-list__actions { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.screen--course .quiz-list__actions > .button { max-width: 100%; }

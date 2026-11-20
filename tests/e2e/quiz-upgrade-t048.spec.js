@@ -125,9 +125,11 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
   stop = await serve(trees.now, port);
   try {
     await upgradeTo(NOW_VERSION);
-    expect(await dbInfo()).toMatchObject({ version: 5, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055
+    expect(await dbInfo()).toMatchObject({ version: 6, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055; v6: T-059 (history)
     await page.goto(`${url}#/c/LRN-DEMO`);
-    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
+    // D-041 (T-059): "2 от 3 отговорени" is now "Въпроси 2 от 3" + the state word.
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-count"]').first()).toHaveText('Въпроси 2 от 3');
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('започнат');
     await page.goto(`${url}#/c/LRN-DEMO/quiz/0001-1-vidove`);
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     const kept = await page.evaluate(async () => (await (await import('./src/db.js')).getQuizAnswers('LRN-DEMO/quiz:0001-1')));
@@ -140,14 +142,16 @@ test('T-048 answers survive the migrations v1→v2→v3 with old data and versio
   try {
     await upgradeTo('0.6.99');
     await page.goto(`${url}#/c/LRN-DEMO`);
-    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('2 от 3 отговорени');
+    // D-041 (T-059): "2 от 3 отговорени" is now "Въпроси 2 от 3" + the state word.
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-count"]').first()).toHaveText('Въпроси 2 от 3');
+    await expect(page.locator('[data-list="quizzes"] [data-field="quiz-status"]').first()).toHaveText('започнат');
     await page.goto(`${url}#/c/LRN-DEMO/quiz/0001-1-vidove`);
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     await context.setOffline(true);
     await page.reload();
     await expect(page.locator('.quiz__count')).toHaveText('Въпрос 2 от 3 · отговорени 2');
     await context.setOffline(false);
-    expect(await dbInfo()).toMatchObject({ version: 5, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055
+    expect(await dbInfo()).toMatchObject({ version: 6, annotations: 1, note: 'стара бележка', progress: 'started', quizzes: 2 }); // v5: T-055; v6: T-059 (history)
   } finally { await stop(); }
   rmSync(base, { recursive: true, force: true });
   expect(problems.filter((p) => !/Failed to fetch|ERR_INTERNET_DISCONNECTED|status of 40/.test(p))).toEqual([]);

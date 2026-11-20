@@ -10,6 +10,7 @@
 // - A DocRef is `{ type: 'lesson'|'subtopic'|'note'|'message', id }` (D-013).
 import { openDB, deleteDB, unwrap } from '../vendor/idb.js';
 import { migrateV4toV5 } from './lesson-id.js';
+import { seedHistory, overflow, sortHistory, HISTORY_KEEP, PLACE_KINDS } from './history.js';
 
 export const DB_NAME = 'lrn-app';
 
@@ -30,6 +31,8 @@ export const STORES = Object.freeze({
   // v4 (T-019): secrets of the user, only the Claude API key for now (D-037).
   // Never exported, never sent to a lesson: see BACKUP_STORES below.
   secrets: 'secrets',
+  // v6 (T-059, D-041): "Последни дейности" as a history of places (src/history.js).
+  history: 'history',
 });
 
 /**
@@ -41,6 +44,7 @@ export const STORES = Object.freeze({
 export const BACKUP_STORES = Object.freeze([
   STORES.courses, STORES.lessons, STORES.annotations, STORES.notes, STORES.threads,
   STORES.messages, STORES.subtopics, STORES.settings, STORES.usage, STORES.quizzes, STORES.quizAnswers,
+  STORES.history,
 ]);
 /** Stores that never leave this browser (not in any export, never posted to a lesson). */
 export const PRIVATE_STORES = Object.freeze([STORES.secrets]);
@@ -203,6 +207,19 @@ export const MIGRATIONS = Object.freeze({
       for (const a of out.changed.annotations) raw.objectStore(STORES.annotations).put(a);
       for (const s of out.changed.subtopics) raw.objectStore(STORES.subtopics).put(s);
       if (out.warnings.length) console.warn(`IndexedDB v5: ${out.warnings.length} record(s) kept as they are:`, out.warnings);
+    }));
+  },
+  // v6 (T-059, D-041): the `history` store ("Последни дейности" = the last
+  // places the user has been, src/history.js). Nothing existing is changed:
+  // the history only starts from the opened lessons and the answered quizzes
+  // (seedHistory, pure). It reads after the walks of earlier migrations of
+  // the same upgrade (v5 rewrites the lessons), like v5 itself.
+  6(db, tx) {
+    const history = db.createObjectStore(STORES.history, { keyPath: 'id' });
+    history.createIndex('by_course', 'courseId');
+    whenQuiet(tx, () => readStores(tx, [STORES.lessons, STORES.quizzes, STORES.quizAnswers], (data) => {
+      const os = unwrap(tx).objectStore(STORES.history);
+      for (const record of seedHistory(data)) os.put(record);
     }));
   },
 });
@@ -959,6 +976,68 @@ export function scoreQuiz(quiz, answers) {
   });
   const total = quiz.questions.length;
   return { total, answered, correct, wrong, started: answered > 0, done: total > 0 && answered === total };
+}
+
+// ---------------------------------------------------------------------------
+// History of places, "Последни дейности" (T-059, D-041; src/history.js)
+// ---------------------------------------------------------------------------
+
+const cleanPosition = (n) => (Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
+
+/**
+ * The user is at a place (a lesson, a reference or a quiz) now: it goes to
+ * the top of the course history, with its position. A course keeps the
+ * newest HISTORY_KEEP places; older ones are deleted in the same transaction.
+ * @param {{ courseId: string, kind: 'lesson'|'reference'|'quiz', id: string,
+ *   scrollY?: number|null, anchor?: string|null, question?: number|null, at?: string }} place
+ */
+export async function visitPlace({ courseId, kind, id, scrollY = null, anchor = null, question = null, at }) {
+  requireString(courseId, 'courseId');
+  requireString(id, 'id');
+  oneOf(kind, PLACE_KINDS, 'kind');
+  const db = await openDb();
+  const tx = db.transaction(STORES.history, 'readwrite');
+  const old = await tx.store.get(id);
+  const record = stamp(STORES.history, {
+    id, courseId, kind,
+    visitedAt: at || now(),
+    scrollY: kind === 'quiz' ? null : cleanPosition(scrollY),
+    anchor: kind === 'quiz' || typeof anchor !== 'string' || !anchor ? null : anchor,
+    question: kind === 'quiz' ? cleanPosition(question) ?? 0 : null,
+    createdAt: old?.createdAt,
+    deleted: false,
+  });
+  await tx.store.put(record);
+  const all = await tx.store.index('by_course').getAll(courseId);
+  await Promise.all(overflow(all, HISTORY_KEEP).map((r) => tx.store.delete(r.id)));
+  await tx.done;
+  return record;
+}
+
+/**
+ * The position at a place changed (scrolled, another question): kept in its
+ * history record, which does not move (only a visit moves it to the top).
+ * Nothing happens if the place is not in the history.
+ * @param {string} id
+ * @param {{ scrollY?: number, question?: number }} position
+ */
+export async function movePlace(id, { scrollY, question } = {}) {
+  const db = await openDb();
+  const tx = db.transaction(STORES.history, 'readwrite');
+  const old = await tx.store.get(id);
+  if (!old || old.deleted) { await tx.done; return null; }
+  const next = { ...old };
+  if (scrollY !== undefined && old.kind !== 'quiz') { next.scrollY = cleanPosition(scrollY); next.anchor = null; }
+  if (question !== undefined && old.kind === 'quiz') next.question = cleanPosition(question) ?? 0;
+  const record = stamp(STORES.history, next);
+  await tx.store.put(record);
+  await tx.done;
+  return record;
+}
+
+/** The history of a course, newest first. */
+export async function listHistory(courseId) {
+  return sortHistory(await byIndex(STORES.history, 'by_course', courseId));
 }
 
 // ---------------------------------------------------------------------------

@@ -113,10 +113,12 @@ test('T-050 migration v2 → v3 with own old answers and broken records; then a 
       return { v, m: await db.getQuizAnswers('LRN-MIG/quiz:path:quizzes/m.json'), n: await db.getQuizAnswers('LRN-MIG/quiz:path:quizzes/n.json'), gone: await db.getQuizAnswers('LRN-MIG/quiz:path:quizzes/gone.json') };
     });
     console.log(`T-050 migrate after v3: ${JSON.stringify({ v: after.v, m: [after.m.choices, after.m.cursor], n: [after.n.choices, after.n.cursor], gone: after.gone.choices })}`);
-    expect(after.v).toBe(5); // 0.7.0 (T-019) added schema v4 (secrets) on top of v3; 0.9.0 (T-055) v5 (ids by number)
+    expect(after.v).toBe(6); // 0.7.0 (T-019) added schema v4 (secrets) on top of v3; 0.9.0 (T-055) v5 (ids by number)
     expect(Object.values(after.m.choices).sort()).toEqual(['А', 'В', 'Да']); // Q1 А, Q2 В, first twin Да; the broken ones dropped
     await page.goto(`${url}#/c/LRN-MIG`);
-    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция' }).locator('[data-field="quiz-status"]')).toHaveText('3 от 6 отговорени');
+    // D-041 (T-059): "3 от 6 отговорени" is now "Въпроси 3 от 6" + the state word.
+    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция' }).locator('[data-field="quiz-count"]')).toHaveText('Въпроси 3 от 6');
+    await expect(page.locator('.quiz-list__item', { hasText: 'Миграция' }).locator('[data-field="quiz-status"]')).toHaveText('започнат');
     await expect(page.locator('.quiz-list__item', { hasText: 'Втори тест' }).locator('[data-field="quiz-status"]')).toHaveText('не е започнат');
     await page.goto(`${url}#/c/LRN-MIG/quiz/m`);
     await expect(counter()).toHaveText('Въпрос 4 от 6 · отговорени 3'); // the cursor survived
