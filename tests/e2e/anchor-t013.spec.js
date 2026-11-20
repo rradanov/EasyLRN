@@ -267,8 +267,10 @@ test.describe('T-013 in the app: selection → annotation → anchoring → pain
     const quizText = await frame.evaluate(() => document.querySelector('.quiz .quiz-choice').textContent.trim().slice(0, 10));
     await selectIn(frame, quizText);
     await page.waitForTimeout(500);
+    // T-015: reported as a quote only (excludedOnly), never with a position.
     const sels = await page.evaluate(() => window.__lrn.filter((m) => m.type === 'lrn:selection' && !m.empty));
-    expect(sels).toEqual([]);
+    expect(sels.filter((m) => m.position !== undefined || m.excludedOnly !== true)).toEqual([]);
+    expect(sels.at(-1)?.quote?.exact).toBe(quizText);
     await page.reload();
     await waitReady(page);
     await expect.poll(() => highlights(page), { timeout: 8000 }).toMatchObject({ 'lrn-orange': [expect.stringContaining('Твърде горещата')], 'lrn-green': [expect.stringContaining('Синтетичен урок')] });
@@ -304,7 +306,9 @@ test.describe('T-013 in the app: selection → annotation → anchoring → pain
     await page.evaluate(() => { window.__lrn = []; });
     await selectIn(frame, 'Този текст не се маркира');
     await page.waitForTimeout(500);
-    expect(await page.evaluate(() => window.__lrn.filter((m) => m.type === 'lrn:selection' && !m.empty))).toEqual([]);
+    // T-015: a quote without a position (excludedOnly); no mark can be made from it.
+    const only = await page.evaluate(() => window.__lrn.filter((m) => m.type === 'lrn:selection' && !m.empty));
+    expect(only.filter((m) => m.position !== undefined || m.excludedOnly !== true)).toEqual([]);
     const a = await annotate(page, 'по-рано', 'Краят на урока');
     expect(a.selector.quote.exact).toBe('по-рано от останалите изисквания. Краят на урока');
     await page.reload();

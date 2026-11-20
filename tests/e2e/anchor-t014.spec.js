@@ -242,7 +242,6 @@ test.describe('T014-U src/anchor.js edge cases', () => {
   });
 
   test('T014-U4 (T014-D1) a short quote whose place was deleted and that is left ONCE elsewhere, with none of its context, is "ok" at the wrong place (expected: fuzzy — "провери")', async ({ page }) => {
-    test.fail(true, 'T014-D1: a short quote found once, with 0 % of its context, is reported "ok" at another place (the rule only covers several hits)');
     const r = await run(page, (A, M, sel) => {
       const v1 = '<p>Първо: CRA важи тук.</p><p>Второ: и CRA важи там за всички продукти.</p><p>Трето: регламентът.</p>';
       const s = sel(M(v1), 'CRA', 1); // the CRA of "Второ"
@@ -307,7 +306,6 @@ test.describe('T014-U src/anchor.js edge cases', () => {
   });
 
   test('T014-U7 (T014-D2) <br> is in the list of blocks but makes no space: "ред<br>втори" is "редвтори" in the quote (expected "ред втори")', async ({ page }) => {
-    test.fail(true, 'T014-D2: a <br> line break gives no space in the text model (BR has no text inside, so it never is the block of a text node)');
     const r = await run(page, (A, M) => M('<p>първи ред<br>втори ред</p>').text);
     expect(r).toBe('първи ред втори ред');
   });
@@ -406,7 +404,6 @@ test.describe('T014-P speed at CPU ×4', () => {
 
   test('T014-P2b 200 whole paragraphs (≈ 170 characters) after the same kind of edit (all fuzzy): < 2 s at CPU ×4', async ({ page }) => {
     test.setTimeout(300000);
-    test.fail(true, 'T014-D3: re-anchoring after a change grows with the square of the quote length: 200 whole paragraphs ≈ 3.6–6.7 s, 20 passages of 2000 characters ≈ 16–20 s at CPU ×4, and the app is frozen meanwhile (same process)');
     const html = lessonHtml('Първи', longBody());
     await importCourse(page, C, { ...files(), 'lessons/0001-parvi.html': html });
     await openLesson(page);
@@ -422,7 +419,6 @@ test.describe('T014-P speed at CPU ×4', () => {
 
   test('T014-P3 (T014-D3) 20 long annotations (≈ 2000 characters each, whole passages) after a small edit: < 2 s at CPU ×4', async ({ page }) => {
     test.setTimeout(300000);
-    test.fail(true, 'T014-D3: 20 passages of ≈ 2000 characters after a small edit take ≈ 16 s at CPU ×4 (edit distance over a window of 2 × the quote, for up to 3 candidates, forwards and backwards); the app is frozen meanwhile');
     const html = lessonHtml('Първи', longBody());
     await importCourse(page, C, { ...files(), 'lessons/0001-parvi.html': html });
     await openLesson(page);
@@ -442,7 +438,6 @@ test.describe('T014-P speed at CPU ×4', () => {
 
   test('T014-P4 a lesson with a ticking clock (its text changes every second) and 50 orphan annotations: how busy the frame is at CPU ×4 (every change re-searches every orphan)', async ({ page }) => {
     test.setTimeout(240000);
-    test.fail(true, 'T014-D4: every change of the lesson text re-runs the full search for every orphan (and fuzzy) annotation; a lesson with a clock or a counter keeps the CPU busy for as long as it is open');
     const clock = '<p id="clock">Остават 100 секунди.</p><script>let n = 100; setInterval(() => { document.getElementById("clock").textContent = "Остават " + (--n) + " секунди."; }, 1000);</script>';
     const v1 = lessonHtml('Първи', longBody());
     await importCourse(page, C, { ...files(), 'lessons/0001-parvi.html': v1 });

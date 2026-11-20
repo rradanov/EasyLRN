@@ -5,6 +5,7 @@
 // sentence, a deleted section.
 import {
   anchorTextModel, anchorDescribe, anchorDescribeRange, anchorFind, anchorRange, anchorOffset, anchorNormalize, ANCHOR_CONTEXT,
+  anchorScan,
 } from '../src/anchor.js';
 
 const tests = [];
@@ -262,6 +263,103 @@ test('враждебен селектор: огромен/празен/без п
   eq(big.state, 'orphan');
   const r = anchorFind(m, { quote: { exact: 'Улун', prefix: 5, suffix: {} }, hint: { blockPath: 'p:has(' } });
   eq(r.state, 'ok');
+});
+
+// --- T-013-fix (0.12.1) -----------------------------------------------------------
+test('T-013-fix D1: къс цитат, останал на ЕДНО място без нищо от контекста си → fuzzy (не тихо ok)', () => {
+  const v1 = '<body><p>Първо: CRA важи тук.</p><p>Второ: и CRA важи там за всички продукти.</p><p>Трето: регламентът.</p></body>';
+  const m = modelOf(v1);
+  const at = m.text.indexOf('CRA', m.text.indexOf('Второ'));
+  const s = anchorDescribe(m, at, at + 3);
+  eq(anchorFind(modelOf('<body><p>Първо: CRA важи тук.</p><p>Трето: регламентът.</p></body>'), s).state, 'fuzzy');
+  // …with its context still there → ok at the right place.
+  const kept = modelOf(v1.replace('<p>Трето', '<p>Ново.</p><p>Трето'));
+  const r = anchorFind(kept, s);
+  eq([r.state, r.start], ['ok', kept.text.indexOf('CRA', kept.text.indexOf('Второ'))]);
+});
+test('T-013-fix D2: <br> е интервал в модела; цитатът през реда не е слепен; DOM точките след <br> са верни', () => {
+  const m = modelOf('<body><p>първи ред<br>втори ред</p><p>a<br><br>b</p></body>');
+  eq(m.text, 'първи ред втори ред a b');
+  const at = m.text.indexOf('ред втори');
+  eq(anchorRange(m, at, at + 9).toString(), 'редвтори'); // the DOM has no space: the Range is right
+  eq(anchorRange(m, m.text.indexOf('втори'), m.text.indexOf('втори') + 5).toString(), 'втори');
+});
+test('T-013-fix D3: побитовото търсене (Myers/Hyyrö) дава същото като пълното динамично програмиране (2000 случайни случая)', () => {
+  const ref = (text, from, to, pattern, near, global) => {
+    const m = pattern.length;
+    let prev = new Array(m + 1).fill(0).map((_, i) => i); let cur = new Array(m + 1);
+    let best = m; let bestEnd = from;
+    for (let j = from; j < to; j++) {
+      cur[0] = global ? j - from + 1 : 0;
+      for (let i = 1; i <= m; i++) cur[i] = Math.min(prev[i - 1] + (pattern[i - 1] === text[j] ? 0 : 1), prev[i] + 1, cur[i - 1] + 1);
+      if (cur[m] < best || (cur[m] === best && Math.abs(j + 1 - near) < Math.abs(bestEnd - near))) { best = cur[m]; bestEnd = j + 1; }
+      [prev, cur] = [cur, prev];
+    }
+    return global ? { end: to, dist: prev[m] } : { end: bestEnd, dist: best };
+  };
+  const pat = (p) => {
+    const m = p.length; const blocks = (m + 31) >> 5; const peq = new Map();
+    for (let i = 0; i < m; i++) { const c = p.charCodeAt(i); let v = peq.get(c); if (!v) { v = new Int32Array(blocks); peq.set(c, v); } v[i >> 5] |= 1 << (i & 31); }
+    return { m, blocks, peq, none: new Int32Array(blocks), pv: new Int32Array(blocks), mv: new Int32Array(blocks) };
+  };
+  const r = rng(99);
+  const abc = 'абвг д';
+  for (let t = 0; t < 2000; t++) {
+    const m = 1 + Math.floor(r() * (t % 3 ? 40 : 120));
+    let p = ''; for (let i = 0; i < m; i++) p += abc[Math.floor(r() * abc.length)];
+    const n = Math.floor(r() * 180);
+    let x = ''; for (let i = 0; i < n; i++) x += abc[Math.floor(r() * abc.length)];
+    const from = Math.floor(r() * n / 3); const to = Math.max(from, n - Math.floor(r() * n / 3)); const near = Math.floor(r() * n);
+    for (const g of [false, true]) eq(anchorScan(x, from, to, pat(p), g, near), ref(x, from, to, p, near, g), `case ${t} ${g}`);
+  }
+});
+test('T-013-fix праг: ≥ 0.7, когато контекстът от двете страни е цял (≥ 16 знака); иначе 0.8; без фалшиво ok', () => {
+  const pre = 'Тук започва раздел за обхвата и ';
+  const post = ', а останалото е по-нататък в текста.';
+  const q = 'CRA се прилага само ако отговорът';
+  const m = modelOf(`<body><p>${pre}${q}${post}</p><p>Друг абзац без връзка.</p></body>`);
+  const at = m.text.indexOf(q);
+  const s = anchorDescribe(m, at, at + q.length);
+  // LRN-CRA (T-013 §6): 11 characters inserted in a 33-character quote, the context intact → 0.75 → fuzzy (was orphan).
+  const ins = modelOf(`<body><p>${pre}CRA се прилага (редакция) само ако отговорът${post}</p><p>Друг абзац без връзка.</p></body>`);
+  const r1 = anchorFind(ins, s);
+  eq([r1.state, r1.similarity, ins.text.slice(r1.start, r1.end)], ['fuzzy', 0.75, 'CRA се прилага (редакция) само ако отговорът']);
+  // The same edit, but the context changed too → orphan (0.75 < 0.8).
+  const both = modelOf(`<body><p>Нов увод тук. CRA се прилага (редакция) само ако отговорът е друг.</p></body>`);
+  eq(anchorFind(both, s).state, 'orphan');
+  // 35 % of the quote changed, the context intact → orphan (< 0.7).
+  const many = modelOf(`<body><p>${pre}CRA ## прилага ##### ### #ко отговорът${post}</p></body>`);
+  eq(anchorFind(many, s).state, 'orphan');
+  // A short quote (< 12) never gets the lower threshold.
+  const sh = 'гласувай';
+  const ms = modelOf(`<body><p>${pre}${sh}${post}</p></body>`);
+  const ss = anchorDescribe(ms, ms.text.indexOf(sh), ms.text.indexOf(sh) + sh.length);
+  eq(anchorFind(modelOf(`<body><p>${pre}гласуваш${post}</p></body>`), ss).state, 'fuzzy'); // 0.875 with context: the 0.8 rule
+  eq(anchorFind(modelOf(`<body><p>${pre}гла##вай${post}</p></body>`), ss).state, 'orphan'); // 0.75: no lower threshold under 12 characters
+});
+test('T-013-fix D3: 20 пасажа × 2000 знака и 200 цели абзаца след малка редакция — бързо (без забавяне на процесора)', () => {
+  const para = (i, w = '') => `<p>Абзац ${i}. Производителят${w} оценява рисковете за киберсигурността на продукта, номер ${i}, и документира резултата.</p>`;
+  const v1 = Array.from({ length: 3000 }, (_, i) => para(i)).join('');
+  const m1 = modelOf(`<body>${v1}</body>`);
+  const long = Array.from({ length: 20 }, (_, k) => { const at = m1.text.indexOf(`Абзац ${k * 140}.`); return anchorDescribe(m1, at, at + 1990); });
+  const whole = Array.from({ length: 200 }, (_, k) => { const at = m1.text.indexOf(`Абзац ${k * 15}.`); return anchorDescribe(m1, at, m1.text.indexOf('резултата.', at) + 10); });
+  const m2 = modelOf(`<body>${Array.from({ length: 3000 }, (_, i) => para(i, i % 15 === 0 ? ' внимателно' : '')).join('')}</body>`);
+  const t0 = performance.now();
+  for (const s of long) eq(anchorFind(m2, s).state, 'fuzzy');
+  const t1 = performance.now();
+  for (const s of whole) eq(anchorFind(m2, s).state, 'fuzzy');
+  const t2 = performance.now();
+  assert(t1 - t0 < 400, `20 × 2000: ${Math.round(t1 - t0)} ms`);
+  assert(t2 - t1 < 500, `200 paragraphs: ${Math.round(t2 - t1)} ms`);
+  return `20 × 2000 знака ${Math.round(t1 - t0)} ms; 200 абзаца ${Math.round(t2 - t1)} ms`;
+});
+test('T-013-fix D4: `within` търси само в дадената част (неприкачена след промяна другаде)', () => {
+  const m = modelOf('<body><p>Едно изречение тук за проба.</p><p>Друго място с изречение тук за проба и още.</p></body>');
+  const s = { quote: { exact: 'изречение тук за проба', prefix: '', suffix: '' } };
+  const second = m.text.lastIndexOf('изречение тук');
+  const r = anchorFind(m, s, { within: [second - 3, m.text.length] });
+  eq([r.state, r.start], ['ok', second]);
+  eq(anchorFind(m, s, { within: [0, 5] }).state, 'orphan');
 });
 
 // --- runner -------------------------------------------------------------------
