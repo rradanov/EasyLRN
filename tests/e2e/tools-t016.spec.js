@@ -438,7 +438,7 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     expect(await lastExact(page, 2)).toBe('Уязвимостите се докладват');
   });
 
-  test('T016-F10 Ctrl+Z and Escape with the focus inside the lesson (after a click / Tab into it): Escape turns the tool off (lrn:escape), Ctrl+Z undoes the last mark', async ({ page }) => {
+  test('T016-F10 Ctrl+Z and Escape with the focus inside the lesson: Escape turns the tool off (lrn:escape); Ctrl+Z there undoes nothing (D-044); "Отмени" and Ctrl+Z in the app undo', async ({ page }) => {
     const frame = await openLesson(page);
     await tool(page, 'marker').click();
     const t = await touchApi(page);
@@ -448,13 +448,21 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await frame.locator('body').press('Escape');
     await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'false');
-    // T-064 (T063-D3): the focus was moved in by a script (the lesson's own
-    // focus()), right after the user's stroke in the app: the Ctrl+Z pressed in
-    // the lesson is refused and the focus comes back to the app ("press again");
-    // the next Ctrl+Z is the app's own. (The honest ways in: tools-t064 U1 / U2.)
+    // D-044: no undo from the lesson — Ctrl+Z with the focus in it does nothing.
+    const b = await textBox(page, 'Уязвимостите');
+    await tool(page, 'marker').click();
+    await t.drag([b.x1 + 2, b.y1], [b.x2 - 2, b.y1]);
+    await waitMarks(page, 2);
+    await tool(page, 'marker').click(); // off
+    await frame.evaluate(() => { document.body.focus(); });
     await frame.locator('body').press('Control+z');
-    await expect(page.locator('[data-field="marks-status"]')).toHaveText('Натисни Ctrl+Z още веднъж, за да отмениш.');
-    expect(await count(page)).toBe(1);
+    await page.waitForTimeout(400);
+    expect(await count(page)).toBe(2);
+    await expect(page.locator('[data-field="marks-status"]')).not.toHaveText(/Ctrl\+Z още веднъж/);
+    // "Отмени" in the bar, then Ctrl+Z with the focus in the app.
+    await page.locator('[data-field="mark-tools"] [data-action="undo"]').click();
+    await waitMarks(page, 1);
+    await tool(page, 'marker').focus();
     await page.keyboard.press('Control+z');
     await waitMarks(page, 0);
   });

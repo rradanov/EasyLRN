@@ -7,7 +7,8 @@
 // - T063-S bar: old / broken settings, a double "Скрий", hiding during a stroke,
 //   the handle on a 360×640 phone at 160 % text, ids / aria;
 // - T063-S security: lrn:undo with fields, without focus, a lesson that takes the
-//   focus by itself, a flood of lrn:undo after a legitimate tap in the lesson;
+//   focus by itself, a flood of lrn:undo after a legitimate tap in the lesson
+//   (T-065, D-044: lrn:undo is gone — each of them undoes nothing);
 //   forged lrn:stroked during a palm gesture;
 // - T063-S anchoring: a "провери" stays "провери" over several openings until
 //   "Да, тук е"; short quotes (< 24) — the new thresholds, false "ok" searched,
@@ -38,7 +39,7 @@ test.beforeEach(async ({ page, context }) => {
   await context.route(/^(https?|wss?):\/\/(?!localhost)/, (route) => { external.push(route.request().url()); return route.abort(); });
 });
 test.afterEach(() => {
-  expect(problems.filter((p) => !/lrn:undo without focus|unasked: lrn:stroked/.test(p))).toEqual([]);
+  expect(problems.filter((p) => !/unasked: lrn:stroked/.test(p))).toEqual([]);
   expect(external).toEqual([]);
 });
 const landscapeOnly = (ti) => test.skip(ti.project.name !== 'tablet-landscape', 'pure module / one layout is enough');
@@ -618,10 +619,7 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     return { frame, t };
   }
 
-  test('T063-S13 lrn:undo with fields ({id} of the FIRST mark, many) with the focus in the lesson undoes only the last action — never a chosen mark; without focus nothing', async ({ page }) => {
-    // T-064 (T063-D3): a focus the lesson took by itself (body.focus()) right after
-    // the user's taps in the app is not the user's: its lrn:undo is refused and the
-    // focus comes back to the app; the app's own Ctrl+Z then undoes the last action.
+  test('T063-S13 lrn:undo with fields ({id} of the FIRST mark, many) undoes nothing, with the focus in the app or in the lesson (D-044); then "Отмени" and the app\'s own Ctrl+Z undo the last actions', async ({ page }) => {
     const { frame } = await threeMarks(page);
     const first = (await live(page)).find((a) => a.exact === 'Регламентът').id;
     await tool(page, 'marker').focus();
@@ -631,12 +629,16 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('IFRAME');
     await frame.evaluate((id) => parent.postMessage({ lrn: 1, type: 'lrn:undo', id, ids: [id], annotationId: id }, '*'), first);
+    await page.keyboard.press('Control+z'); // the focus in the lesson: not an undo either
     await page.waitForTimeout(500);
     expect(await count(page)).toBe(3);
-    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+    await tool(page, 'marker').focus();
     await page.keyboard.press('Control+z');
     await waitMarks(page, 2);
     expect((await live(page)).map((a) => a.exact).sort()).toEqual(['Регламентът', 'Уязвимостите'].sort());
+    await page.locator('[data-field="mark-tools"] [data-action="undo"]').click();
+    await waitMarks(page, 1);
+    expect((await live(page))[0].exact).toBe('Регламентът');
   });
 
   test('T063-S14 (T063-D3) a lesson that takes the focus by itself (no key pressed, no tap in it) and posts a flood of lrn:undo must not undo the user\'s marks', async ({ page }) => {
@@ -652,7 +654,7 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     expect(left).toBe(3);
   });
 
-  test('T063-S15 (T063-D4) after one honest tap in the lesson (focus in the frame) a flood of 60 lrn:undo undoes at most one action', async ({ page }) => {
+  test('T063-S15 (T063-D4, D-044) after one honest tap in the lesson (focus in the frame) a flood of 60 lrn:undo undoes nothing', async ({ page }) => {
     const { frame } = await threeMarks(page);
     await tool(page, 'marker').tap(); // off
     const a = await textBox(page, 'Производителят');
@@ -661,7 +663,7 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     await frame.evaluate(() => { window.__go = Date.now() + 100; });
     await page.waitForTimeout(1500);
     info('T063-D4 marks left after the flood', await count(page));
-    expect(await count(page)).toBeGreaterThanOrEqual(2);
+    expect(await count(page)).toBe(3);
   });
 
   test('T063-S16 a lesson cannot use the palm rules: forged lrn:stroked (seq 0…300) while the user rests a palm and writes; its own pointer listeners get no touch of the layer; only the user\'s stroke is saved', async ({ page }) => {

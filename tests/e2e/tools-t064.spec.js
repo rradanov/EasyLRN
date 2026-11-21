@@ -1,9 +1,8 @@
 // T-064 (developer, 0.13.2): the fixes of T063-D1/D2/D3/D4/D8 and T063-I6 from
 // the side the T-063 tests do not cover:
-// - lrn:undo: the honest ways in (a click into the lesson after a quiet moment;
-//   Tab) undo ONE action and bring the focus back to the app (the next Ctrl+Z is
-//   the app's own); a lesson's own focus() right after the user's tap in the
-//   app is refused (the first press only says "press again");
+// - T-065 (D-044): no undo from the lesson — a click / Tab / the lesson's own
+//   focus() into it, then Ctrl+Z or a flood of lrn:undo, undo nothing; "Отмени"
+//   and Ctrl+Z in the app undo;
 // - the palm: a young stroke with a second touch that stays still → the stroke
 //   goes on from its first point (replayed, the whole word); the second touch
 //   lifting at once → the stroke goes on; a slow two-finger scroll with a
@@ -28,7 +27,7 @@ test.beforeEach(async ({ page, context }) => {
   await context.route(/^(https?|wss?):\/\/(?!localhost)/, (route) => { external.push(route.request().url()); return route.abort(); });
 });
 test.afterEach(() => {
-  expect(problems.filter((p) => !/lrn:undo without focus|unasked: lrn:stroked/.test(p))).toEqual([]);
+  expect(problems.filter((p) => !/unasked: lrn:stroked/.test(p))).toEqual([]);
   expect(external).toEqual([]);
 });
 const landscapeOnly = (ti) => test.skip(ti.project.name !== 'tablet-landscape', 'pure module / one layout is enough');
@@ -140,6 +139,7 @@ async function input(page) {
   return { cdp, touch, pen, drag };
 }
 const tool = (page, name) => page.locator(`[data-field="mark-tools"] [data-tool="${name}"]`);
+const undoButton = (page) => page.locator('[data-field="mark-tools"] [data-action="undo"]');
 const color = (page, name) => page.locator(`[data-field="mark-tools"] [data-color="${name}"]`);
 const bar = (page) => page.locator('[data-field="mark-tools"]');
 const handle = (page) => page.locator('[data-field="mark-tools-handle"]');
@@ -153,7 +153,7 @@ const active = (page) => page.evaluate(() => document.activeElement?.tagName);
 const status = (page) => page.locator('[data-field="marks-status"]');
 
 // ===========================================================================
-test.describe('T064 lrn:undo: the honest ways in, the refused one (T063-D3/D4)', () => {
+test.describe('T064 / T-065 no undo from the lesson (D-044): the ways in undo nothing; the app\'s own undo works', () => {
   const BTN = '<p><button id="lb" type="button">Бутон на урока</button></p>';
   test.beforeEach(async ({ page }) => {
     await start(page);
@@ -169,45 +169,55 @@ test.describe('T064 lrn:undo: the honest ways in, the refused one (T063-D3/D4)',
     await expect(layer(page)).toBeHidden();
     return { frame, t };
   }
+  const undos = (page) => page.evaluate(() => window.__lrn.filter((m) => m.type === 'lrn:undo').length);
 
-  test('T064-U1 a click into the lesson after a quiet moment, Ctrl+Z → ONE mark undone, the focus back in the app; the next Ctrl+Z is the app\'s own; a lrn:undo posted right after → nothing', async ({ page }) => {
+  test('T064-U1 a click into the lesson after a quiet moment, Ctrl+Z → nothing undone, no lrn:undo sent; a flood of lrn:undo → nothing; "Отмени" and Ctrl+Z in the app undo one each', async ({ page }) => {
     const { frame } = await marks(page, ['Регламентът', 'Уязвимостите', 'Задълженията']);
-    await page.waitForTimeout(5300); // no input of the user in the app for 5 s
+    await page.waitForTimeout(1000);
     const a = await textBox(page, 'Производителят');
     await page.mouse.click(a.x1 + 10, a.y);
     await expect.poll(() => active(page)).toBe('IFRAME');
     await page.keyboard.press('Control+z');
-    await waitMarks(page, 2);
-    expect((await live(page)).map((m) => m.exact).sort()).toEqual(['Регламентът', 'Уязвимостите'].sort());
-    await expect.poll(() => active(page)).not.toBe('IFRAME');
-    await page.keyboard.press('Control+z');
-    await waitMarks(page, 1);
     await frame.evaluate(() => { for (let i = 0; i < 20; i++) parent.postMessage({ lrn: 1, type: 'lrn:undo' }, '*'); });
     await page.waitForTimeout(500);
-    expect(await count(page)).toBe(1);
+    expect(await count(page)).toBe(3);
+    expect(await undos(page)).toBe(20); // only the posted ones: the bridge sent none
+    await expect(status(page)).not.toHaveText(/Ctrl\+Z още веднъж/);
+    await undoButton(page).click();
+    await waitMarks(page, 2);
+    expect((await live(page)).map((m) => m.exact).sort()).toEqual(['Регламентът', 'Уязвимостите'].sort());
+    await tool(page, 'pencil').focus();
+    await page.keyboard.press('Control+z');
+    await waitMarks(page, 1);
+    expect((await live(page))[0].exact).toBe('Регламентът');
   });
 
-  test('T064-U2 Tab from the app into the lesson (its button), Ctrl+Z → one mark undone', async ({ page }) => {
+  test('T064-U2 Tab from the app into the lesson (its button), Ctrl+Z → nothing undone; the focus back in the app, Ctrl+Z → one mark undone', async ({ page }) => {
     await marks(page, ['Регламентът', 'Уязвимостите']);
     await tool(page, 'pencil').focus();
     let inFrame = false;
     for (let i = 0; i < 12 && !inFrame; i++) { await page.keyboard.press('Tab'); inFrame = (await active(page)) === 'IFRAME'; }
     expect(inFrame).toBe(true);
     await page.keyboard.press('Control+z');
+    await page.waitForTimeout(400);
+    expect(await count(page)).toBe(2);
+    expect(await undos(page)).toBe(0);
+    await tool(page, 'pencil').focus();
+    await page.keyboard.press('Control+z');
     await waitMarks(page, 1);
     expect((await live(page))[0].exact).toBe('Регламентът');
   });
 
-  test('T064-U3 the lesson\'s own focus() right after the user\'s tap in the app: Ctrl+Z pressed in the lesson is refused (nothing undone, "press again", the focus back in the app); pressed again → one mark undone', async ({ page }) => {
+  test('T064-U3 the lesson\'s own focus() right after the user\'s tap in the app, then Ctrl+Z and a flood of lrn:undo → nothing undone, no "press again", the focus not moved by the app', async ({ page }) => {
     const { frame } = await marks(page, ['Регламентът', 'Уязвимостите']);
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await expect.poll(() => active(page)).toBe('IFRAME');
     await page.keyboard.press('Control+z');
-    await expect(status(page)).toHaveText('Натисни Ctrl+Z още веднъж, за да отмениш.');
+    await frame.evaluate(() => { for (let i = 0; i < 60; i++) parent.postMessage({ lrn: 1, type: 'lrn:undo' }, '*'); });
+    await page.waitForTimeout(500);
     expect(await count(page)).toBe(2);
-    await expect.poll(() => active(page)).not.toBe('IFRAME');
-    await page.keyboard.press('Control+z');
-    await waitMarks(page, 1);
+    await expect(status(page)).not.toHaveText(/Ctrl\+Z още веднъж/);
+    expect(await active(page)).toBe('IFRAME');
   });
 });
 

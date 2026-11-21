@@ -188,9 +188,6 @@ export function readerScreen({ params, query }) {
       hash,
       onAnchored: (list) => { if (!destroyed) showChecks(list); },
       onEscape: () => tools?.escape(),
-      onUndo: () => tools?.undo(),
-      // T063-D3: a second Ctrl+Z from the lesson too soon; the focus is back in the app.
-      onUndoRefused: () => announce('Натисни Ctrl+Z още веднъж, за да отмениш.'),
       onNavigate: (other, otherHash) => {
         const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
         location.hash = `${readerLink(courseId, other)}${at}`;

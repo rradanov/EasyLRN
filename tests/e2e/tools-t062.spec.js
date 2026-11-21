@@ -452,7 +452,7 @@ test.describe('T-062 tablet (1920×1200 / 1200×1920)', () => {
     expect((await live(page)).at(-1).exact).toBe('Краят на урока');
   });
 
-  test('U1 Ctrl+Z with the focus in the lesson undoes (lrn:undo, a bare command); a lrn:undo the lesson posts while the focus is NOT in it is ignored', async ({ page }) => {
+  test('U1 (D-044) Ctrl+Z with the focus in the lesson undoes nothing; a lrn:undo the lesson posts is ignored (focus in the app or in the lesson); Ctrl+Z in the app undoes', async ({ page }) => {
     const frame = await openLesson(page);
     await tool(page, 'marker').tap();
     const t = await touchApi(page);
@@ -467,14 +467,18 @@ test.describe('T-062 tablet (1920×1200 / 1200×1920)', () => {
     await frame.evaluate(() => parent.postMessage({ lrn: 1, type: 'lrn:undo' }, '*'));
     await page.waitForTimeout(400);
     expect(await count(page)).toBe(2);
-    // The focus in the lesson, Ctrl+Z → the last mark goes. T-064 (T063-D3): the
-    // focus moved in by a script right after the user's taps in the app is not the
-    // user's: the first press is refused (nothing undone, the focus back in the
-    // app), the next one is the app's own. (The honest ways in: tools-t064 U1 / U2.)
+    // The focus in the lesson: Ctrl+Z and a posted lrn:undo → nothing (D-044).
+    const undos = () => page.evaluate(() => window.__lrn.filter((m) => m.type === 'lrn:undo').length);
+    const before = await undos(); // the one the test posted above
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await frame.locator('body').press('Control+z');
-    await expect(page.locator('[data-field="marks-status"]')).toHaveText('Натисни Ctrl+Z още веднъж, за да отмениш.');
+    await page.waitForTimeout(300);
+    expect(await undos()).toBe(before); // the bridge sends no lrn:undo
+    await frame.evaluate(() => parent.postMessage({ lrn: 1, type: 'lrn:undo' }, '*'));
+    await page.waitForTimeout(400);
     expect(await count(page)).toBe(2);
+    // The focus back in the app: its own Ctrl+Z undoes the last mark.
+    await tool(page, 'marker').focus();
     await page.keyboard.press('Control+z');
     await waitMarks(page, 1);
     expect((await live(page))[0].exact).toBe('Регламентът');
@@ -483,7 +487,6 @@ test.describe('T-062 tablet (1920×1200 / 1200×1920)', () => {
     await frame.locator('#f').press('Control+z');
     await page.waitForTimeout(400);
     expect(await count(page)).toBe(1);
-    problems = problems.filter((p) => !/lrn:undo without focus/.test(p));
   });
 
   test('M1 prefers-reduced-motion: hiding and showing without a slide (no animation)', async ({ page }) => {

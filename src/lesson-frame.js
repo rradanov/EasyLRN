@@ -57,11 +57,6 @@ const MAX_MESSAGES_PER_SECOND = 60;
 const PROTOCOL = 1;
 const STROKE_TOOLS = ['marker', 'pencil', 'eraser'];
 const STROKE_ANSWER_MS = 3000;
-// T063-D3/D4: lrn:undo (Ctrl+Z pressed inside the lesson) is accepted only once
-// per entry of the focus into the frame, and after one the next only this much
-// later (the user's activation of Chromium lasts ~5 s: then any activation is a
-// new gesture). Ctrl+Z in the app itself works at once (the focus comes back).
-const UNDO_AGAIN_MS = 5000;
 
 /** Base URL of the virtual course files: …/EasyLRN/c/ */
 export const courseBase = () => new URL('./c/', document.baseURI);
@@ -134,8 +129,8 @@ const CHECK = {
     };
   },
   'lrn:escape': () => ({}),
-  // T016-D6: Ctrl+Z inside the lesson, a bare command (no fields are read).
-  'lrn:undo': () => ({}),
+  // No 'lrn:undo' (D-044): the lesson cannot ask for an undo; such a message is
+  // not a known type and is dropped.
   // T-015: the answer to the app's own stroke (marker / pencil: the text; eraser: ids).
   'lrn:stroked': (m) => {
     if (!isInt(m.seq, 0, 1e9) || !STROKE_TOOLS.includes(m.tool)) return null;
@@ -201,13 +196,12 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
  *   onScroll?: (y: number) => void, onTap?: (annotation: object|null) => void,
  *   onAnchored?: (annotations: object[]) => void, onSelection?: (selection: object|null) => void,
- *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void,
- *   onUndo?: () => void, onUndoRefused?: () => void }} opts
+ *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void }} opts
  * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
  *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
  *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape, onUndo, onUndoRefused }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -433,35 +427,6 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       onSelection?.(selection);
     },
     'lrn:escape'() { onEscape?.(); },
-    'lrn:undo'() {
-      // Ctrl+Z pressed inside the lesson (T016-D6). The bridge sends it only for a
-      // trusted, non-repeated keydown with Ctrl / Cmd, but a lesson can post the
-      // same message by itself, so the app checks what IT can see (T063-D3/D4):
-      // - the keyboard focus is in the frame;
-      // - the focus went in with the user's activation (a tap / click / key of the
-      //   user), not by the lesson's own focus() (that has no activation);
-      // - the user is active now (a key pressed in the frame activates the app too);
-      // - one per entry of the focus: after it the focus comes back to the app,
-      //   so the next Ctrl+Z is the app's own key (one action per press, never a
-      //   flood); the next lrn:undo only UNDO_AGAIN_MS later.
-      if (document.activeElement !== frame) { warn('lrn:undo without focus'); return; }
-      const why = !focusEntry?.trusted ? 'without a focus by the user'
-        : !navigator.userActivation?.isActive ? 'without user activation'
-          : performance.now() - lastUndoAt < UNDO_AGAIN_MS ? 'too soon' : '';
-      focusEntry = null;
-      // Either way the focus comes back to the app: the next Ctrl+Z is the app's
-      // own key (a user whose press was refused just presses it again).
-      element.tabIndex = -1;
-      element.focus({ preventScroll: true });
-      if (why) {
-        warn(`lrn:undo ${why}`);
-        const now = performance.now();
-        if (now - refusedAt >= UNDO_AGAIN_MS) { refusedAt = now; onUndoRefused?.(); } // said once, not per message
-        return;
-      }
-      lastUndoAt = performance.now();
-      onUndo?.();
-    },
     'lrn:stroked'(m) {
       // Only the answer to a stroke the user has just finished in the app.
       const wait = answers.get(m.seq);
@@ -571,42 +536,6 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     handlers[m.type](clean);
   };
   window.addEventListener('message', onMessage);
-
-  // T063-D3: how did the focus get into the frame? The app's window loses the
-  // focus to it. It is the user's own when:
-  // - Tab was pressed in the app right before (the keyboard way in), or
-  // - the user is active (Chromium: a tap / click / key in the frame activates
-  //   the app too) and the app itself had no input of the user for
-  //   UNDO_AGAIN_MS (so that activation comes from inside the frame: the user's
-  //   tap into the lesson, not a tap in the app a moment ago followed by the
-  //   lesson's own focus()).
-  // Else it is the lesson's focus(): its lrn:undo is refused (the focus is
-  // brought back to the app, where the next Ctrl+Z works).
-  let focusEntry = null; // { trusted } of the last entry of the focus into the frame
-  let lastUndoAt = -Infinity;
-  let refusedAt = -Infinity;
-  let appInputAt = -Infinity; // the last trusted pointer / key input in the app's own document
-  let appTabAt = -Infinity;
-  const onAppInput = (event) => {
-    if (!event.isTrusted) return;
-    appInputAt = performance.now();
-    if (event.type === 'keydown' && event.key === 'Tab') appTabAt = appInputAt;
-  };
-  const onAppBlur = () => {
-    const note = () => {
-      if (destroyed || !frame || document.activeElement !== frame || focusEntry) return;
-      const now = performance.now();
-      const byTab = now - appTabAt < 200;
-      const fromInside = navigator.userActivation?.isActive === true && now - appInputAt >= UNDO_AGAIN_MS;
-      focusEntry = { trusted: byTab || fromInside };
-    };
-    note();
-    setTimeout(note, 0);
-  };
-  const onAppFocus = () => { focusEntry = null; }; // the focus is back in the app
-  window.addEventListener('blur', onAppBlur);
-  window.addEventListener('focus', onAppFocus);
-  for (const type of ['pointerdown', 'pointerup', 'keydown']) window.addEventListener(type, onAppInput, true);
 
   const onSettings = (event) => {
     const next = event.detail?.fontScale;
@@ -852,9 +781,6 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       window.removeEventListener('popstate', stopRecording, true);
       window.removeEventListener('hashchange', stopRecording, true);
       window.removeEventListener('message', onMessage);
-      window.removeEventListener('blur', onAppBlur);
-      window.removeEventListener('focus', onAppFocus);
-      for (const type of ['pointerdown', 'pointerup', 'keydown']) window.removeEventListener(type, onAppInput, true);
       window.removeEventListener('easylrn:settings', onSettings);
       if (describing) { clearTimeout(describing.timer); describing.resolve(null); describing = null; }
       stroking = null;

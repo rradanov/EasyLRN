@@ -720,8 +720,6 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     setHidden: (value) => setHidden(value),
     get tool() { return choice.tool; },
     get color() { return choice.color; },
-    /** Ctrl+Z inside the lesson (lrn:undo): the last action of this opening, if any. */
-    undo() { if (!destroyed && undo.length) runUndo(); },
     /** Escape inside the lesson (lrn:escape). */
     escape() { if (choice.tool) setTool(null); },
     setTool,

@@ -256,22 +256,10 @@
   });
 
   // Escape inside the lesson (a keyboard selection): the app closes its bar (T-015).
-  // Ctrl+Z / Cmd+Z there (T016-D6): only the command "undo" goes to the app (no
-  // data); the app undoes ITS last action, the same as its own Ctrl+Z. Not in a
-  // field of the lesson (its own undo of typing stays). The bridge is not a
-  // proof (the lesson can post the same message): the app's own checks are in
-  // src/lesson-frame.js (lrn:undo).
+  // There is no undo from the lesson (D-044): Ctrl+Z inside it is the lesson's own.
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented) return;
-    if (event.key === 'Escape') { send('lrn:escape'); return; }
-    const t = event.target;
-    const typing = t && t.nodeType === 1 && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
-    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && String(event.key).toLowerCase() === 'z' && !typing) {
-      event.preventDefault();
-      // Only a real key of the user, one per press (no auto-repeat); the app
-      // checks the focus and the activation on its side too (T063-D3/D4).
-      if (event.isTrusted && !event.repeat) send('lrn:undo');
-    }
+    if (event.key === 'Escape') send('lrn:escape');
   });
 
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
