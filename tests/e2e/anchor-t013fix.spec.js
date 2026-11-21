@@ -84,7 +84,7 @@ const anchoredMsgs = (page) => page.evaluate(() => window.__lrn.filter((m) => m.
 const para = (i, w = '') => `<p>Абзац ${i}. Производителят${w} оценява рисковете за киберсигурността на продукта с цифрови елементи, номер ${i}, и документира резултата в техническата документация.</p>`;
 const body = (w = '', every = 1) => Array.from({ length: 3000 }, (_, i) => para(i, i % every === 0 ? w : '')).join('\n');
 
-test('F1 (T014-D3) 20 passages of 2000 characters + 200 whole paragraphs, all fuzzy after a small edit, at CPU ×4: lrn:anchored < 3 s and the app never freezes (max lag < 300 ms)', async ({ page }, ti) => {
+test('F1 (T014-D3) 20 passages of 2000 characters + 200 whole paragraphs, all fuzzy after a small edit, at CPU ×4: lrn:anchored < 3 s and the app never freezes (no task over 300 ms while anchoring, over 400 ms while the app shows 220 marks)', async ({ page }, ti) => {
   landscapeOnly(ti);
   test.setTimeout(300000);
   const v1 = body();
@@ -102,18 +102,23 @@ test('F1 (T014-D3) 20 passages of 2000 characters + 200 whole paragraphs, all fu
   await page.evaluate(() => { window.__lrn = []; });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-  // The app's event loop, measured from before the lesson opens.
-  await page.evaluate(() => { window.__lag = 0; let last = performance.now(); window.__lagTimer = setInterval(() => { const n = performance.now(); window.__lag = Math.max(window.__lag, n - last); last = n; }, 20); });
+  // Long tasks of the app's process (the lesson frame is in it too: its tasks are
+  // "cross-origin-descendant"), recorded from before the lesson opens. Gaps of a
+  // timer are no measure here: the CPU throttling of the test pauses the whole
+  // renderer now and then, even when no task runs.
+  await page.evaluate(() => { window.__lt = []; new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__lt.push([e.startTime, e.duration]); }).observe({ type: 'longtask' }); });
   await page.evaluate((c) => { location.hash = `#/c/${c}/read/0001`; }, C);
   await waitReady(page);
-  await page.evaluate(() => { window.__lag = 0; }); // the lesson's own loading (parse, layout) is not the anchoring
   await expect.poll(async () => (await anchoredMsgs(page)).length, { timeout: 120000, intervals: [250] }).toBeGreaterThan(0);
+  await page.waitForTimeout(1500); // the app shows the marks (the list to check, the signs)
   const r = await page.evaluate(() => {
-    clearInterval(window.__lagTimer);
     const ready = window.__lrn.find((m) => m.type === 'lrn:ready');
     const a = window.__lrn.find((m) => m.type === 'lrn:anchored');
     const st = {}; for (const x of a.results) st[x.state] = (st[x.state] || 0) + 1;
-    return { ms: Math.round(a.t - ready.t), lag: Math.round(window.__lag), states: st };
+    // The longest task while the bridge anchored (lrn:ready → lrn:anchored), and after it (the app shows the marks).
+    const during = window.__lt.filter(([t]) => t >= ready.t && t <= a.t).reduce((m, [, d]) => Math.max(m, d), 0);
+    const after = window.__lt.filter(([t]) => t > a.t).reduce((m, [, d]) => Math.max(m, d), 0);
+    return { ms: Math.round(a.t - ready.t), lag: Math.round(during), lagAfter: Math.round(after), states: st };
   });
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
   test.info().annotations.push({ type: 'F1 CPU ×4', description: JSON.stringify(r) });
@@ -121,7 +126,9 @@ test('F1 (T014-D3) 20 passages of 2000 characters + 200 whole paragraphs, all fu
   // 220 at once, every one changed: 1.2–1.8 s measured alone; the limit allows
   // for the other worker of the suite. The PLAN cases (T014-P2b/P3) are < 2 s.
   expect(r.ms).toBeLessThan(3000);
+  // 87–232 ms measured alone on the 2-CPU test machine (0.13.0 and wip/t015 alike): the limit stays 300 ms as in T-014.
   expect(r.lag).toBeLessThan(300);
+  expect(r.lagAfter).toBeLessThan(400);
 });
 
 test('F2 (T014-D4) an orphan comes back when the lesson\'s script writes its text later; a clock elsewhere does not re-search it all the time', async ({ page }) => {

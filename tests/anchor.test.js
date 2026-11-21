@@ -313,7 +313,7 @@ test('T-013-fix D3: побитовото търсене (Myers/Hyyrö) дава 
     for (const g of [false, true]) eq(anchorScan(x, from, to, pat(p), g, near), ref(x, from, to, p, near, g), `case ${t} ${g}`);
   }
 });
-test('T-013-fix праг: ≥ 0.7, когато контекстът от двете страни е цял (≥ 16 знака); иначе 0.8; без фалшиво ok', () => {
+test('T-013-fix праг: ≥ 0.7, когато 16-те знака от двете страни са непокътнати; иначе 0.8; без фалшиво ok', () => {
   const pre = 'Тук започва раздел за обхвата и ';
   const post = ', а останалото е по-нататък в текста.';
   const q = 'CRA се прилага само ако отговорът';
@@ -324,9 +324,15 @@ test('T-013-fix праг: ≥ 0.7, когато контекстът от две
   const ins = modelOf(`<body><p>${pre}CRA се прилага (редакция) само ако отговорът${post}</p><p>Друг абзац без връзка.</p></body>`);
   const r1 = anchorFind(ins, s);
   eq([r1.state, r1.similarity, ins.text.slice(r1.start, r1.end)], ['fuzzy', 0.75, 'CRA се прилага (редакция) само ако отговорът']);
-  // The same edit, but the context changed too → orphan (0.75 < 0.8).
+  // As in LRN-CRA-changed: a paragraph inserted before (the far part of the prefix is gone), the 16 characters around intact → fuzzy.
+  const far = modelOf(`<body><p>Тук започва раздел за обхвата.</p><p>Вмъкнат абзац, който го нямаше, и ${pre.slice(-16)}CRA се прилага (редакция) само ако отговорът${post}</p></body>`);
+  eq(anchorFind(far, s).state, 'fuzzy');
+  // The same edit, but the context right around it changed too → orphan (0.75 < 0.8).
   const both = modelOf(`<body><p>Нов увод тук. CRA се прилага (редакция) само ако отговорът е друг.</p></body>`);
   eq(anchorFind(both, s).state, 'orphan');
+  // Only one side intact → orphan.
+  const one = modelOf(`<body><p>${pre}CRA се прилага (редакция) само ако отговорът и съвсем друг край на изречението.</p></body>`);
+  eq(anchorFind(one, s).state, 'orphan');
   // 35 % of the quote changed, the context intact → orphan (< 0.7).
   const many = modelOf(`<body><p>${pre}CRA ## прилага ##### ### #ко отговорът${post}</p></body>`);
   eq(anchorFind(many, s).state, 'orphan');
@@ -360,6 +366,29 @@ test('T-013-fix D4: `within` търси само в дадената част (�
   const r = anchorFind(m, s, { within: [second - 3, m.text.length] });
   eq([r.state, r.start], ['ok', second]);
   eq(anchorFind(m, s, { within: [0, 5] }).state, 'orphan');
+});
+
+test('T-015: търсенето през индекса на 4-грамите (текст > 64 000 знака) намира същите места като indexOf', () => {
+  const r = rng(15);
+  const words = 'регламент продукт CRA риск уязвимост доклад срок оценка пазар вносител SBOM CE е и на за с'.split(' ');
+  const parts = [];
+  for (let i = 0; i < 3000; i++) { const w = []; for (let k = 0; k < 8; k++) w.push(words[Math.floor(r() * words.length)]); parts.push(`<p>${w.join(' ')}.</p>`); }
+  const m = modelOf(`<body>${parts.join('')}</body>`);
+  assert(m.text.length > 65536, String(m.text.length));
+  let checked = 0;
+  for (let t = 0; t < 300; t++) {
+    const len = 4 + Math.floor(r() * 60);
+    const at = Math.floor(r() * (m.text.length - len));
+    const s = anchorDescribe(m, at, at + len);
+    if (!s) continue;
+    // Moved: the old position far away, so only the search can find it (no "same version").
+    const f = anchorFind(m, { quote: s.quote, position: { start: 0, end: 1 } });
+    eq([f.state === 'orphan', m.text.slice(f.start, f.end)], [false, s.quote.exact], `case ${t}`);
+    // Its own place when the context is all there (unique with 32 + 32 characters of context).
+    if (anchorFind(m, s).start !== s.position.start) throw new AssertionError(`case ${t}: ${anchorFind(m, s).start} ≠ ${s.position.start}`);
+    checked++;
+  }
+  return `${checked} цитата в ${m.text.length} знака`;
 });
 
 // --- runner -------------------------------------------------------------------

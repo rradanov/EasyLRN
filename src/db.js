@@ -52,6 +52,8 @@ export const PRIVATE_STORES = Object.freeze([STORES.secrets]);
 export const DOC_TYPES = Object.freeze(['lesson', 'subtopic', 'note', 'message']);
 export const COLORS = Object.freeze(['yellow', 'green', 'blue', 'pink', 'orange']);
 export const ANCHOR_STATES = Object.freeze(['ok', 'fuzzy', 'orphan']);
+/** How a mark is drawn (T-015, D-042): marker = background, pencil = a line under the text. */
+export const ANNOTATION_STYLES = Object.freeze(['highlight', 'underline']);
 export const LESSON_KINDS = Object.freeze(['lesson', 'reference']);
 export const PROGRESS_STATUSES = Object.freeze(['new', 'started', 'done']);
 export const MESSAGE_ROLES = Object.freeze(['user', 'assistant']);
@@ -1048,7 +1050,7 @@ export async function listHistory(courseId) {
  * New annotation on any document (D-012, D-013).
  * @param {{ courseId: string, target: {type, id}, targetVersion?: string,
  *           selector: { quote: {exact, prefix, suffix}, position: {start, end}, hint? },
- *           color?: string|null, anchorState?: string }} data
+ *           color?: string|null, style?: 'highlight'|'underline', anchorState?: string }} data
  */
 export function createAnnotation(data) {
   requireString(data?.courseId, 'annotation.courseId');
@@ -1056,8 +1058,11 @@ export function createAnnotation(data) {
   if (color !== null) oneOf(color, COLORS, 'annotation.color');
   const anchorState = data.anchorState ?? 'ok';
   oneOf(anchorState, ANCHOR_STATES, 'annotation.anchorState');
+  const style = data.style ?? 'highlight'; // records before T-015 have none: a marker
+  oneOf(style, ANNOTATION_STYLES, 'annotation.style');
   return create(STORES.annotations, {
     ...data,
+    style,
     target: checkDocRef(data.target, 'annotation.target'),
     targetVersion: data.targetVersion ?? null,
     selector: checkSelector(data.selector),
@@ -1073,6 +1078,7 @@ export function updateAnnotation(id, patch) {
   const clean = { ...patch };
   if ('color' in clean && clean.color !== null) oneOf(clean.color, COLORS, 'annotation.color');
   if ('anchorState' in clean) oneOf(clean.anchorState, ANCHOR_STATES, 'annotation.anchorState');
+  if ('style' in clean) oneOf(clean.style, ANNOTATION_STYLES, 'annotation.style');
   if ('selector' in clean) clean.selector = checkSelector(clean.selector);
   delete clean.target; // an annotation never moves to another document
   return update(STORES.annotations, id, clean);

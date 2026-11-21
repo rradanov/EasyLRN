@@ -13,8 +13,9 @@
 //   starting point for the next anchoring, which checks the text there again.
 //   A lie costs at most a wrong state until the next opening.
 // - What goes to the lesson (`bridgeItems`): id, colour, selector, whether
-//   the version is the same. Never notes, threads, answers, settings or keys.
-import { createAnnotation, annotationsFor, update, STORES, docRef, COLORS, ANCHOR_STATES } from './db.js';
+//   the version is the same, its style (marker / pencil, T-015). Never notes,
+//   threads, answers, settings or keys.
+import { createAnnotation, annotationsFor, update, updateAnnotation, remove, restore, byIndex, getAnnotation, STORES, docRef, COLORS, ANCHOR_STATES, ANNOTATION_STYLES } from './db.js';
 
 export const MAX_ANNOTATIONS_PER_DOC = 5000;
 const SAVE_DELAY_MS = 1000;
@@ -38,6 +39,7 @@ export function bridgeItems(annotations, lesson) {
     return {
       id: a.id,
       color: COLORS.includes(a.color) ? a.color : null,
+      style: a.style === 'underline' ? 'underline' : 'highlight',
       selector: {
         quote: { exact: a.selector.quote.exact, prefix: a.selector.quote.prefix ?? '', suffix: a.selector.quote.suffix ?? '' },
         position: here ? { start: last.start, end: last.end } : { start: a.selector.position.start, end: a.selector.position.end },
@@ -139,9 +141,10 @@ export function anchorSaver(lesson) {
  * A selection that is only in an excluded part (`.quiz`, data-lrn-noanno) has
  * no position in the model and is refused here.
  */
-export async function annotateSelection({ course, lesson, selection, color = null }) {
+export async function annotateSelection({ course, lesson, selection, color = null, style = 'highlight' }) {
   if (!selection || selection.empty || !selection.quote?.exact || !selection.position) throw new TypeError('no selection');
   if (color !== null && !COLORS.includes(color)) throw new TypeError('bad colour');
+  if (!ANNOTATION_STYLES.includes(style)) throw new TypeError('bad style');
   return createAnnotation({
     courseId: course.id,
     target: lessonRef(lesson),
@@ -152,6 +155,68 @@ export async function annotateSelection({ course, lesson, selection, color = nul
       ...(selection.hint ? { hint: { blockPath: selection.hint } } : {}),
     },
     color,
+    style,
     anchorState: 'ok',
   });
+}
+
+// --- T-015: the user's changes (from the bottom bar / the card) ---------------------
+
+/** A new colour of an annotation of `lesson` (only of that lesson). */
+export async function setAnnotationColor(lesson, id, color) {
+  if (color !== null && !COLORS.includes(color)) throw new TypeError('bad colour');
+  await ownAnnotation(lesson, id);
+  return updateAnnotation(id, { color });
+}
+
+/** Soft delete (it can be undone: restoreAnnotation). */
+export async function deleteAnnotation(lesson, id) {
+  await ownAnnotation(lesson, id);
+  return remove(STORES.annotations, id);
+}
+
+/** Undo a delete. */
+export async function restoreAnnotation(lesson, id) {
+  await ownAnnotation(lesson, id, { includeDeleted: true });
+  return restore(STORES.annotations, id);
+}
+
+/** What hangs on an annotation (UI-DESIGN §5.2: "Ще изтриеш 1 нишка и 2 теми"). */
+export async function annotationDependents(id) {
+  const [notes, threads, subtopics] = await Promise.all([
+    byIndex(STORES.notes, 'by_annotation', id),
+    byIndex(STORES.threads, 'by_annotation', id),
+    byIndex(STORES.subtopics, 'by_annotation', id),
+  ]);
+  return { notes: notes.length, threads: threads.length, subtopics: subtopics.length };
+}
+
+/**
+ * The user confirmed a mark that was found only approximately ("провери" →
+ * "Да, тук е"): its selector becomes the one at the new place, in this
+ * version (`described` is the checked `lrn:described` of the bridge; the
+ * user pressed the button, a lesson message alone never changes a selector).
+ */
+export async function confirmAnnotationPlace(lesson, id, described) {
+  if (!described?.quote?.exact || !described.position) throw new TypeError('no place');
+  await ownAnnotation(lesson, id);
+  const at = new Date().toISOString();
+  return updateAnnotation(id, {
+    selector: {
+      quote: { ...described.quote },
+      position: { ...described.position },
+      ...(described.hint ? { hint: { blockPath: described.hint } } : {}),
+    },
+    targetVersion: lesson.sha256 ?? null,
+    anchorState: 'ok',
+    lastAnchor: { version: lesson.sha256 ?? null, state: 'ok', start: described.position.start, end: described.position.end, at },
+  });
+}
+
+/** The annotation `id`, if it is on `lesson` (never one of another document). */
+async function ownAnnotation(lesson, id, opts) {
+  const a = typeof id === 'string' ? await getAnnotation(id, opts) : null;
+  const ref = lessonRef(lesson);
+  if (!a || a.target?.type !== ref.type || a.target?.id !== ref.id) throw new Error('not an annotation of this lesson');
+  return a;
 }

@@ -450,8 +450,9 @@ test.describe('T-013 attacks through the bridge (LESSON-ISOLATION §5.3)', () =>
     const list = got.find((m) => m.type === 'lrn:annotations');
     expect(Object.keys(list).sort()).toEqual(['items', 'lrn', 'type']);
     expect(list.items).toHaveLength(1);
-    expect(Object.keys(list.items[0]).sort()).toEqual(['color', 'id', 'sameVersion', 'selector']);
-    expect(list.items[0]).toMatchObject({ id: own.id, color: 'blue', sameVersion: true });
+    // T-015 (0.13.0): + `style` (marker = highlight / pencil = underline).
+    expect(Object.keys(list.items[0]).sort()).toEqual(['color', 'id', 'sameVersion', 'selector', 'style']);
+    expect(list.items[0]).toMatchObject({ id: own.id, color: 'blue', sameVersion: true, style: 'highlight' });
     expect(Object.keys(list.items[0].selector).sort()).toEqual(['hint', 'position', 'quote']);
   });
 

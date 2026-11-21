@@ -28,7 +28,13 @@
 // the margin of the app), `lrn:describe` (the selector of a mark at its new
 // place, when the user confirms a "провери"), and a selection that is only in
 // an excluded part (`.quiz`, data-lrn-noanno) is reported as a quote without a
-// position (`excludedOnly`). The bottom bar and the card are in the app.
+// position (`excludedOnly`).
+// T-015 (D-042): the drawing tools. The gesture is in the APP (its layer over
+// this frame); here only `lrn:stroke` points → caret → text (whole words), a
+// live preview (lrn-pv-*), the eraser's hit-test, ONE `lrn:stroked` answer per
+// stroke; `lrn:activate` presses the lesson's own control under a tap. Marks
+// are painted as lrn-<colour> (marker: background) and lrn-u-<colour> (pencil:
+// a line), in the palette that fits the lesson's own background.
 (function lrnBridge() {
   'use strict';
   // The real references, kept by src/lesson-guard.js before the lesson's scripts
@@ -64,7 +70,35 @@
   const baseFontPx = parseFloat(getComputedStyle(root).fontSize) || 16;
   const style = document.createElement('style');
   style.setAttribute('data-easylrn', 'bridge');
-  const state = { fontScale: 1, palette: {}, paletteDark: {}, exclude: BASE_EXCLUDE, active: false, inner: false };
+  const state = {
+    fontScale: 1, palette: {}, paletteDark: {}, pencil: {}, pencilDark: {}, dark: false,
+    exclude: BASE_EXCLUDE, active: false, inner: false,
+  };
+  // Is the lesson itself dark (its computed background)? Its own CSS may follow
+  // prefers-color-scheme or not; the marks must be readable on what is there.
+  const parseRgb = (value) => {
+    const m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?/.exec(String(value || ''));
+    if (!m) return null;
+    const alpha = m[4] === undefined ? 1 : m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+    return alpha < 0.5 ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const luminance = ([r, g, b]) => {
+    const f = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const darkLesson = () => {
+    try {
+      for (const el of [document.body, root]) {
+        if (!el) continue;
+        const rgb = parseRgb(getComputedStyle(el).backgroundColor);
+        if (rgb) return luminance(rgb) < 0.25;
+      }
+      // No background of its own: the canvas (white, or dark only with color-scheme: dark).
+      const scheme = getComputedStyle(root).colorScheme || '';
+      return /dark/.test(scheme) && !/light/.test(scheme) ? true
+        : /dark/.test(scheme) && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
+    } catch { return false; }
+  };
   const renderStyle = () => {
     // Only once the app has answered (lrn:init): the frame is then as tall as its
     // content and the app window scrolls. Before that (or if the app falls back
@@ -74,18 +108,26 @@
       'body { min-height: 0 !important; }',
     ] : [];
     if (state.fontScale !== 1) rules.push(`html { font-size: ${(baseFontPx * state.fontScale).toFixed(2)}px !important; }`);
-    const dark = [];
+    // T-015: the palette follows the lesson's OWN background (a lesson without a
+    // dark style stays white in a dark system theme: light marks there), see darkLesson().
+    const dark = state.dark;
+    const marker = dark ? state.paletteDark : state.palette;
+    const pencil = dark ? state.pencilDark : state.pencil;
     for (const c of COLORS) {
-      const color = state.palette[c] || 'Highlight';
-      rules.push(`::highlight(lrn-${c}) { background-color: ${color}; color: inherit; }`);
-      if (state.paletteDark[c]) dark.push(`::highlight(lrn-${c}) { background-color: ${state.paletteDark[c]}; }`);
+      const bg = marker[c] || state.palette[c] || 'Highlight';
+      const line = pencil[c] || 'currentColor';
+      // Marker: the background (the text keeps its own colour).
+      rules.push(`::highlight(lrn-${c}), ::highlight(lrn-pv-marker-${c}) { background-color: ${bg}; color: inherit; }`);
+      // Pencil: a line under the text (no change of the text or its background).
+      rules.push(`::highlight(lrn-u-${c}), ::highlight(lrn-pv-pencil-${c}) { text-decoration: underline solid 3px ${line}; text-underline-offset: 3px; text-decoration-skip-ink: none; }`);
+      // A pencil mark found only approximately: dashed.
+      rules.push(`::highlight(lrn-uf-${c}) { text-decoration: underline dashed 3px ${line}; text-underline-offset: 3px; text-decoration-skip-ink: none; }`);
     }
-    // The lesson follows the system theme (T-019): the dark colours of the app with it.
-    if (dark.length) rules.push(`@media (prefers-color-scheme: dark) { ${dark.join(' ')} }`);
     // Found only approximately (D-012 "провери"): a dotted line under it.
     rules.push('::highlight(lrn-fuzzy) { text-decoration: underline dotted 2px; text-underline-offset: 3px; }');
     // Forced colours (high contrast): the system colours of a mark.
-    rules.push(`@media (forced-colors: active) { ${COLORS.map((c) => `::highlight(lrn-${c})`).join(', ')} { background-color: Mark; color: MarkText; } }`);
+    rules.push(`@media (forced-colors: active) { ${COLORS.map((c) => `::highlight(lrn-${c}), ::highlight(lrn-pv-marker-${c})`).join(', ')} { background-color: Mark; color: MarkText; }`
+      + ` ${COLORS.map((c) => `::highlight(lrn-u-${c}), ::highlight(lrn-uf-${c}), ::highlight(lrn-pv-pencil-${c})`).join(', ')} { text-decoration-color: CanvasText; } }`);
     // The frame around the active mark (T-015, lrn:focus).
     rules.push('[data-easylrn="focus"] { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 2147483647; }');
     rules.push('[data-easylrn="focus"] > div { position: absolute; box-sizing: border-box; border: 2px solid #1f5fbf; border-radius: 4px; pointer-events: none; }');
@@ -93,8 +135,15 @@
     rules.push('@media (forced-colors: active) { [data-easylrn="focus"] > div { border-color: Highlight; } }');
     style.textContent = rules.join('\n');
   };
+  state.dark = darkLesson();
   renderStyle();
   (document.head || root).appendChild(style);
+  const followTheme = () => {
+    const next = darkLesson();
+    if (next !== state.dark) { state.dark = next; renderStyle(); }
+  };
+  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', followTheme); } catch { /* old engine */ }
+  window.addEventListener('load', followTheme);
 
   // --- Height -------------------------------------------------------------------
   let lastHeight = -1;
@@ -178,6 +227,11 @@
     selectionTimer = setTimeout(reportSelection, 150);
   });
 
+  // Escape inside the lesson (a keyboard selection): the app closes its bar (T-015).
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !event.defaultPrevented) send('lrn:escape');
+  });
+
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
   let painted = []; // { id, range } of the annotations with a colour (hit-test)
   const elementForFragment = (fragment) => {
@@ -243,6 +297,7 @@
       out.push({
         id: it.id,
         color,
+        style: it.style === 'underline' ? 'underline' : 'highlight',
         selector: { quote: { exact: q.exact, prefix: q.prefix ?? '', suffix: q.suffix ?? '' }, position: p && isInt(p.start) && isInt(p.end) ? { start: p.start, end: p.end } : undefined, hint },
         sameVersion: it.sameVersion === true,
       });
@@ -252,19 +307,25 @@
   const paint = () => {
     painted = [];
     if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight !== 'function') return;
-    const byColor = new Map(COLORS.map((c) => [c, []]));
+    // lrn-<colour>: marker; lrn-u-<colour>: pencil; lrn-uf-<colour>: pencil, found approximately.
+    const sets = new Map();
+    for (const c of COLORS) for (const k of ['', 'u-', 'uf-']) sets.set(`lrn-${k}${c}`, []);
     const fuzzy = [];
     for (const it of items) {
       const a = anchored.get(it.id);
       if (!a?.range || !it.color) continue;
-      byColor.get(it.color).push(a.range);
-      if (a.state === 'fuzzy') fuzzy.push(a.range);
-      painted.push({ id: it.id, range: a.range, start: a.start, end: a.end });
+      painted.push({ id: it.id, range: a.range, start: a.start, end: a.end, style: it.style, color: it.color });
+      if (stroke.erased.has(it.id)) continue; // under the eraser right now (shown again if it is not deleted)
+      if (it.style === 'underline') sets.get(`lrn-${a.state === 'fuzzy' ? 'uf-' : 'u-'}${it.color}`).push(a.range);
+      else {
+        sets.get(`lrn-${it.color}`).push(a.range);
+        if (a.state === 'fuzzy') fuzzy.push(a.range);
+      }
     }
     try {
-      for (const [c, ranges] of byColor) {
-        if (ranges.length) CSS.highlights.set(`lrn-${c}`, new Highlight(...ranges));
-        else CSS.highlights.delete(`lrn-${c}`);
+      for (const [name, ranges] of sets) {
+        if (ranges.length) CSS.highlights.set(name, new Highlight(...ranges));
+        else CSS.highlights.delete(name);
       }
       if (fuzzy.length) CSS.highlights.set('lrn-fuzzy', new Highlight(...fuzzy));
       else CSS.highlights.delete('lrn-fuzzy');
@@ -521,6 +582,144 @@
     if (document.body) watch.observe(document.body, { childList: true, subtree: true, characterData: true });
   } catch { /* no observer: anchored once */ }
 
+  // --- Drawing tools (T-015, D-042) ---------------------------------------------------
+  // The gesture itself is in the APP (a layer over this frame, trusted pointer
+  // events there): it sends the points of one stroke, in the coordinates of
+  // this frame, as `lrn:stroke` (start / move / end / cancel). Here they become
+  // text: the caret at each point (caretPositionFromPoint), the model offsets,
+  // a live preview (a highlight of its own, no DOM change), and at the end ONE
+  // answer `lrn:stroked` with the selectors (marker, pencil) or the ids under
+  // the path (eraser). The app saves only an answer to its own stroke.
+  const WORD = /[\p{L}\p{N}\p{M}­]/u;
+  const TOOLS = ['marker', 'pencil', 'eraser'];
+  const MAX_POINT = 1e6;
+  const stroke = {
+    seq: null, tool: null, color: null, from: null, to: null, x0: 0, y0: 0, moved: 0, last: null,
+    erased: new Set(), keep: 0, // `erased`: ids hidden under the eraser until the app's next list
+  };
+  const isPoint = (v) => typeof v === 'number' && Number.isFinite(v) && v >= -MAX_POINT && v <= MAX_POINT;
+  /** The model offset of the caret at a point of this frame, or null (outside the text, in an excluded part). */
+  function caretOffset(x, y) {
+    let node = null;
+    let offset = 0;
+    try {
+      if (document.caretPositionFromPoint) {
+        const p = document.caretPositionFromPoint(x, y);
+        if (p) { node = p.offsetNode; offset = p.offset; }
+      } else if (document.caretRangeFromPoint) {
+        const r = document.caretRangeFromPoint(x, y);
+        if (r) { node = r.startContainer; offset = r.startOffset; }
+      }
+    } catch { node = null; }
+    if (!node) return null;
+    const under = document.elementFromPoint(x, y);
+    if (excluded(node) || (under && excluded(under))) return null;
+    const model = textModel();
+    if (!model.text.length) return null;
+    return anchorOffset(model, node, offset);
+  }
+  /** The character under a point (its box, a little larger for a finger), or null. */
+  function charAt(x, y) {
+    const at = caretOffset(x, y);
+    if (at === null) return null;
+    const model = textModel();
+    for (const c of [at, at - 1]) {
+      if (c < 0 || c >= model.text.length || model.text[c] === ' ') continue;
+      const r = anchorRange(model, c, c + 1);
+      let rects = [];
+      try { rects = r ? [...r.getClientRects()] : []; } catch { rects = []; }
+      for (const b of rects) {
+        if (x >= b.left - 6 && x <= b.right + 6 && y >= b.top - 6 && y <= b.bottom + 10) return c;
+      }
+    }
+    return null;
+  }
+  /** [start, end) from the two caret offsets, widened to whole words (no word is cut). */
+  function wordSpan(a, b) {
+    const T = textModel().text;
+    let s = Math.min(a, b);
+    let e = Math.max(a, b);
+    while (s > 0 && s < T.length && WORD.test(T[s - 1]) && WORD.test(T[s])) s--;
+    while (e < T.length && e > 0 && WORD.test(T[e]) && WORD.test(T[e - 1])) e++;
+    // A stroke on one word only (both carets inside it): that word.
+    if (s === e) {
+      while (s > 0 && WORD.test(T[s - 1])) s--;
+      while (e < T.length && WORD.test(T[e])) e++;
+    }
+    while (s < e && T[s] === ' ') s++;
+    while (e > s && T[e - 1] === ' ') e--;
+    return e > s ? [s, e] : null;
+  }
+  const PREVIEW = [];
+  for (const t of ['marker', 'pencil']) for (const c of COLORS) PREVIEW.push(`lrn-pv-${t}-${c}`);
+  function clearPreview() {
+    try { for (const name of PREVIEW) CSS.highlights.delete(name); } catch { /* no Highlight API */ }
+  }
+  function showPreview() {
+    if (stroke.from === null || stroke.to === null || stroke.tool === 'eraser') return;
+    const span = stroke.moved >= 6 ? wordSpan(stroke.from, stroke.to) : null;
+    const range = span ? anchorRange(textModel(), span[0], span[1]) : null;
+    try {
+      clearPreview();
+      if (range) CSS.highlights.set(`lrn-pv-${stroke.tool}-${stroke.color}`, new Highlight(range));
+    } catch { /* no Highlight API: no preview, the mark is still made */ }
+  }
+  /** The eraser at one point: the marks with the character under it (both kinds). */
+  function eraseAt(x, y) {
+    const c = charAt(x, y);
+    if (c === null) return false;
+    let changed = false;
+    for (const p of painted) {
+      if (p.start <= c && c < p.end && !stroke.erased.has(p.id)) { stroke.erased.add(p.id); changed = true; }
+    }
+    return changed;
+  }
+  /** Points between the last one and (x, y), every 6 px (a fast finger skips characters). */
+  function* along(x, y) {
+    const [lx, ly] = stroke.last || [x, y];
+    const n = Math.min(200, Math.ceil(Math.hypot(x - lx, y - ly) / 6));
+    for (let i = 1; i <= n; i++) yield [lx + ((x - lx) * i) / n, ly + ((y - ly) * i) / n];
+    if (!n) yield [x, y];
+  }
+  function strokePoint(x, y) {
+    stroke.moved = Math.max(stroke.moved, Math.hypot(x - stroke.x0, y - stroke.y0));
+    if (stroke.tool === 'eraser') {
+      let changed = false;
+      for (const [px, py] of along(x, y)) changed = eraseAt(px, py) || changed;
+      stroke.last = [x, y];
+      if (changed) paint();
+      return;
+    }
+    stroke.last = [x, y];
+    const at = caretOffset(x, y);
+    if (at === null) return; // over an excluded part or outside the text: the last good point stays
+    if (stroke.from === null) stroke.from = at;
+    stroke.to = at;
+    showPreview();
+  }
+  function strokeAnswer() {
+    const base = { seq: stroke.seq, tool: stroke.tool };
+    if (stroke.tool === 'eraser') return { ...base, ids: [...stroke.erased].slice(0, MAX_ITEMS) };
+    const span = stroke.from !== null && stroke.to !== null && stroke.moved >= 6 ? wordSpan(stroke.from, stroke.to) : null;
+    const selector = span ? anchorDescribe(textModel(), span[0], span[1]) : null;
+    if (!selector) return { ...base, quote: null };
+    const style = stroke.tool === 'pencil' ? 'underline' : 'highlight';
+    const { start, end } = selector.position;
+    // Already all under a mark of the same kind and colour: nothing new (the app makes no copy).
+    const covered = painted.some((p) => p.style === style && p.color === stroke.color && p.start <= start && end <= p.end);
+    return { ...base, quote: selector.quote, position: selector.position, ...(selector.hint ? { hint: selector.hint.blockPath } : {}), covered };
+  }
+  /** Interactive element of the lesson at a point (a tap with a tool on: a quiz button, a link…). */
+  const INTERACTIVE = 'a[href], area[href], button, input, select, textarea, label, summary, [role="button"], [role="radio"], [role="checkbox"], [role="tab"], [role="link"], [onclick], [tabindex]';
+  function activateAt(x, y) {
+    let el = null;
+    try { el = document.elementFromPoint(x, y); } catch { el = null; }
+    const target = el?.closest?.(INTERACTIVE);
+    if (!target || target === document.body || target === root) return;
+    try { target.focus?.({ preventScroll: true }); } catch { /* not focusable */ }
+    try { target.click(); } catch { /* the lesson broke it */ }
+  }
+
   // --- Messages from the app ------------------------------------------------------
   const fontsLoaded = [];
   const handlers = {
@@ -533,11 +732,17 @@
       };
       if (m.palette && typeof m.palette === 'object') state.palette = colours(m.palette);
       if (m.paletteDark && typeof m.paletteDark === 'object') state.paletteDark = colours(m.paletteDark);
+      if (m.pencil && typeof m.pencil === 'object') state.pencil = colours(m.pencil);
+      if (m.pencilDark && typeof m.pencilDark === 'object') state.pencilDark = colours(m.pencilDark);
+      state.dark = darkLesson();
       applyScale(m.fontScale);
       if (Array.isArray(m.exclude)) {
         const extra = m.exclude.filter((s) => typeof s === 'string' && s.length <= 200).slice(0, 20);
         const joined = [BASE_EXCLUDE, ...extra].join(', ');
-        try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; cachedModel = null; lastText = null; } catch { /* invalid: keep */ }
+        // The same exclusions as now (the usual case): keep the model built for lrn:ready.
+        if (joined !== state.exclude) {
+          try { document.createDocumentFragment().querySelector(joined); state.exclude = joined; cachedModel = null; lastText = null; } catch { /* invalid: keep */ }
+        }
       }
       renderStyle();
       sendSize(true);
@@ -573,7 +778,47 @@
       queueSize();
       queueLayout();
     },
+    'lrn:stroke'(m) {
+      const phase = m.phase;
+      if (phase === 'cancel') {
+        if (m.seq !== stroke.seq) return;
+        stroke.seq = null;
+        clearPreview();
+        if (stroke.erased.size) { stroke.erased.clear(); paint(); }
+        return;
+      }
+      if (!isPoint(m.x) || !isPoint(m.y)) return;
+      if (phase === 'start') {
+        if (!Number.isInteger(m.seq) || m.seq < 0 || !TOOLS.includes(m.tool)) return;
+        if (m.tool !== 'eraser' && !COLORS.includes(m.color)) return;
+        clearPreview();
+        if (stroke.erased.size) { stroke.erased.clear(); paint(); }
+        Object.assign(stroke, { seq: m.seq, tool: m.tool, color: m.color ?? null, from: null, to: null, x0: m.x, y0: m.y, moved: 0, last: null });
+        strokePoint(m.x, m.y);
+        return;
+      }
+      if (m.seq !== stroke.seq || stroke.seq === null) return;
+      if (phase === 'move') { strokePoint(m.x, m.y); return; }
+      if (phase === 'end') {
+        strokePoint(m.x, m.y);
+        const answer = strokeAnswer();
+        stroke.seq = null;
+        // The preview (or the erased marks) stays until the app's next list, at most 3 s.
+        clearTimeout(stroke.keep);
+        stroke.keep = setTimeout(() => { clearPreview(); if (stroke.erased.size) { stroke.erased.clear(); paint(); } }, 3000);
+        send('lrn:stroked', answer);
+      }
+    },
+    'lrn:activate'(m) {
+      if (isPoint(m.x) && isPoint(m.y)) activateAt(m.x, m.y);
+    },
+    'lrn:scroll-by'(m) {
+      // Two fingers with a tool on, in a lesson that scrolls inside its frame (T046-D2).
+      if (state.inner && isPoint(m.dx) && isPoint(m.dy)) window.scrollBy(m.dx, m.dy);
+    },
     'lrn:annotations'(m) {
+      clearTimeout(stroke.keep);
+      if (stroke.seq === null) { clearPreview(); stroke.erased.clear(); }
       items = cleanItems(m.items);
       anchorAll();
     },

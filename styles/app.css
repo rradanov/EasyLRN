@@ -22,6 +22,12 @@
   --hl-blue: #cfe3f7;
   --hl-pink: #f8d3e1;
   --hl-orange: #fbd9b5;
+  /* Pencil lines (T-015): keep in sync with PENCIL_PALETTE in src/highlight.js. */
+  --ul-yellow: #8a6d00;
+  --ul-green: #2e7d32;
+  --ul-blue: #1f5fbf;
+  --ul-pink: #c2185b;
+  --ul-orange: #b85200;
 
   --font-serif: "et-book", Palatino, "Palatino Linotype", "Book Antiqua", Georgia, "Noto Serif", serif;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
@@ -49,6 +55,11 @@
     --hl-blue: #23405c;
     --hl-pink: #5a2a3d;
     --hl-orange: #5c3a17;
+    --ul-yellow: #ffd84d;
+    --ul-green: #6fd17a;
+    --ul-blue: #7fb2ff;
+    --ul-pink: #ff7fbf;
+    --ul-orange: #ffa552;
   }
 }
 /* A theme chosen in "Настройки" (T-019, src/theme.js) wins over the system. */
@@ -69,6 +80,11 @@
   --hl-blue: #23405c;
   --hl-pink: #5a2a3d;
   --hl-orange: #5c3a17;
+  --ul-yellow: #ffd84d;
+  --ul-green: #6fd17a;
+  --ul-blue: #7fb2ff;
+  --ul-pink: #ff7fbf;
+  --ul-orange: #ffa552;
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
@@ -816,3 +832,160 @@ ol.activity { list-style: none; }
    one line next to each other: they wrap and shrink instead of overflowing. */
 .screen--course .quiz-list__actions { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .screen--course .quiz-list__actions > .button { max-width: 100%; }
+
+/* ---- Marking tools (T-015, D-042): a bar left of the lesson, a layer over it ---- */
+.reader__doc {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-left: calc(-1 * max(24px, env(safe-area-inset-left)) + 4px);
+}
+.reader__tools {
+  position: sticky;
+  top: calc(var(--bar-h) + env(safe-area-inset-top) + 8px);
+  z-index: 4;
+  flex: 0 0 auto;
+}
+.reader__content { flex: 1 1 auto; min-width: 0; }
+.reader__doc .lesson-frame__wrap { position: relative; margin-left: 0; }
+.mark-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background: var(--paper-2);
+  box-shadow: var(--shadow);
+  font-family: var(--font-sans);
+  max-height: calc(100vh - var(--bar-h) - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.mark-tools__group { display: flex; flex-direction: column; gap: 4px; }
+.mark-tools__group + .mark-tools__group,
+.mark-tools__undo { border-top: 1px solid var(--rule); padding-top: 10px; }
+.mark-tools__button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 56px;
+  min-height: 52px;
+  padding: 4px 2px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mark-tools__undo { min-height: 56px; border-radius: 0 0 10px 10px; }
+.mark-tools__label { font-size: 0.68rem; line-height: 1.1; }
+.mark-tools__tool[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.mark-tools__tool[aria-pressed="true"] .mark-tools__label { font-weight: 700; }
+.mark-tools__button:disabled { opacity: 0.45; cursor: default; }
+.mark-tools__swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--ink-muted);
+  box-sizing: border-box;
+}
+/* The swatch shows both: the marker (fill) and the pencil (the line under). */
+.mark-tools__swatch::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 6px;
+  height: 3px;
+  border-radius: 2px;
+}
+.mark-tools__check { visibility: hidden; font-size: 1rem; font-weight: 700; color: var(--ink); }
+.mark-tools__color[aria-pressed="true"] { border-color: var(--ink); }
+.mark-tools__color[aria-pressed="true"] .mark-tools__check { visibility: visible; }
+.mark-tools__color[aria-pressed="true"] .mark-tools__swatch { box-shadow: 0 0 0 2px var(--paper-2), 0 0 0 4px var(--ink); }
+.mark-tools__color[data-color="yellow"] .mark-tools__swatch { background: var(--hl-yellow); }
+.mark-tools__color[data-color="green"] .mark-tools__swatch { background: var(--hl-green); }
+.mark-tools__color[data-color="blue"] .mark-tools__swatch { background: var(--hl-blue); }
+.mark-tools__color[data-color="orange"] .mark-tools__swatch { background: var(--hl-orange); }
+.mark-tools__color[data-color="pink"] .mark-tools__swatch { background: var(--hl-pink); }
+.mark-tools__color[data-color="yellow"] .mark-tools__swatch::after { background: var(--ul-yellow); }
+.mark-tools__color[data-color="green"] .mark-tools__swatch::after { background: var(--ul-green); }
+.mark-tools__color[data-color="blue"] .mark-tools__swatch::after { background: var(--ul-blue); }
+.mark-tools__color[data-color="orange"] .mark-tools__swatch::after { background: var(--ul-orange); }
+.mark-tools__color[data-color="pink"] .mark-tools__swatch::after { background: var(--ul-pink); }
+.mark-tools__hint {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 0;
+  width: max-content;
+  max-width: 260px;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.mark-tools { position: relative; }
+.mark-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: crosshair;
+  background: transparent;
+}
+.mark-layer[data-tool="eraser"] { cursor: cell; }
+@media (forced-colors: active) {
+  .mark-tools__tool[aria-pressed="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; }
+  .mark-tools__color[aria-pressed="true"] .mark-tools__swatch { outline: 3px solid Highlight; outline-offset: 2px; }
+  .mark-tools__swatch { forced-color-adjust: none; }
+  .mark-tools__check { color: #000; }
+}
+
+/* "Маркировки за проверка" (above the lesson, only when there are such marks). */
+.marks-check {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-left: 4px solid #b85200;
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  font-family: var(--font-sans);
+}
+.marks-check__summary { min-height: var(--touch); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.marks-check__hint { margin: 4px 0 8px; color: var(--ink-muted); font-size: 0.9rem; }
+.marks-check__list { list-style: none; margin: 0 0 8px; padding: 0; }
+.marks-check__item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 0; border-top: 1px solid var(--rule); }
+.marks-check__quote { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-serif); }
+.marks-check__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.marks-check__swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--ink-muted); }
+.marks-check__swatch[data-color="yellow"] { background: var(--hl-yellow); }
+.marks-check__swatch[data-color="green"] { background: var(--hl-green); }
+.marks-check__swatch[data-color="blue"] { background: var(--hl-blue); }
+.marks-check__swatch[data-color="orange"] { background: var(--hl-orange); }
+.marks-check__swatch[data-color="pink"] { background: var(--hl-pink); }
+.marks-check__swatch[data-style="underline"] { background: transparent; border: 0; border-bottom: 3px solid var(--ink); border-radius: 0; }
+.marks-check__swatch[data-style="underline"][data-color="yellow"] { border-bottom-color: var(--ul-yellow); }
+.marks-check__swatch[data-style="underline"][data-color="green"] { border-bottom-color: var(--ul-green); }
+.marks-check__swatch[data-style="underline"][data-color="blue"] { border-bottom-color: var(--ul-blue); }
+.marks-check__swatch[data-style="underline"][data-color="orange"] { border-bottom-color: var(--ul-orange); }
+.marks-check__swatch[data-style="underline"][data-color="pink"] { border-bottom-color: var(--ul-pink); }
