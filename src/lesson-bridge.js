@@ -144,6 +144,25 @@
   };
   try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', followTheme); } catch { /* old engine */ }
   window.addEventListener('load', followTheme);
+  // T016-D3: a lesson that changes its own background later (its own theme
+  // button: a class / style / data-* on <html> or <body>, a new <style>) gets
+  // the palette again; once at the next frame and once after a CSS transition.
+  let themeTimer = 0;
+  const themeSoon = () => {
+    clearTimeout(themeTimer);
+    requestAnimationFrame(followTheme);
+    themeTimer = setTimeout(followTheme, 450);
+  };
+  try {
+    const watch = new MutationObserver((records) => {
+      if (records.some((r) => r.type === 'attributes' || [...r.addedNodes, ...r.removedNodes].some((n) => n !== style && /^(STYLE|LINK)$/.test(n.nodeName)))) themeSoon();
+    });
+    const attributes = { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'] };
+    watch.observe(root, attributes);
+    if (document.head) watch.observe(document.head, { childList: true });
+    const watchBody = () => { if (document.body) watch.observe(document.body, attributes); };
+    if (document.body) watchBody(); else document.addEventListener('DOMContentLoaded', watchBody, { once: true });
+  } catch { /* no MutationObserver */ }
 
   // --- Height -------------------------------------------------------------------
   let lastHeight = -1;
@@ -228,8 +247,18 @@
   });
 
   // Escape inside the lesson (a keyboard selection): the app closes its bar (T-015).
+  // Ctrl+Z / Cmd+Z there (T016-D6): only the command "undo" goes to the app (no
+  // data); the app undoes ITS last action, the same as its own Ctrl+Z. Not in a
+  // field of the lesson (its own undo of typing stays).
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !event.defaultPrevented) send('lrn:escape');
+    if (event.defaultPrevented) return;
+    if (event.key === 'Escape') { send('lrn:escape'); return; }
+    const t = event.target;
+    const typing = t && t.nodeType === 1 && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && String(event.key).toLowerCase() === 'z' && !typing) {
+      event.preventDefault();
+      send('lrn:undo');
+    }
   });
 
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
@@ -591,6 +620,9 @@
   // answer `lrn:stroked` with the selectors (marker, pencil) or the ids under
   // the path (eraser). The app saves only an answer to its own stroke.
   const WORD = /[\p{L}\p{N}\p{M}­]/u;
+  // Inner punctuation that keeps a word whole when it stands BETWEEN two word
+  // characters (T016-D1): "don't", "1,25", "3.5", "по-рано", "2024/2847".
+  const JOIN = /['’ʼ.,\-‐‑/]/u;
   const TOOLS = ['marker', 'pencil', 'eraser'];
   const MAX_POINT = 1e6;
   const stroke = {
@@ -637,14 +669,16 @@
   /** [start, end) from the two caret offsets, widened to whole words (no word is cut). */
   function wordSpan(a, b) {
     const T = textModel().text;
+    const isWord = (i) => i >= 0 && i < T.length && (WORD.test(T[i])
+      || (JOIN.test(T[i]) && i > 0 && i + 1 < T.length && WORD.test(T[i - 1]) && WORD.test(T[i + 1])));
     let s = Math.min(a, b);
     let e = Math.max(a, b);
-    while (s > 0 && s < T.length && WORD.test(T[s - 1]) && WORD.test(T[s])) s--;
-    while (e < T.length && e > 0 && WORD.test(T[e]) && WORD.test(T[e - 1])) e++;
+    while (s > 0 && isWord(s - 1) && isWord(s)) s--;
+    while (e > 0 && isWord(e) && isWord(e - 1)) e++;
     // A stroke on one word only (both carets inside it): that word.
     if (s === e) {
-      while (s > 0 && WORD.test(T[s - 1])) s--;
-      while (e < T.length && WORD.test(T[e])) e++;
+      while (isWord(s - 1)) s--;
+      while (isWord(e)) e++;
     }
     while (s < e && T[s] === ' ') s++;
     while (e > s && T[e - 1] === ' ') e--;

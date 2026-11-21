@@ -129,6 +129,8 @@ const CHECK = {
     };
   },
   'lrn:escape': () => ({}),
+  // T016-D6: Ctrl+Z inside the lesson, a bare command (no fields are read).
+  'lrn:undo': () => ({}),
   // T-015: the answer to the app's own stroke (marker / pencil: the text; eraser: ids).
   'lrn:stroked': (m) => {
     if (!isInt(m.seq, 0, 1e9) || !STROKE_TOOLS.includes(m.tool)) return null;
@@ -194,12 +196,13 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
  *   onScroll?: (y: number) => void, onTap?: (annotation: object|null) => void,
  *   onAnchored?: (annotations: object[]) => void, onSelection?: (selection: object|null) => void,
- *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void }} opts
+ *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void,
+ *   onUndo?: () => void }} opts
  * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
  *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
  *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape, onUndo }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -425,6 +428,12 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       onSelection?.(selection);
     },
     'lrn:escape'() { onEscape?.(); },
+    'lrn:undo'() {
+      // Only while the keyboard focus is in the lesson (a key pressed there);
+      // the app then undoes its own last action, as with its own Ctrl+Z.
+      if (document.activeElement !== frame) { warn('lrn:undo without focus'); return; }
+      onUndo?.();
+    },
     'lrn:stroked'(m) {
       // Only the answer to a stroke the user has just finished in the app.
       const wait = answers.get(m.seq);

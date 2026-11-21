@@ -863,6 +863,34 @@ ol.activity { list-style: none; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.mark-tools[hidden] { display: none; }
+/* T-062: "Скрий" at the top of the bar; hidden, the handle "☰" at the left edge. */
+.mark-tools__hide { min-height: 48px; border-bottom: 1px solid var(--rule); border-radius: 10px 10px 0 0; }
+.mark-tools-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  background: var(--paper-2);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  cursor: pointer;
+  touch-action: pan-y;
+}
+.mark-tools-handle[hidden] { display: none; }
+.mark-tools-handle:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.reader__doc[data-bar="hidden"] {
+  gap: 4px;
+  margin-left: calc(-1 * max(24px, env(safe-area-inset-left)) + env(safe-area-inset-left));
+}
+@media (forced-colors: active) {
+  .mark-tools-handle { border: 1px solid ButtonText; }
+}
 .mark-tools__group { display: flex; flex-direction: column; gap: 4px; }
 .mark-tools__group + .mark-tools__group,
 .mark-tools__undo { border-top: 1px solid var(--rule); padding-top: 10px; }

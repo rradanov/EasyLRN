@@ -33,9 +33,12 @@ export async function lessonAnnotations(lesson) {
 export function bridgeItems(annotations, lesson) {
   return annotations.map((a) => {
     // The last place found in THIS version is the best start (the bridge checks
-    // that the quote is still there); else the place at creation.
+    // that the quote is still there); else the place at creation. Only a place
+    // that was "ok" (T013F-D1): a "провери" (fuzzy) place is a guess, trusting it
+    // at the next opening would make it "ok" at the wrong place.
     const last = a.lastAnchor;
-    const here = Boolean(lesson.sha256) && last?.version === lesson.sha256 && Number.isInteger(last.start) && Number.isInteger(last.end);
+    const here = Boolean(lesson.sha256) && last?.version === lesson.sha256 && last.state === 'ok'
+      && Number.isInteger(last.start) && Number.isInteger(last.end);
     return {
       id: a.id,
       color: COLORS.includes(a.color) ? a.color : null,

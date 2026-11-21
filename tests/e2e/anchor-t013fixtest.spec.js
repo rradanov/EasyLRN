@@ -258,7 +258,6 @@ test.describe('T013F-U src/anchor.js', () => {
   });
 
   test('T013F-U2 (T013F-D2) a short quote whose sentence was deleted goes "ok" to another place that shares only a common phrase with it ("член 14 от регламента"): ≥ 20 % of its context by chance', async ({ page }) => {
-    test.fail(true, 'T013F-D2: the "short quote without context" rule counts any 20 % of the context: a generic phrase next to another copy (e.g. " от регламента") is enough for "ok" at the wrong place');
     const r = await run(page, (A, M, sel, at) => {
       const out = {};
       const cases = {
@@ -354,7 +353,6 @@ test.describe('T013F-U src/anchor.js', () => {
   });
 
   test('T013F-U4 (T013F-D2) 400 random short and long selections in a lesson made of a few repeated sentences, × 4 changes: "ok" only at the right place (a short quote never "ok" at another copy)', async ({ page }) => {
-    test.fail(true, 'T013F-D2: a short quote (< 24) is "ok" at another copy of its sentence whenever ≥ 20 % of its context matches there — the rest of the same sentence is enough; copies tied on context also give "ok"');
     const r = await run(page, (A, M) => {
       let seed = 1301;
       const rnd = () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -489,7 +487,6 @@ test.describe('T013F-B bridge', () => {
   test.beforeEach(async ({ page }) => start(page));
 
   test('T013F-B1 (T013F-D1) a "провери" of T014-D1 (a short quote left once elsewhere without context) becomes "ok" at the wrong place at the NEXT opening of the same version (the saved lastAnchor is trusted)', async ({ page }) => {
-    test.fail(true, 'T013F-D1: the place of a fuzzy result is saved as lastAnchor; at the next opening of the same version the bridge gets it as position with sameVersion and step 1 of anchorFind says "ok" because the text there is the quote — T014-D1 comes back from the second opening on');
     const v1 = '<p>Първо: CRA важи тук.</p><p>Второ: и CRA важи там за всички продукти.</p><p>Трето: регламентът.</p>';
     await importCourse(page, v1);
     await annotate(page, lessonHtml(v1), [['CRA', 1]]);

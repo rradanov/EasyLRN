@@ -238,7 +238,6 @@ test.describe('T-016 functions of the tools (D-042)', () => {
   });
 
   test('T016-F2 whole words with inner punctuation: an apostrophe, a decimal point / comma, a hyphen keep the word whole', async ({ page }) => {
-    test.fail(true, 'T016-D1: the rounding to words stops at inner punctuation: "don\'t" → "don\'", "1,25" → ",25", "3.5" → "3" (the word is cut, a mark starts with a comma)');
     await openLesson(page);
     await tool(page, 'marker').click();
     const t = await touchApi(page);
@@ -330,7 +329,6 @@ test.describe('T-016 functions of the tools (D-042)', () => {
   });
 
   test('T016-F5 pen after the palm: a palm (a small contact) that lands BEFORE the pen does not stop the pen from writing', async ({ page }) => {
-    test.fail(true, 'T016-D2: a touch that lands first (the side of the palm, under 70 px) makes the pen a "second finger": the pen scrolls and nothing is drawn');
     await openLesson(page);
     await tool(page, 'marker').click();
     const { touch, pen } = await rawTouch(page);
@@ -375,12 +373,14 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     expect(await count(page)).toBe(1);
   });
 
-  test('T016-F7 strokes while the lesson is still loading (a busy lesson, the tool remembered on): no error, nothing in another lesson, the tool stays on; once ready the tool draws (information T016-I5: the strokes wait and are drawn when the lesson is ready)', async ({ page }) => {
+  test('T016-F7 strokes while the lesson is still loading (a busy lesson, the tool turned on at once): no error, nothing in another lesson, the tool stays on; once ready the tool draws (information T016-I5: the strokes wait and are drawn when the lesson is ready)', async ({ page }) => {
     const busy = '<script>const t0 = Date.now(); while (Date.now() - t0 < 2500) {}</script>';
     await importCourse(page, C, files(`${busy}${BODY}`));
-    await db(page, (db) => db.saveSettings({ markTool: { tool: 'marker', color: 'orange', lastDraw: 'marker' } }));
+    await db(page, (db) => db.saveSettings({ markTool: { color: 'orange', lastDraw: 'marker' } }));
     await page.goto(`./#/c/${C}/read/0001`);
     await page.locator('iframe.lesson-frame').waitFor();
+    // T-062: a lesson opens without a tool; the marker is turned on while the lesson still loads.
+    await tool(page, 'marker').click();
     const layer = page.locator('[data-field="mark-layer"]');
     const t = await touchApi(page);
     const box = await page.locator('iframe.lesson-frame').boundingBox();
@@ -439,7 +439,6 @@ test.describe('T-016 functions of the tools (D-042)', () => {
   });
 
   test('T016-F10 Ctrl+Z and Escape with the focus inside the lesson (after a click / Tab into it): Escape turns the tool off (lrn:escape), Ctrl+Z undoes the last mark', async ({ page }) => {
-    test.fail(true, 'T016-D6: Ctrl+Z does nothing while the focus is inside the lesson (the bridge passes on only Escape)');
     const frame = await openLesson(page);
     await tool(page, 'marker').click();
     const t = await touchApi(page);
@@ -454,7 +453,6 @@ test.describe('T-016 functions of the tools (D-042)', () => {
   });
 
   test('T016-F9 a lesson that turns its own background dark later (its own theme button) gets the dark palette for its marks', async ({ page }) => {
-    test.fail(true, 'T016-D3: the palette is chosen at lrn:init / load / a change of the system theme only; a lesson that turns dark by itself keeps the light marks (light yellow under light text)');
     const toggle = '<button id="dark" onclick="document.body.style.background=\'#151513\';document.body.style.color=\'#e6e3da\'">Тъмно</button>';
     await importCourse(page, C, files(toggle + BODY));
     const frame = await openLesson(page);
@@ -481,6 +479,7 @@ test.describe('T-016 attacks on the tools (the gesture is the app\'s, the bridge
     await expect.poll(async () => (await live(page, `${C}/lesson:0002`)).length).toBe(1);
     const foreign = (await live(page, `${C}/lesson:0002`))[0].id;
     const frame = await openLesson(page, '0001');
+    await tool(page, 'marker').click(); // T-062: every lesson opens without a tool
     const a = await textBox(page, 'Регламентът');
     await t.drag([a.x1 + 2, a.y1], [a.x2 - 2, a.y1]);
     await waitMarks(page, 1);
@@ -663,6 +662,8 @@ test.describe('T-016 attacks on the tools (the gesture is the app\'s, the bridge
     await page.waitForTimeout(400);
     await tool(page, 'marker').click();
     await waitMarks(page, 1);
+    // T-062: the app clears the selection after marking; wait for the lesson to post its forged one again.
+    await page.waitForTimeout(400);
     await color(page, 'pink').click();
     await waitMarks(page, 2);
     await frame.evaluate(() => clearInterval(window.__fake));

@@ -4,7 +4,7 @@
 // - touch (CDP Input.dispatchTouchEvent): one finger draws (live preview, whole
 //   words), two fingers scroll the app window, a pinch never draws; the eraser
 //   (through a mark / a tap), "Отмени"; another colour; a reload keeps the marks
-//   and the choice of the tool; pen (pointerType pen) draws and the palm is ignored;
+//   and the colour (since T-062 not the tool); pen (pointerType pen) draws and the palm is ignored;
 // - re-anchoring after a change of the lesson ("Маркировки за проверка": провери,
 //   "Да, тук е", изтрий); quiz.js in the lesson (a tap with a tool presses its
 //   buttons; marks survive its redraw); `data-lrn-noanno`; dark theme (the lesson's
@@ -280,7 +280,7 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     expect(lineColor).toBe('#2e7d32');
   });
 
-  test('S1 two fingers scroll the app window and draw nothing; a pinch draws nothing; a second finger during a stroke drops it; the tool stays on', async ({ page }) => {
+  test('S1 two fingers scroll the app window and draw nothing; a pinch draws nothing; a second finger landing during a moving stroke is a palm (T016-D2: the stroke goes on); the tool stays on', async ({ page }) => {
     await openLesson(page);
     await tool(page, 'marker').click();
     const t = await touchApi(page);
@@ -290,24 +290,27 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(y0 + 200);
     // Pinch (fingers apart) in place.
     await t.two([a.x1 + 100, page.viewportSize().height / 2], 0, 0, { spread: 300 });
-    // A stroke, then a second finger joins: nothing is saved.
+    // A stroke, then a second finger joins while it moves (T-062, T016-D2: that is a
+    // palm, not a scroll): the stroke goes on and is saved, the page does not scroll.
     const p = await textBox(page, 'Задълженията');
     const q = await textBox(page, 'изисквания');
     const cdp = t.cdp;
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p.x1 + 5, y: p.y1, id: 0 }] });
     for (let i = 1; i <= 6; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: p.x1 + 5 + i * 40, y: p.y1, id: 0 }] });
+    const ys = await page.evaluate(() => window.scrollY);
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p.x1 + 245, y: p.y1, id: 0 }, { x: q.x1, y: q.y1 + 60, id: 1 }] });
     for (let i = 1; i <= 6; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: p.x1 + 245, y: p.y1 - i * 20, id: 0 }, { x: q.x1, y: q.y1 + 60 - i * 20, id: 1 }] });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await page.waitForTimeout(500);
-    expect(await count(page)).toBe(0);
+    await waitMarks(page, 1);
+    expect(await page.evaluate(() => window.scrollY)).toBe(ys);
+    expect((await live(page))[0].exact).toMatch(/Задълженията/);
     const hl = await highlights(page);
     expect(Object.keys(hl).filter((k) => k.startsWith('lrn-pv'))).toEqual([]);
     await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'true');
     // And one finger still draws after it.
     const r = await textBox(page, 'Краят на урока');
     await t.drag([r.x1 + 2, r.y1], [r.x2 - 2, r.y2]);
-    await waitMarks(page, 1);
+    await waitMarks(page, 2);
   });
 
   test('S2 without a tool one finger scrolls the lesson as usual (no layer, nothing drawn); a second tap on the active tool turns it off', async ({ page }) => {
@@ -369,7 +372,7 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     expect(await count(page)).toBe(2);
   });
 
-  test('C1 colours (touch taps on the bar, also right after a stroke): a colour while the eraser is on → back to the last drawing tool with that colour; the marks get it; the choice (tool + colour) is kept after a reload, and the marks too', async ({ page }) => {
+  test('C1 colours (touch taps on the bar, also right after a stroke): a colour while the eraser is on → back to the last drawing tool with that colour; the marks get it; the colour is kept after a reload (the tool is not: T-062), and the marks too', async ({ page }) => {
     await openLesson(page);
     const t = await touchApi(page);
     await tool(page, 'pencil').tap();
@@ -392,15 +395,17 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     expect((await live(page)).map((x) => [x.exact, x.style, x.color])).toEqual([['Задълженията', 'underline', 'pink'], ['изисквания', 'highlight', 'orange']]);
     await page.reload();
     await waitReady(page);
-    await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'true');
+    // T-062 (D-042 addendum): a lesson opens without a tool; the colour (and the last tool) are kept.
+    await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'false');
     await expect(color(page, 'orange')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('[data-field="mark-layer"]')).toBeVisible();
+    await expect(page.locator('[data-field="mark-layer"]')).toBeHidden();
     await expect.poll(async () => { const hl = await highlights(page); return [hl['lrn-u-pink'], hl['lrn-orange']]; }).toEqual([['Задълженията'], ['изисквания']]);
     // "Отмени" is per opening: nothing to undo after a reload.
     await expect(undoButton(page)).toBeDisabled();
-    // Another lesson: the same tool.
+    // Another lesson: no tool either, the same colour.
     await openLesson(page, '0002');
-    await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'true');
+    await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'false');
+    await expect(color(page, 'orange')).toHaveAttribute('aria-pressed', 'true');
   });
 
   test('N1 data-lrn-noanno and the gap between paragraphs: a stroke only there makes nothing; a stroke over it from text to text skips its text; a stroke inside a mark of the same kind and colour makes no copy', async ({ page }) => {
@@ -625,6 +630,7 @@ test.describe('T-015 tools: re-anchoring, quiz.js, theme, attacks', () => {
     await expect.poll(async () => (await live(page, `${C}/lesson:0002`)).length).toBe(1);
     const foreign = (await live(page, `${C}/lesson:0002`))[0].id;
     await openLesson(page, '0001');
+    await tool(page, 'marker').click(); // T-062: every lesson opens without a tool
     const a = await textBox(page, 'Регламентът');
     await t.drag([a.x1 + 2, a.y1], [a.x2 - 2, a.y1]);
     await waitMarks(page, 1);

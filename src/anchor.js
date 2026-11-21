@@ -628,7 +628,9 @@ export function anchorFind(model, selector, { sameVersion = false, within = null
   const at = (r) => (r.state === 'orphan' ? r : { ...r, start: r.start + base, end: r.end + base });
   // 2. The exact quote: the best by context, then by nearness to the old place.
   //    Near the old place with all of its context: nothing can be better.
-  if (oldStart !== null) {
+  //    Not for a short quote (< 24, T013F-D2): a repeated sentence can have the
+  //    same 32 characters around it elsewhere; it goes through the rule below.
+  if (oldStart !== null && exact.length >= 24) {
     const reach = 2048 + 2 * exact.length;
     let near = null;
     for (const h of anchorHits(T, exact, 50, Math.max(0, oldStart - reach), oldStart + reach)) {
@@ -638,16 +640,24 @@ export function anchorFind(model, selector, { sameVersion = false, within = null
   }
   const hits = anchorHits(T, exact, 2000);
   if (hits.length) {
-    const scored = hits.map((h) => ({
-      at: h,
-      context: anchorContext(T, h, h + exact.length, prefix, suffix).score,
-      near: oldStart === null ? 0 : Math.abs(h - oldStart) / Math.max(1, T.length),
-    })).sort((a, b) => (b.context - 0.01 * b.near) - (a.context - 0.01 * a.near));
+    const scored = hits.map((h) => {
+      const c = anchorContext(T, h, h + exact.length, prefix, suffix);
+      return { at: h, c, context: c.score, near: oldStart === null ? 0 : Math.abs(h - oldStart) / Math.max(1, T.length) };
+    }).sort((a, b) => (b.context - 0.01 * b.near) - (a.context - 0.01 * a.near));
     const best = scored[0];
     const second = scored.length > 1 ? scored[1].context : -1;
-    // A short quote with (almost) none of its context, found once or in several
-    // places: a guess, so "провери" (T014-D1: also when it is found only once).
-    const unsure = exact.length < 24 && best.context < 0.2 && (hits.length === 1 || best.context - second < 0.1);
+    // A short quote (< 24) is "ok" only with STRONG context (T013F-D2; T014-D1):
+    // - found once: ≥ 80 % of its context, or ≥ 40 % on EACH side (a common
+    //   phrase on one side only is not enough);
+    // - found at several places: ≥ 90 % of its context at the best one and no
+    //   other copy with half of it — in a repeated sentence the 32 characters
+    //   on one or both sides are often the same at another copy.
+    // Else a guess: "провери". (A selector without any context at all has
+    // nothing to compare: the best place as before.)
+    const strongOnce = (h) => h.context >= 0.8 || (h.c.pre >= 0.4 && h.c.post >= 0.4);
+    const unsure = exact.length < 24 && prefix.length + suffix.length > 0 && (hits.length === 1
+      ? !strongOnce(best)
+      : best.context < 0.9 || second >= 0.5);
     return at({ state: unsure ? 'fuzzy' : 'ok', start: best.at, end: best.at + exact.length, similarity: 1 });
   }
   // 3. Approximate.

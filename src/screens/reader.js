@@ -10,7 +10,8 @@
 // with its position; `?y=<px>` opens at a position of the history, `?at=` at
 // a fragment.
 // Marks (T-015, D-042): the tool bar left of the lesson (src/screens/mark-tools.js:
-// marker, pencil, eraser, five colours, "Отмени"); with a tool on, one finger
+// marker, pencil, eraser, five colours, "Отмени"; it can be hidden behind a
+// handle "☰", T-062); with a tool on, one finger
 // draws on the lesson and two fingers scroll. Marks found only approximately
 // or not at all after a change of the lesson are listed in "Маркировки за
 // проверка" (show it, "Да, тук е", delete).
@@ -187,6 +188,7 @@ export function readerScreen({ params, query }) {
       hash,
       onAnchored: (list) => { if (!destroyed) showChecks(list); },
       onEscape: () => tools?.escape(),
+      onUndo: () => tools?.undo(),
       onNavigate: (other, otherHash) => {
         const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
         location.hash = `${readerLink(courseId, other)}${at}`;
@@ -203,8 +205,10 @@ export function readerScreen({ params, query }) {
       settings,
       announce,
       onChange: (tool) => { doc.dataset.tool = tool || 'none'; },
+      onLayout: (hidden) => { doc.dataset.bar = hidden ? 'hidden' : 'shown'; },
     });
-    mount(toolSlot, tools.element);
+    doc.dataset.bar = tools.hidden ? 'hidden' : 'shown';
+    mount(toolSlot, tools.handle, tools.element);
     frame.element.append(tools.layer);
     mount(content, frame.element);
   })().catch((err) => {

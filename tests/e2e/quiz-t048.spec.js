@@ -225,7 +225,7 @@ test.describe('T-048 HTML/script in quiz texts is never run nor rendered (quizze
     const noMarkup = async (where) => {
       const r = await page.evaluate(() => ({
         xss: window.__xss,
-        tags: document.querySelectorAll('main img, main b, main svg:not([data-field="mark-tools"] svg), main iframe:not(.lesson-frame), main math, main style, main a[href^="javascript"], main a[href^="data"], main script').length,
+        tags: document.querySelectorAll('main img, main b, main svg:not([data-field="mark-tools"] svg):not([data-field="mark-tools-handle"] svg), main iframe:not(.lesson-frame), main math, main style, main a[href^="javascript"], main a[href^="data"], main script').length,
         bodyVisible: getComputedStyle(document.body).display !== 'none',
       }));
       expect(r, where).toEqual({ xss: undefined, tags: 0, bodyVisible: true });
