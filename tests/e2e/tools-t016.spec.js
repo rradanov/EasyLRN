@@ -811,7 +811,9 @@ test.describe('T-016 attacks on the tools (the gesture is the app\'s, the bridge
   test('T016-S9 5000 marks in a lesson (the limit): once they are anchored, a marker stroke and an eraser tap are saved within 5 s', async ({ page }, ti) => {
     landscapeOnly(ti);
     test.setTimeout(300000);
-    test.fail(true, 'T016-D5: with 5000 marks a marker stroke is saved only after ~12–16 s (the bridge answers in ~3 s, the app needs ~11 s more); the eraser ~2.6 s');
+    // T016-D5 (a stroke saved only after ~12–16 s) no longer reproduces: T-066 measured
+    // 3.6–3.9 s on a quiet machine (the eraser 0.2–0.4 s), so the test must pass now.
+    // A timing test (D-043): a failure under the load of the whole set is checked alone.
     await openLesson(page);
     await bulk(page, 4999);
     await openLesson(page);
@@ -820,19 +822,31 @@ test.describe('T-016 attacks on the tools (the gesture is the app\'s, the bridge
     const t = await touchApi(page);
     const a = await textBox(page, 'Уязвимостите');
     await page.evaluate(() => { window.__st = []; addEventListener('message', (e) => { if (e.data?.type === 'lrn:stroked') window.__st.push(performance.now()); }); });
+    // T-066: the time is taken when the app itself says the work is done (its status
+    // "Маркирано: …" / "Маркировката е изтрита", written only AFTER the save and the
+    // repaint), not by the test's own polling of 5000 records (each poll reads them
+    // all and added up to ~0.5 s of the test's own load at the threshold).
+    await page.evaluate(() => {
+      window.__said = {};
+      const el = document.querySelector('[data-field="marks-status"]');
+      new MutationObserver(() => {
+        const text = el.textContent || '';
+        if (/^Маркирано/.test(text) && !window.__said.mark) window.__said.mark = performance.now();
+        if (/изтрита/.test(text) && !window.__said.erase) window.__said.erase = performance.now();
+      }).observe(el, { childList: true, characterData: true, subtree: true });
+    });
     const p0 = await page.evaluate(() => performance.now());
-    let t0 = Date.now();
     await t.drag([a.x1 + 2, a.y1], [a.x2 - 2, a.y1]);
     await expect.poll(() => count(page), { timeout: 30000, intervals: [100] }).toBe(5000);
-    const markMs = Date.now() - t0;
+    const markMs = Math.round((await page.evaluate(() => window.__said.mark)) - p0);
     const answerMs = Math.round((await page.evaluate(() => window.__st[0])) - p0);
     await anchoredQuiet(page);
     await tool(page, 'eraser').click();
-    t0 = Date.now();
+    const e0 = await page.evaluate(() => performance.now());
     await t.tap([a.x1 + 10, a.y1]);
     await expect.poll(() => count(page), { timeout: 30000, intervals: [100] }).toBe(4999);
-    const eraseMs = Date.now() - t0;
-    test.info().annotations.push({ type: 'S9 5000 marks', description: `stroke → bridge answer ${answerMs} ms, saved ${markMs} ms, eraser tap → deleted ${eraseMs} ms` });
+    const eraseMs = Math.round((await page.evaluate(() => window.__said.erase)) - e0);
+    test.info().annotations.push({ type: 'S9 5000 marks', description: `stroke → bridge answer ${answerMs} ms, saved and repainted ${markMs} ms, eraser tap → deleted ${eraseMs} ms` });
     expect(eraseMs).toBeLessThan(5000);
     expect(markMs).toBeLessThan(5000);
   });
