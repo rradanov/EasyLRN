@@ -647,14 +647,16 @@ export function anchorFind(model, selector, { sameVersion = false, within = null
     const best = scored[0];
     const second = scored.length > 1 ? scored[1].context : -1;
     // A short quote (< 24) is "ok" only with STRONG context (T013F-D2; T014-D1):
-    // - found once: ≥ 80 % of its context, or ≥ 40 % on EACH side (a common
-    //   phrase on one side only is not enough);
+    // - found once: ≥ 80 % of its context, or ≥ 40 % on EACH side and ≥ 75 %
+    //   in all (a common phrase on one side, or on both, is not enough);
     // - found at several places: ≥ 90 % of its context at the best one and no
     //   other copy with half of it — in a repeated sentence the 32 characters
     //   on one or both sides are often the same at another copy.
     // Else a guess: "провери". (A selector without any context at all has
     // nothing to compare: the best place as before.)
-    const strongOnce = (h) => h.context >= 0.8 || (h.c.pre >= 0.4 && h.c.post >= 0.4);
+    // T063-D5: two generic phrases ("в съответствие с … от настоящия регламент")
+    // reach 40 % on each side by themselves: that path also needs ≥ 75 % in all.
+    const strongOnce = (h) => h.context >= 0.8 || (h.c.pre >= 0.4 && h.c.post >= 0.4 && h.context >= 0.75);
     const unsure = exact.length < 24 && prefix.length + suffix.length > 0 && (hits.length === 1
       ? !strongOnce(best)
       : best.context < 0.9 || second >= 0.5);

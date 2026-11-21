@@ -147,12 +147,21 @@
   // T016-D3: a lesson that changes its own background later (its own theme
   // button: a class / style / data-* on <html> or <body>, a new <style>) gets
   // the palette again; once at the next frame and once after a CSS transition.
-  let themeTimer = 0;
+  // T063-D6: a background with a longer CSS transition is checked again when the
+  // transition of <html> / <body> ends, and (a transition without that event, a
+  // cancelled one) at a few later times (THEME_CHECKS_MS).
+  const THEME_CHECKS_MS = [450, 1000, 2000, 3500];
+  let themeTimers = [];
   const themeSoon = () => {
-    clearTimeout(themeTimer);
+    for (const t of themeTimers) clearTimeout(t);
     requestAnimationFrame(followTheme);
-    themeTimer = setTimeout(followTheme, 450);
+    themeTimers = THEME_CHECKS_MS.map((ms) => setTimeout(followTheme, ms));
   };
+  const onThemeTransition = (event) => {
+    if (event.target === root || event.target === document.body) followTheme();
+  };
+  window.addEventListener('transitionend', onThemeTransition, true);
+  window.addEventListener('transitioncancel', onThemeTransition, true);
   try {
     const watch = new MutationObserver((records) => {
       if (records.some((r) => r.type === 'attributes' || [...r.addedNodes, ...r.removedNodes].some((n) => n !== style && /^(STYLE|LINK)$/.test(n.nodeName)))) themeSoon();
@@ -249,7 +258,9 @@
   // Escape inside the lesson (a keyboard selection): the app closes its bar (T-015).
   // Ctrl+Z / Cmd+Z there (T016-D6): only the command "undo" goes to the app (no
   // data); the app undoes ITS last action, the same as its own Ctrl+Z. Not in a
-  // field of the lesson (its own undo of typing stays).
+  // field of the lesson (its own undo of typing stays). The bridge is not a
+  // proof (the lesson can post the same message): the app's own checks are in
+  // src/lesson-frame.js (lrn:undo).
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented) return;
     if (event.key === 'Escape') { send('lrn:escape'); return; }
@@ -257,7 +268,9 @@
     const typing = t && t.nodeType === 1 && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && String(event.key).toLowerCase() === 'z' && !typing) {
       event.preventDefault();
-      send('lrn:undo');
+      // Only a real key of the user, one per press (no auto-repeat); the app
+      // checks the focus and the activation on its side too (T063-D3/D4).
+      if (event.isTrusted && !event.repeat) send('lrn:undo');
     }
   });
 

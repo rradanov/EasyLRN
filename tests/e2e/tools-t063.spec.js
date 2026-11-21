@@ -210,7 +210,6 @@ test.describe('T063 palm and pen (T016-D2)', () => {
   });
 
   test('T063-S3 (T063-D1) a two-finger scroll whose first finger has already slid 12 px when the second lands 60 ms later scrolls — it does not draw', async ({ page }) => {
-    test.fail(true, 'T063-D1: rule 3 (a touch landing while the stroke has moved ≥ 8 px is a palm) wins over rule 2 (two touches within 150 ms scroll): a quick two-finger scroll whose first finger slides a little before the second lands draws a mark and the page does not scroll');
     const t = await input(page);
     await page.evaluate(() => window.scrollTo(0, 600));
     const y0 = await scrollY(page);
@@ -230,7 +229,6 @@ test.describe('T063 palm and pen (T016-D2)', () => {
   });
 
   test('T063-S4 (T063-D2) a resting palm (small contact, 300 ms) that drifts 2 px per frame while the passive pen (a touch) writes slowly (6 px per frame) — it must draw, not scroll', async ({ page }) => {
-    test.fail(true, 'T063-D2: rule 4 decides "both moved ≥ 6 px → scroll" before "one moved ≥ 24 px": a palm that drifts a little while the pen starts slowly turns the writing into a two-finger scroll: nothing is drawn');
     const t = await input(page);
     const a = await textBox(page, 'Уязвимостите');
     const palm = [a.x1 + 60, a.y + 140, 1, 7];
@@ -545,7 +543,6 @@ test.describe('T063 the bar: keyboard right after a tap', () => {
     await importCourse(page, C, files());
   });
   test('T063-S22 (T063-D8) a keyboard press (Enter / Space → click) on the handle 0.3 s after a tap on "Скрий" shows the bar', async ({ page }) => {
-    test.fail(true, 'T063-D8: the "click of the same tap" guard of press() is one timestamp for ALL buttons: a click (Enter / Space / a mouse) on ANY button of the bar or the handle within 0.7 s after a tap on another one is dropped');
     await openLesson(page);
     await hideButton(page).tap();
     await expect(handle(page)).toBeVisible();
@@ -622,6 +619,9 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
   }
 
   test('T063-S13 lrn:undo with fields ({id} of the FIRST mark, many) with the focus in the lesson undoes only the last action — never a chosen mark; without focus nothing', async ({ page }) => {
+    // T-064 (T063-D3): a focus the lesson took by itself (body.focus()) right after
+    // the user's taps in the app is not the user's: its lrn:undo is refused and the
+    // focus comes back to the app; the app's own Ctrl+Z then undoes the last action.
     const { frame } = await threeMarks(page);
     const first = (await live(page)).find((a) => a.exact === 'Регламентът').id;
     await tool(page, 'marker').focus();
@@ -631,6 +631,10 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('IFRAME');
     await frame.evaluate((id) => parent.postMessage({ lrn: 1, type: 'lrn:undo', id, ids: [id], annotationId: id }, '*'), first);
+    await page.waitForTimeout(500);
+    expect(await count(page)).toBe(3);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+    await page.keyboard.press('Control+z');
     await waitMarks(page, 2);
     expect((await live(page)).map((a) => a.exact).sort()).toEqual(['Регламентът', 'Уязвимостите'].sort());
   });
@@ -645,12 +649,10 @@ test.describe('T063 security: lrn:undo and the palm rules', () => {
     const focus = await page.evaluate(() => document.activeElement?.tagName);
     const left = await count(page);
     info('T063-D3 focus taken by the lesson', { report, appActive: focus, marksLeft: left });
-    if (focus === 'IFRAME') test.fail(true, 'T063-D3: a lesson can move the focus into its frame by itself (body.focus() / window.focus() without user activation); then its lrn:undo is accepted and a flood undoes every action of this opening (up to 50)');
     expect(left).toBe(3);
   });
 
   test('T063-S15 (T063-D4) after one honest tap in the lesson (focus in the frame) a flood of 60 lrn:undo undoes at most one action', async ({ page }) => {
-    test.fail(true, 'T063-D4: lrn:undo is a bare command accepted for as long as the focus is in the frame: one tap in the lesson (a quiz answer, a link) is enough for the lesson to undo ALL marks of this opening at once (the undo stack is emptied, "Отмени" cannot bring them back)');
     const { frame } = await threeMarks(page);
     await tool(page, 'marker').tap(); // off
     const a = await textBox(page, 'Производителят');
@@ -753,7 +755,6 @@ test.describe('T063 anchoring: "провери" and short quotes (T013F-D1/D2)',
     })()`);
 
     test('T063-S18 (T063-D5) a short quote whose sentence was deleted is not "ok" at another sentence that shares only generic legal phrases on BOTH sides ("в съответствие с … от настоящия регламент")', async ({ page }) => {
-      test.fail(true, 'T063-D5: the "≥ 40 % on each side" path of T013F-D2 accepts two generic phrases (" в съответствие с " 18/32 and " от настоящия регламент " 24/32, 66 % in all): a short quote goes "ok" to another sentence');
       const r = await run(page, (A, M, sel, at) => {
         const v1 = '<p>Въведение в регламента.</p><p>Задълженията се изпълняват в съответствие с член 14 от настоящия регламент и указанията.</p><p>Органът се уведомява в съответствие с член 14 от настоящия регламент без забавяне.</p><p>Край.</p>';
         const m1 = M(v1);
@@ -853,7 +854,6 @@ test.describe('T063 words (T016-D1) and the palette (T016-D3)', () => {
     await page.waitForTimeout(2000);
     const after = await yellow();
     info('T063-D6 palette', { light, after });
-    if (after !== '#5c5216') test.fail(true, 'T063-D6: the palette is checked at the next frame and 450 ms after a change; a lesson whose background transition is longer than ~0.5 s is still light-ish then and keeps the light marks on its dark background');
     expect(after).toBe('#5c5216');
   });
 });

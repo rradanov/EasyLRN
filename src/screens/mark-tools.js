@@ -28,9 +28,11 @@
 //   erased (or the control is pressed if there is no mark).
 // - Pen and palm (T016-D2, the rules at the layer below): a large contact is a
 //   palm for the whole gesture; two touches scroll only when they land almost
-//   together or then move together; a touch landing during a moving stroke or
-//   next to a resting one does not turn the pen / finger into "a second
-//   finger"; while a pen writes (and for a moment after) touches are ignored.
+//   together or then move together (comparably: T063-D1/D2); a touch landing
+//   during a sure stroke or next to a resting one does not turn the pen /
+//   finger into "a second finger" (the one that moves more draws, a young
+//   stroke goes on from its first point); while a pen writes (and for a moment
+//   after) touches are ignored.
 // - Without a tool the layer is gone: the lesson scrolls and selects as usual
 //   (long press: the system selection, for T-017/T-023/T-025). A selection
 //   that exists when the marker / pencil is pressed is marked at once (the
@@ -44,16 +46,25 @@ export const TOOLS = Object.freeze(['marker', 'pencil', 'eraser']);
 const TOOL_NAMES = Object.freeze({ marker: 'Маркер', pencil: 'Молив', eraser: 'Гума' });
 const TAP_SLOP_PX = 8;
 const TAP_MS = 500;
+// The palm rules (T016-D2, T063-D1/D2): ALL their thresholds are here.
 const PALM_SIDE_PX = 70; // a touch with a side this long is a palm, not a finger
 const PALM_AREA_PX = 45 * 45; // … or with this contact area (the side of the hand)
 const PAIR_MS = 150; // two touches landing within this are two fingers (scrolling)
-const PENDING_PX = 24; // a resting touch + a new one: the one that moved this far alone draws
-const TOGETHER_PX = 6; // both moved at least this → scrolling (apart: a pinch, no drawing)
+const YOUNG_MS = 250; // a stroke younger than this …
+const YOUNG_PX = 40; // … and shorter than this is not sure yet: a second touch reopens the question (T063-D1)
+const PENDING_PX = 24; // two touches, one moving: the one that moved this far (alone) draws
+const TOGETHER_PX = 6; // both moved at least this …
+const SCROLL_RATIO = 0.5; // … and the slower moved at least this part of the faster → scrolling
+const SCROLL_RATIO_PALM = 0.75; // … the same when the slower is the larger contact (a drifting palm, T063-D2)
+const PALM_BIGGER = 2; // "the larger contact": this many times the area of the other
 const PEN_GRACE_MS = 700; // touches right after the pen lifted: still the palm
+const PATH_MAX = 256; // points of a young stroke kept to replay it when it goes on
 const UNDO_MAX = 50;
 const NARROW_PX = 600; // below this width (a phone) the bar starts hidden
 const SWIPE_OUT_PX = 24; // a swipe to the right on the handle this long shows the bar
 const SLIDE_MS = 200;
+const CLICK_OF_TAP_MS = 700; // the click Chrome sends after a tap we already handled on pointerup
+const SWITCH_GUARD_MS = 250; // a tap this soon after the bar / handle appeared is the rest of a double tap
 
 const SVG = 'http://www.w3.org/2000/svg';
 function icon(paths) {
@@ -119,21 +130,36 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   // A finger / pen presses a button on pointerup (Chrome drops the click of a
   // tap that comes right after a drawing stroke: seen in the manual check);
   // the mouse and the keyboard (Enter, Space) through `click`. One action per press.
-  let pointerPressAt = -Infinity;
-  function press(button, action) {
+  // T063-D8: the "click of the same tap" is dropped per BUTTON (the time of its
+  // own last tap), and a click from the keyboard (detail 0) is never dropped.
+  // T063-I6: a tap on a button of the bar right after the bar was shown or hidden
+  // (the second tap of a double tap on the handle, now on a tool; or on "Скрий"
+  // sliding away) is ignored. The handle has no such guard: it is not where
+  // "Скрий" was (styles: margin-top), and it must answer at once.
+  let switchedAt = -Infinity; // the bar was hidden / shown at this time
+  function press(button, action, { guard = true } = {}) {
     let down = null;
-    button.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse' && e.isPrimary) down = e.pointerId; });
+    let tappedAt = -Infinity;
+    button.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' || !e.isPrimary) return;
+      down = guard && performance.now() - switchedAt < SWITCH_GUARD_MS ? null : e.pointerId;
+      if (down === null) tappedAt = performance.now(); // its click is the same ghost tap
+    });
     button.addEventListener('pointercancel', () => { down = null; });
     button.addEventListener('pointerup', (e) => {
       if (down !== e.pointerId) return;
       down = null;
       const r = button.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom || button.disabled) return;
-      pointerPressAt = performance.now();
+      tappedAt = performance.now();
       action();
     });
-    button.addEventListener('click', () => {
-      if (performance.now() - pointerPressAt < 700) return; // the click of the same tap
+    button.addEventListener('click', (e) => {
+      if (e.detail !== 0) { // a pointer click (the keyboard gives detail 0)
+        const now = performance.now();
+        if (now - tappedAt < CLICK_OF_TAP_MS) return; // the click of the same tap
+        if (guard && now - switchedAt < SWITCH_GUARD_MS) return; // a double click landing on the new control
+      }
       action();
     });
     return button;
@@ -172,7 +198,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   const handle = press(h('button', {
     type: 'button', class: 'mark-tools-handle', 'data-action': 'show-tools', 'data-field': 'mark-tools-handle',
     'aria-label': 'Покажи инструментите за маркиране', title: 'Покажи инструментите', 'aria-expanded': 'false', 'aria-controls': 'mark-tools',
-  }, ICONS.menu()), () => setHidden(false, { focus: true }));
+  }, ICONS.menu()), () => setHidden(false, { focus: true }), { guard: false });
   let swipe = null;
   handle.addEventListener('pointerdown', (e) => { if (e.isPrimary) swipe = { id: e.pointerId, x: e.clientX, y: e.clientY }; });
   handle.addEventListener('pointermove', (e) => {
@@ -212,6 +238,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     next = !!next;
     if (next === hidden && element.hidden === next) return;
     hidden = next;
+    switchedAt = performance.now();
     if (keep) saveSettings({ markTool: { ...stored(), hidden } }).catch((err) => console.warn('Cannot save the bar:', err?.name || err));
     slide?.cancel();
     slide = null;
@@ -359,13 +386,19 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   // 1. A contact with a large area (side ≥ PALM_SIDE_PX or area ≥ PALM_AREA_PX)
   //    is a palm for the whole gesture: ignored until it lifts (also when it
   //    grows into one while it rests).
-  // 2. Two touches scroll only when they land almost together (≤ PAIR_MS) and,
-  //    if they did not, when they then MOVE TOGETHER (both, the same way).
-  // 3. A touch that lands while a stroke is already moving is a palm (ignored):
-  //    the stroke goes on.
-  // 4. A touch that lands next to a RESTING one (still, > PAIR_MS): wait for the
-  //    movement. The one that moves alone draws, the still one is the palm;
-  //    both moving scroll (a pinch: nothing).
+  // 2. Two touches landing almost together (≤ PAIR_MS, the first still < 8 px)
+  //    scroll at once.
+  // 3. A touch that lands while a stroke is already sure (moved ≥ YOUNG_PX or
+  //    older than YOUNG_MS, and ≥ 8 px) is a palm (ignored): the stroke goes on.
+  // 4. Otherwise (the first touch rests, or its stroke is still young: T063-D1)
+  //    the stroke is cancelled (its live preview goes) and both wait for the
+  //    movement ("pending"):
+  //    - both moved ≥ TOGETHER_PX and the slower at least SCROLL_RATIO of the
+  //      faster (SCROLL_RATIO_PALM when the slower is the larger contact, ≥
+  //      PALM_BIGGER × the area: a palm that drifts, T063-D2) → scrolling;
+  //    - else the faster one, once it moved PENDING_PX, draws (a young stroke
+  //      goes on from its first point: replayed) and the other is the palm;
+  //    - the new touch lifts first → the young stroke goes on.
   // 5. A pen (pointerType pen) always wins: touches on the screen become palms,
   //    and touches stay ignored while it writes and PEN_GRACE_MS after.
   const pointers = new Map(); // pointerId → { x, y, x0, y0, t0, type }: the live, non-palm pointers
@@ -375,6 +408,8 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   let down = null; // { x, y, t } of the drawing pointer
   let moved = 0;
   let pending = null; // [olderId, newerId] while it is not yet known who draws
+  let pendingYoung = false; // the older one was drawing a young stroke (rule 4, T063-D1)
+  let path = []; // the points of the stroke while it is young (app viewport)
   let decideFrame = 0;
   let penUntil = 0;
   let penDown = false;
@@ -401,6 +436,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     mode = 'idle';
     drawId = null;
     pending = null;
+    pendingYoung = false;
     cancelAnimationFrame(decideFrame);
     decideFrame = 0;
     pointers.clear();
@@ -423,13 +459,30 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     drawId = id;
     down = { x, y, t: performance.now() };
     moved = 0;
+    path = [{ x, y }];
     frame.stroke('start', { ...at, tool: choice.tool, color: choice.tool === 'eraser' ? null : choice.color });
   }
+  /** A cancelled young stroke goes on (rule 4): again from its first point, the points replayed, then (x, y). */
+  function resumeDraw(id, points, x, y) {
+    const [first, ...rest] = points.length ? points : [{ x, y }];
+    const t0 = pointers.get(id)?.t0;
+    startDraw(id, first.x, first.y);
+    if (mode !== 'draw') return;
+    if (Number.isFinite(t0)) down.t = t0;
+    for (const p of [...rest, { x, y }]) {
+      moved = Math.max(moved, Math.hypot(p.x - first.x, p.y - first.y));
+      if (path.length < PATH_MAX) path.push(p);
+      const at = frameXY({ clientX: p.x, clientY: p.y });
+      if (at) getFrame()?.stroke('move', at);
+    }
+  }
+  const area = (p) => (p.w || 0) * (p.h || 0);
   function toScroll() {
     if (mode === 'draw') getFrame()?.stroke('cancel');
     mode = 'scroll';
     drawId = null;
     pending = null;
+    pendingYoung = false;
     scrollLast = { ...centroid(), t: performance.now() };
     velocity = { x: 0, y: 0 };
   }
@@ -440,19 +493,27 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     const db = { x: b.x - b.px, y: b.y - b.py };
     const la = Math.hypot(da.x, da.y);
     const lb = Math.hypot(db.x, db.y);
-    // The two pointers report one after the other: decide only when both moved
-    // (together → scroll, apart → a pinch: no drawing either), or one has gone
-    // PENDING_PX while the other stayed still (it draws, the still one is the palm).
-    if (la >= TOGETHER_PX && lb >= TOGETHER_PX) { toScroll(); return; }
-    if (Math.max(la, lb) < PENDING_PX) return;
-    const [still, mover] = lb >= la ? pending : [...pending].reverse();
-    const m = pointers.get(mover);
+    // The two pointers report one after the other: decide when both moved
+    // comparably (scrolling; apart → a pinch, scrolled by the centre: nothing
+    // drawn either), or when the faster has gone PENDING_PX and the slower has
+    // not kept up (it draws, the slower is the palm).
+    const [slowId, fastId] = la <= lb ? pending : [...pending].reverse();
+    const slow = pointers.get(slowId);
+    const fast = pointers.get(fastId);
+    const ls = Math.min(la, lb);
+    const lf = Math.max(la, lb);
+    const ratio = area(slow) && area(slow) >= PALM_BIGGER * area(fast) ? SCROLL_RATIO_PALM : SCROLL_RATIO;
+    if (ls >= TOGETHER_PX && ls >= ratio * lf) { toScroll(); return; }
+    if (lf < PENDING_PX) return;
+    const resume = pendingYoung && fastId === pending[0];
     pending = null;
-    toPalm(still);
-    startDraw(mover, m.px, m.py);
+    pendingYoung = false;
+    toPalm(slowId);
+    if (resume) { resumeDraw(fastId, path, fast.x, fast.y); return; }
+    startDraw(fastId, fast.px, fast.py);
     if (mode === 'draw') {
-      moved = Math.hypot(m.x - m.px, m.y - m.py);
-      const at = frameXY({ clientX: m.x, clientY: m.y });
+      moved = Math.hypot(fast.x - fast.px, fast.y - fast.py);
+      const at = frameXY({ clientX: fast.x, clientY: fast.y });
       if (at) getFrame()?.stroke('move', at);
     }
   }
@@ -470,22 +531,25 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       if (touches.length) {
         if (mode === 'draw' && touches.includes(drawId)) getFrame()?.stroke('cancel');
         for (const id of touches) toPalm(id);
-        if (!pointers.size) { mode = 'idle'; drawId = null; pending = null; }
+        if (!pointers.size) { mode = 'idle'; drawId = null; pending = null; pendingYoung = false; }
       }
     }
     if (e.pointerType === 'touch' && (penDown || now < penUntil || isPalm(e))) { palms.add(e.pointerId); return; } // the palm
     stopFling();
     try { layer.setPointerCapture(e.pointerId); } catch { /* gone */ }
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, px: e.clientX, py: e.clientY, t0: now, type: e.pointerType });
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, px: e.clientX, py: e.clientY, t0: now, type: e.pointerType, w: e.width || 0, h: e.height || 0 });
     if (pointers.size === 1 && mode === 'idle') { startDraw(e.pointerId, e.clientX, e.clientY); return; }
     if (mode === 'draw') {
       const first = pointers.get(drawId);
-      if (first && now - first.t0 <= PAIR_MS && moved < TAP_SLOP_PX) { toScroll(); return; } // rule 2: two fingers together
-      if (moved >= TAP_SLOP_PX) { toPalm(e.pointerId); return; } // rule 3: the stroke goes on
-      // Rule 4: a resting touch and a new one: wait for the movement.
+      const age = first ? now - first.t0 : Infinity;
+      if (age <= PAIR_MS && moved < TAP_SLOP_PX) { toScroll(); return; } // rule 2: two fingers together
+      const young = age < YOUNG_MS && moved < YOUNG_PX;
+      if (moved >= TAP_SLOP_PX && !young) { toPalm(e.pointerId); return; } // rule 3: the stroke goes on
+      // Rule 4: a resting touch or a young stroke, and a new touch: wait for the movement.
       getFrame()?.stroke('cancel');
       for (const p of pointers.values()) { p.px = p.x; p.py = p.y; }
       pending = [drawId, e.pointerId];
+      pendingYoung = moved >= TAP_SLOP_PX;
       mode = 'pending';
       drawId = null;
       return;
@@ -523,13 +587,16 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       const last = events.length ? events.at(-1) : e;
       const p = pointers.get(e.pointerId);
       p.x = last.clientX; p.y = last.clientY;
+      p.w = e.width || 0; p.h = e.height || 0;
       moved = Math.max(moved, Math.hypot(last.clientX - down.x, last.clientY - down.y));
+      if (path.length < PATH_MAX && performance.now() - down.t < YOUNG_MS) path.push({ x: last.clientX, y: last.clientY });
       const at = frameXY(last);
       if (at) getFrame()?.stroke('move', at);
       return;
     }
     const p = pointers.get(e.pointerId);
     p.x = e.clientX; p.y = e.clientY;
+    p.w = e.width || 0; p.h = e.height || 0;
     // Decided at the next frame: the other pointer of the same touch move reports too.
     if (mode === 'pending') { if (!decideFrame) decideFrame = requestAnimationFrame(() => { decideFrame = 0; if (mode === 'pending') decidePending(); }); return; }
     if (mode === 'scroll') {
@@ -583,8 +650,18 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       // One of the two lifted before either moved: a quick tap of the newer one
       // (the pen on a quiz answer, the palm resting) presses the lesson's control.
       const newer = pending[1] === e.pointerId;
+      const older = pending[0];
+      const young = pendingYoung;
       pending = null;
+      pendingYoung = false;
       mode = pointers.size ? 'blocked' : 'idle';
+      // The new touch went away before anything moved: the young stroke goes on.
+      if (young && newer && !cancelled && pointers.has(older)) {
+        mode = 'idle';
+        const o = pointers.get(older);
+        resumeDraw(older, path, o.x, o.y);
+        return;
+      }
       const at = frameXY(e);
       const still = Math.hypot(e.clientX - rec.px, e.clientY - rec.py) < TAP_SLOP_PX;
       if (!cancelled && newer && still && at && performance.now() - rec.t0 < TAP_MS && choice.tool !== 'eraser') getFrame()?.activate(at.x, at.y);

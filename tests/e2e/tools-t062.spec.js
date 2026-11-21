@@ -467,9 +467,15 @@ test.describe('T-062 tablet (1920×1200 / 1200×1920)', () => {
     await frame.evaluate(() => parent.postMessage({ lrn: 1, type: 'lrn:undo' }, '*'));
     await page.waitForTimeout(400);
     expect(await count(page)).toBe(2);
-    // The focus in the lesson, Ctrl+Z → the last mark goes.
+    // The focus in the lesson, Ctrl+Z → the last mark goes. T-064 (T063-D3): the
+    // focus moved in by a script right after the user's taps in the app is not the
+    // user's: the first press is refused (nothing undone, the focus back in the
+    // app), the next one is the app's own. (The honest ways in: tools-t064 U1 / U2.)
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await frame.locator('body').press('Control+z');
+    await expect(page.locator('[data-field="marks-status"]')).toHaveText('Натисни Ctrl+Z още веднъж, за да отмениш.');
+    expect(await count(page)).toBe(2);
+    await page.keyboard.press('Control+z');
     await waitMarks(page, 1);
     expect((await live(page))[0].exact).toBe('Регламентът');
     // Ctrl+Z inside a field of the lesson is the field's own (not ours).

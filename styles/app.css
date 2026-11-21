@@ -872,6 +872,9 @@ ol.activity { list-style: none; }
   justify-content: center;
   width: 44px;
   height: 56px;
+  /* T063-I6: below the place of "Скрий" (the second tap of a double tap on it
+     lands on nothing, it does not bring the bar back). */
+  margin-top: 68px;
   padding: 0;
   border: 1px solid var(--rule);
   border-left: 0;

@@ -448,7 +448,14 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await frame.locator('body').press('Escape');
     await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'false');
+    // T-064 (T063-D3): the focus was moved in by a script (the lesson's own
+    // focus()), right after the user's stroke in the app: the Ctrl+Z pressed in
+    // the lesson is refused and the focus comes back to the app ("press again");
+    // the next Ctrl+Z is the app's own. (The honest ways in: tools-t064 U1 / U2.)
     await frame.locator('body').press('Control+z');
+    await expect(page.locator('[data-field="marks-status"]')).toHaveText('Натисни Ctrl+Z още веднъж, за да отмениш.');
+    expect(await count(page)).toBe(1);
+    await page.keyboard.press('Control+z');
     await waitMarks(page, 0);
   });
 
