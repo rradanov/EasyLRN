@@ -271,7 +271,6 @@ test.describe('T066 D-044: the lesson cannot undo anything; the app\'s own "От
       runs.push({ wait, focusAfterCtrl: where, undone: before - (await count(page)) });
     }
     info('T066-S3', { tries: await frame.evaluate(() => window.__tries), runs });
-    if (runs.some((r) => r.undone)) test.fail(true, 'T066-D3: a lesson moves the focus out of its frame (parent.focus() / window.blur()) on the keydown of Control: the Z of the user\'s Ctrl+Z, pressed in the lesson, lands in the app, whose own Ctrl+Z undoes the last mark');
     expect(runs.map((r) => r.undone)).toEqual([0, 0]);
   });
 
@@ -604,9 +603,6 @@ test.describe('T066 the bar: double taps on "☰" / "Скрий", keys and the m
     }
     info('T066-B1 double tap on the handle', out);
     const bad = out.filter((r) => (typeof r.real !== 'number' || r.real <= 300) && (!r.shown || r.tool !== 'none'));
-    if (bad.length && bad.every((r) => r.shown)) {
-      test.fail(true, 'T066-D4: the guard after the bar appears is 250 ms (SWITCH_GUARD_MS), a double tap can be up to 300 ms: a double tap on "☰" with the second tap at 250–300 ms turns on the tool that is now under the finger');
-    }
     expect(bad).toEqual([]);
   });
 
@@ -735,7 +731,6 @@ test.describe('T066 short quotes (T063-D5) in a templated legal text', () => {
       return out;
     });
     info('T066-A3', r);
-    test.fail(r.he !== 'ok' || r.ar !== 'ok', 'T066-D7: since 0.13.2 (T063-D5) the "≥ 40 % on each side" path of a short quote found once also needs ≥ 75 % in all: a unique short quote whose own sentence did not change goes "провери" when a block is inserted next to its paragraph (the 32 characters on that side change) — T014-U6 he / ar, which were "ok" in 0.13.1');
     expect(r.bg).not.toBe('orphan');
     expect([r.he, r.ar]).toEqual(['ok', 'ok']);
   });
@@ -779,7 +774,6 @@ test.describe('T066 the palette (T063-D6): long transitions, a delay, an animati
     await page.waitForTimeout(9000);
     const after = await yellow();
     info('T066-C5', { after, bg: await frame.evaluate(() => getComputedStyle(document.body).backgroundColor) });
-    if (after !== DARK_YELLOW) test.fail(true, 'T066-D5: the palette is checked at transitionend of <html> / <body> and at 0.45 / 1 / 2 / 3.5 s; a background changed by a CSS animation longer than ~4 s (animationend is not heard) keeps the light marks on the dark lesson');
     expect(after).toBe(DARK_YELLOW);
   });
 
@@ -808,7 +802,6 @@ test.describe('T066 the palette (T063-D6): long transitions, a delay, an animati
     }
     info('T066-C6', out);
     const missed = Object.entries(out).filter(([, v]) => v.palette !== DARK_YELLOW).map(([k]) => k);
-    if (missed.length) test.fail(true, `T066-D6: the theme is watched only through class / style / data-theme / data-mode / data-color-scheme on <html> / <body> and added / removed <style> / <link>: a lesson that changes the text of its own <style>, uses insertRule or another attribute (data-bs-theme) keeps the light marks on its dark background (missed: ${missed.join(', ')})`);
     expect(missed).toEqual([]);
   });
 });

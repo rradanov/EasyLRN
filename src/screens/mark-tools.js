@@ -64,7 +64,7 @@ const NARROW_PX = 600; // below this width (a phone) the bar starts hidden
 const SWIPE_OUT_PX = 24; // a swipe to the right on the handle this long shows the bar
 const SLIDE_MS = 200;
 const CLICK_OF_TAP_MS = 700; // the click Chrome sends after a tap we already handled on pointerup
-const SWITCH_GUARD_MS = 250; // a tap this soon after the bar / handle appeared is the rest of a double tap
+const SWITCH_GUARD_MS = 350; // a tap this soon after the bar / handle appeared is the rest of a double tap (T066-D4: Android's double tap is up to 300 ms)
 
 const SVG = 'http://www.w3.org/2000/svg';
 function icon(paths) {
@@ -137,12 +137,23 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   // sliding away) is ignored. The handle has no such guard: it is not where
   // "Скрий" was (styles: margin-top), and it must answer at once.
   let switchedAt = -Infinity; // the bar was hidden / shown at this time
+  // T066-D4 (350 ms): only a press near the touch that switched the bar is the
+  // rest of a double tap; a press elsewhere (another control) acts at once.
+  let switchedFrom = null; // { x, y } of that touch, null = not from a touch (time only)
+  let lastTouch = null; // { x, y, t } of the last touch / pen press anywhere
+  const onAnyPress = (e) => {
+    if (e.pointerType !== 'mouse' && e.isPrimary) lastTouch = { x: e.clientX, y: e.clientY, t: performance.now() };
+  };
+  window.addEventListener('pointerdown', onAnyPress, true);
+  const SWITCH_NEAR_PX = 64;
+  const ghost = (e) => performance.now() - switchedAt < SWITCH_GUARD_MS
+    && (switchedFrom === null || Math.hypot(e.clientX - switchedFrom.x, e.clientY - switchedFrom.y) <= SWITCH_NEAR_PX);
   function press(button, action, { guard = true } = {}) {
     let down = null;
     let tappedAt = -Infinity;
     button.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' || !e.isPrimary) return;
-      down = guard && performance.now() - switchedAt < SWITCH_GUARD_MS ? null : e.pointerId;
+      down = guard && ghost(e) ? null : e.pointerId;
       if (down === null) tappedAt = performance.now(); // its click is the same ghost tap
     });
     button.addEventListener('pointercancel', () => { down = null; });
@@ -158,7 +169,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       if (e.detail !== 0) { // a pointer click (the keyboard gives detail 0)
         const now = performance.now();
         if (now - tappedAt < CLICK_OF_TAP_MS) return; // the click of the same tap
-        if (guard && now - switchedAt < SWITCH_GUARD_MS) return; // a double click landing on the new control
+        if (guard && ghost(e)) return; // a double click landing on the new control
       }
       action();
     });
@@ -239,6 +250,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     if (next === hidden && element.hidden === next) return;
     hidden = next;
     switchedAt = performance.now();
+    switchedFrom = lastTouch && switchedAt - lastTouch.t < 1000 ? { x: lastTouch.x, y: lastTouch.y } : null;
     if (keep) saveSettings({ markTool: { ...stored(), hidden } }).catch((err) => console.warn('Cannot save the bar:', err?.name || err));
     slide?.cancel();
     slide = null;
@@ -694,10 +706,23 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
 
   // --- Keyboard ------------------------------------------------------------------------
   const typing = (el) => el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+  // T066-D3: Ctrl+Z / Cmd+Z is the app's only if the app itself saw the user press
+  // Control / Meta (a trusted keydown here, with no blur / focus of the window
+  // since). A lesson that moves the focus out of its frame at the user's Control
+  // (parent.focus(), window.blur()) cannot carry the Z of a Ctrl+Z meant for the lesson.
+  const modsSeen = { Control: false, Meta: false };
+  const forgetMods = () => { modsSeen.Control = false; modsSeen.Meta = false; };
+  const onModDown = (event) => { if (event.isTrusted && event.key in modsSeen) modsSeen[event.key] = true; };
+  const onModUp = (event) => { if (event.key in modsSeen) modsSeen[event.key] = false; };
+  const ownMods = (event) => (event.ctrlKey && modsSeen.Control) || (event.metaKey && modsSeen.Meta);
+  window.addEventListener('keydown', onModDown, true);
+  window.addEventListener('keyup', onModUp, true);
+  window.addEventListener('blur', forgetMods);
+  window.addEventListener('focus', forgetMods);
   const onKey = (event) => {
     if (destroyed || event.defaultPrevented) return;
     if (event.key === 'Escape' && choice.tool) { event.preventDefault(); setTool(null); return; }
-    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && !typing(event.target) && undo.length) {
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && !typing(event.target) && undo.length && event.isTrusted && ownMods(event)) {
       event.preventDefault();
       runUndo();
     }
@@ -731,6 +756,11 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       stopGesture();
       clearTimeout(hintTimer);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onAnyPress, true);
+      window.removeEventListener('keydown', onModDown, true);
+      window.removeEventListener('keyup', onModUp, true);
+      window.removeEventListener('blur', forgetMods);
+      window.removeEventListener('focus', forgetMods);
     },
   };
 }

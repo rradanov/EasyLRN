@@ -581,6 +581,9 @@ test.describe('T063 the handle on a small phone', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await handle(page).tap();
     await expect(bar(page)).toBeVisible();
+    // T-067 (T066-D4): on this small screen "Маркер" is where "☰" was; a tap there
+    // within 350 ms is the second tap of a double tap and is ignored by design.
+    await page.waitForTimeout(400);
     await tool(page, 'marker').tap();
     const t = await input(page);
     const a = await textBox(page, 'Уязвимостите');

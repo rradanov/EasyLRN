@@ -63,6 +63,7 @@ export function anchorTextModel(root, { exclude = ANCHOR_BASE_EXCLUDE } = {}) {
   const segs = [];
   const index = new Map();
   const parts = [];
+  const breaks = new Set(); // offsets of the spaces between blocks (T066-D7)
   let length = 0;
   let lastSpace = true; // nothing yet: a leading space is dropped
   let lastBlock = null;
@@ -98,7 +99,8 @@ export function anchorTextModel(root, { exclude = ANCHOR_BASE_EXCLUDE } = {}) {
     const data = n.data;
     if (!data) continue;
     const block = blockOf(n);
-    const virtual = lastBlock !== null && (block !== lastBlock || lineBreak) && !lastSpace;
+    const boundary = lastBlock !== null && (block !== lastBlock || lineBreak);
+    const virtual = boundary && !lastSpace;
     // Fast path (T014-D4): most text nodes need no collapsing, so the offsets
     // map one to one and no table is kept (`raw` null = identity).
     const collapsed = data.replace(ANCHOR_WS_RUN, ' ');
@@ -133,6 +135,9 @@ export function anchorTextModel(root, { exclude = ANCHOR_BASE_EXCLUDE } = {}) {
     }
     lastBlock = block;
     if (!out.length) continue;
+    // T066-D7: the space between two blocks (the virtual one, or the last space
+    // of the block before) — where the context of a short quote leaves its block.
+    if (boundary && (virtual || length > 0)) breaks.add(virtual ? length : length - 1);
     lineBreak = false;
     lastSpace = out.charCodeAt(out.length - 1) === 32;
     segs.push({ node: n, start: length, len: out.length, raw });
@@ -140,7 +145,7 @@ export function anchorTextModel(root, { exclude = ANCHOR_BASE_EXCLUDE } = {}) {
     parts.push(out);
     length += out.length;
   }
-  return { text: parts.join(''), segs, index, root };
+  return { text: parts.join(''), segs, index, root, breaks };
 }
 
 /** Offset in `node.data` of character `i` of a segment (0 ≤ i ≤ len). */
@@ -656,7 +661,23 @@ export function anchorFind(model, selector, { sameVersion = false, within = null
     // nothing to compare: the best place as before.)
     // T063-D5: two generic phrases ("в съответствие с … от настоящия регламент")
     // reach 40 % on each side by themselves: that path also needs ≥ 75 % in all.
-    const strongOnce = (h) => h.context >= 0.8 || (h.c.pre >= 0.4 && h.c.post >= 0.4 && h.context >= 0.75);
+    // T066-D7: …unless each side of its context is intact up to the edge of its
+    // block (the space between two blocks in the new text, or the start / the
+    // end of the old text): then the whole of its block around it is the same
+    // and only what lies beyond the block changed (a block inserted next to it).
+    // A side that is all there but does not reach its block's edge (the full
+    // 32 characters) is not enough by itself: in a templated text that is the
+    // generic phrase again (T063-D5).
+    const breaks = model.breaks instanceof Set ? model.breaks : null;
+    const edgeIn = (from, to) => { // a space between blocks in [from, to) of T
+      if (breaks !== null) for (let p = from; p < to; p++) if (breaks.has(base + p)) return true;
+      return false;
+    };
+    const preIntact = (h) => (prefix.length < ANCHOR_CONTEXT && h.c.before === prefix.length) || edgeIn(h.at - h.c.before, h.at);
+    const postIntact = (h) => (suffix.length < ANCHOR_CONTEXT && h.c.after === suffix.length)
+      || edgeIn(h.at + exact.length, h.at + exact.length + h.c.after);
+    const ownBlock = (h) => h.c.intact >= 8 && preIntact(h) && postIntact(h);
+    const strongOnce = (h) => h.context >= 0.8 || (h.c.pre >= 0.4 && h.c.post >= 0.4 && h.context >= 0.75) || ownBlock(h);
     const unsure = exact.length < 24 && prefix.length + suffix.length > 0 && (hits.length === 1
       ? !strongOnce(best)
       : best.context < 0.9 || second >= 0.5);

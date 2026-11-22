@@ -162,16 +162,32 @@
   };
   window.addEventListener('transitionend', onThemeTransition, true);
   window.addEventListener('transitioncancel', onThemeTransition, true);
+  // T066-D5: a background changed by a CSS animation (no transitionend).
+  window.addEventListener('animationend', onThemeTransition, true);
+  window.addEventListener('animationcancel', onThemeTransition, true);
+  // T066-D6: any attribute of <html> / <body> (data-bs-theme, …), and the text of
+  // a <style> in <head> (not the bridge's own). A rule added with insertRule
+  // changes no node: a cheap check about once a second while the lesson is seen.
+  let themeQueued = false;
+  const themeThrottled = () => {
+    if (themeQueued) return;
+    themeQueued = true;
+    setTimeout(() => { themeQueued = false; themeSoon(); }, 100);
+  };
+  const ours = (node) => node === style || (node && node.parentNode === style);
   try {
     const watch = new MutationObserver((records) => {
-      if (records.some((r) => r.type === 'attributes' || [...r.addedNodes, ...r.removedNodes].some((n) => n !== style && /^(STYLE|LINK)$/.test(n.nodeName)))) themeSoon();
+      if (records.some((r) => (r.type === 'attributes' && (r.target === root || r.target === document.body))
+        || (r.type === 'characterData' && !ours(r.target))
+        || (r.type === 'childList' && !ours(r.target) && [...r.addedNodes, ...r.removedNodes].some((n) => n.nodeType === 3 || (n !== style && /^(STYLE|LINK)$/.test(n.nodeName)))))) themeThrottled();
     });
-    const attributes = { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'] };
+    const attributes = { attributes: true };
     watch.observe(root, attributes);
-    if (document.head) watch.observe(document.head, { childList: true });
+    if (document.head) watch.observe(document.head, { childList: true, subtree: true, characterData: true });
     const watchBody = () => { if (document.body) watch.observe(document.body, attributes); };
     if (document.body) watchBody(); else document.addEventListener('DOMContentLoaded', watchBody, { once: true });
   } catch { /* no MutationObserver */ }
+  setInterval(() => { if (document.visibilityState !== 'hidden') followTheme(); }, 1000);
 
   // --- Height -------------------------------------------------------------------
   let lastHeight = -1;

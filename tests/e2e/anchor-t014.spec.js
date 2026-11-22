@@ -302,12 +302,8 @@ test.describe('T014-U src/anchor.js edge cases', () => {
       out.mixedSplit = A.anchorFind(rt2, sel(rt, 'לבדיקה مرحبا')).state;
       return out;
     });
-    // T-066: he / ar ("ok" after a block inserted next to their paragraph) went "fuzzy"
-    // with the T063-D5 rule of 0.13.2 (≥ 75 % in all for a short quote): T066-D7, kept as an
-    // expected failure in tools-t066.spec.js (T066-A3, the same two cases); the rest here as before.
-    const { he, ar, ...rest } = r;
-    expect(rest).toEqual({ nfd: 'fuzzy', shy: 'fuzzy', nbsp: 'ok', zwsp: 'ok', emoji: ['ok', '👍🏽 и 😀'], mixed: 'ok', mixedSplit: 'orphan' });
-    expect([he, ar].every((x) => x === 'ok' || x === 'fuzzy')).toBe(true); // never an orphan / a wrong place
+    // T-066 / T-067: he / ar went "fuzzy" in 0.13.2–0.13.3 (T066-D7); "ok" again since 0.13.4.
+    expect(r).toEqual({ nfd: 'fuzzy', shy: 'fuzzy', nbsp: 'ok', zwsp: 'ok', emoji: ['ok', '👍🏽 и 😀'], he: 'ok', ar: 'ok', mixed: 'ok', mixedSplit: 'orphan' });
   });
 
   test('T014-U7 (T014-D2) <br> is in the list of blocks but makes no space: "ред<br>втори" is "редвтори" in the quote (expected "ред втори")', async ({ page }) => {
