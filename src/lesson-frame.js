@@ -231,7 +231,16 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     let list = [];
     try { list = await lessonAnnotations(lesson); } catch (err) { console.warn('Cannot read the annotations:', err?.name || err); }
     if (destroyed || run !== annotationsRun || !initialized) return;
-    known = new Map(list.map((a) => [a.id, a]));
+    // The last anchoring of an id stays with it until the bridge reports again (T-017: the notes strip).
+    const before = known;
+    known = new Map(list.map((a) => {
+      const was = before.get(a.id);
+      if (was) {
+        for (const k of ['anchoredTop', 'anchoredBottom', 'anchoredStart', 'anchoredEnd']) if (was[k] !== undefined) a[k] = was[k];
+        if (was.anchorState && a.anchorState === undefined) a.anchorState = was.anchorState;
+      }
+      return [a.id, a];
+    }));
     // No secrets (§5.1): quotes of this lesson itself, colours, positions.
     post({ type: 'lrn:annotations', items: bridgeItems(list, lesson) });
   };
@@ -456,7 +465,10 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       saver.add(known, clean);
       for (const r of clean) {
         const a = known.get(r.id);
-        if (a) { a.anchorState = r.state; a.anchoredTop = r.top; a.anchoredBottom = r.bottom; }
+        if (a) {
+          a.anchorState = r.state; a.anchoredTop = r.top; a.anchoredBottom = r.bottom;
+          a.anchoredStart = r.position ? r.position.start : null; a.anchoredEnd = r.position ? r.position.end : null;
+        }
       }
       element.setAttribute('data-anchored', String(clean.length));
       onAnchored?.([...known.values()]);
@@ -757,6 +769,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       if (initialized && frame && innerScroll) post({ type: 'lrn:scroll-by', dx: Math.round(dx), dy: Math.round(dy) });
       return innerScroll;
     },
+    /** Does the lesson scroll inside its frame (T046-D2)? Then the places of the marks are not in the app window. */
+    get innerScroll() { return innerScroll; },
     /** Is the bridge of this lesson ready (the tools work only then)? */
     get bridgeReady() { return initialized && !!frame; },
     /** Read the annotations again and send them to the lesson (after a change elsewhere). */

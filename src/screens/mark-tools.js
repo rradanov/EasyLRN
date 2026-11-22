@@ -38,8 +38,8 @@
 //   that exists when the marker / pencil is pressed is marked at once (the
 //   keyboard / mouse way of marking).
 import { h } from '../dom.js';
-import { saveSettings } from '../db.js';
-import { annotateSelection, deleteAnnotation, restoreAnnotation } from '../annotations.js';
+import { saveSettings, getAnnotation, COLORS } from '../db.js';
+import { annotateSelection, deleteAnnotation, restoreAnnotation, setAnnotationColor, annotationDependents } from '../annotations.js';
 import { TOOL_COLORS, DEFAULT_COLOR_NAMES, colorChoices } from '../highlight.js';
 
 export const TOOLS = Object.freeze(['marker', 'pencil', 'eraser']);
@@ -115,9 +115,9 @@ export function toolChoice(settings) {
 /**
  * @param {{ getFrame: () => object|null, course: object, lesson: object, settings: object,
  *   announce: (text: string) => void, onChange?: (tool: string|null) => void,
- *   onLayout?: (hidden: boolean) => void }} opts
+ *   onLayout?: (hidden: boolean) => void, onErased?: () => void }} opts
  */
-export function createMarkTools({ getFrame, course, lesson, settings, announce, onChange, onLayout }) {
+export function createMarkTools({ getFrame, course, lesson, settings, announce, onChange, onLayout, onErased }) {
   const choice = toolChoice(settings);
   let hidden = choice.hidden ?? narrowScreen();
   const names = new Map(colorChoices(settings).map((c) => [c.id, c]));
@@ -353,15 +353,31 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     announce(`${style === 'underline' ? 'Подчертано' : 'Маркирано'}: ${colorName(color)}.`);
     return created;
   }
+  // T-017 (D-045): the eraser deletes only the marking. A mark with a note (or
+  // anything else on it) keeps its annotation without a colour: the note stays
+  // at its place; "Отмени" brings the colour back.
   async function eraseMarks(ids) {
-    const done = [];
+    const done = []; // { id, color } — color: the colour taken away, null: the annotation was deleted
     for (const id of ids) {
-      try { await deleteAnnotation(lesson, id); done.push(id); } catch (err) { console.warn('Cannot delete the mark:', err?.message || err); }
+      try {
+        const a = await getAnnotation(id);
+        if (!a || !COLORS.includes(a.color)) continue; // a place with a note only: not a mark
+        const on = await annotationDependents(id);
+        if (on.notes || on.threads || on.subtopics) {
+          await setAnnotationColor(lesson, id, null);
+          done.push({ id, color: a.color });
+        } else {
+          await deleteAnnotation(lesson, id);
+          done.push({ id, color: null });
+        }
+      } catch (err) { console.warn('Cannot delete the mark:', err?.message || err); }
     }
     await getFrame()?.reloadAnnotations();
     if (!done.length) return;
-    pushUndo({ kind: 'erase', ids: done });
-    announce(done.length === 1 ? 'Маркировката е изтрита. „Отмени“ я връща.' : `Изтрити маркировки: ${done.length}. „Отмени“ ги връща.`);
+    pushUndo({ kind: 'erase', items: done });
+    const kept = done.some((d) => d.color) ? ' Бележката остава.' : '';
+    announce(done.length === 1 ? `Маркировката е изтрита.${kept} „Отмени“ я връща.` : `Изтрити маркировки: ${done.length}.${kept} „Отмени“ ги връща.`);
+    onErased?.();
   }
   let busy = Promise.resolve();
   const queue = (work) => { busy = busy.then(work).catch((err) => { console.warn('Marking failed:', err?.message || err); announce('Маркировката не можа да се запише.'); }); return busy; };
@@ -371,12 +387,19 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
     if (!last) return Promise.resolve();
     return queue(async () => {
       if (last.kind === 'create') {
-        await deleteAnnotation(lesson, last.id);
+        // A note added to the mark since then stays (T-017): only the colour goes.
+        const on = await annotationDependents(last.id);
+        if (on.notes || on.threads || on.subtopics) await setAnnotationColor(lesson, last.id, null);
+        else await deleteAnnotation(lesson, last.id);
         announce(last.style === 'underline' ? 'Подчертаването е отменено.' : 'Маркирането е отменено.');
       } else {
-        for (const id of last.ids) await restoreAnnotation(lesson, id);
-        announce(last.ids.length === 1 ? 'Маркировката е върната.' : `Върнати маркировки: ${last.ids.length}.`);
+        for (const { id, color } of last.items) {
+          if (color) await setAnnotationColor(lesson, id, color);
+          else await restoreAnnotation(lesson, id);
+        }
+        announce(last.items.length === 1 ? 'Маркировката е върната.' : `Върнати маркировки: ${last.items.length}.`);
       }
+      onErased?.();
       await getFrame()?.reloadAnnotations();
     });
   }

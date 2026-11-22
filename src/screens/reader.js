@@ -9,6 +9,8 @@
 // History (T-059, D-041): every opening is a visit in "Последни дейности"
 // with its position; `?y=<px>` opens at a position of the history, `?at=` at
 // a fragment.
+// Notes (T-017, D-045): a strip right of the lesson (src/screens/notes-strip.js):
+// 📝 next to the lines with a note, the list, ▲ / ▼, "Бележка" for selected text.
 // Marks (T-015, D-042): the tool bar left of the lesson (src/screens/mark-tools.js:
 // marker, pencil, eraser, five colours, "Отмени"; it can be hidden behind a
 // handle "☰", T-062); with a tool on, one finger
@@ -20,6 +22,8 @@ import { link } from '../router.js';
 import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson, visitPlace, movePlace } from '../db.js';
 import { createLessonFrame } from '../lesson-frame.js';
 import { createMarkTools } from './mark-tools.js';
+import { createNotesStrip } from './notes-strip.js';
+import { COLORS } from '../db.js';
 import { confirmAnnotationPlace } from '../annotations.js';
 import { quizLink } from './quiz-link.js';
 import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
@@ -61,13 +65,16 @@ export function readerScreen({ params, query }) {
     h('p', { class: 'muted', text: 'Зареждам…' }));
   let frame = null;
   let tools = null;
+  let notes = null;
   let destroyed = false;
   const liveStatus = h('p', { class: 'visually-hidden', role: 'status', 'aria-live': 'polite', 'data-field': 'marks-status' });
   const announce = (text) => { liveStatus.textContent = ''; liveStatus.textContent = text; };
   // "Маркировки за проверка": the fuzzy ("провери") and orphan marks of this lesson.
   const checkBox = h('details', { class: 'marks-check', 'data-field': 'marks-check', hidden: true });
   const toolSlot = h('div', { class: 'reader__tools' });
-  const doc = h('div', { class: 'reader__doc', 'data-field': 'reader-doc' }, toolSlot, content);
+  const notesSlot = h('div', { class: 'reader__notes-slot' });
+  const panelSlot = h('div', { class: 'reader__panel-slot' });
+  const doc = h('div', { class: 'reader__doc', 'data-field': 'reader-doc' }, toolSlot, content, notesSlot);
 
   (async () => {
     const [course, lessons, settings] = await Promise.all([getCourse(courseId), listLessons(courseId), getSettings()]);
@@ -137,7 +144,9 @@ export function readerScreen({ params, query }) {
       const q = a.selector?.quote?.exact || '';
       return `«${q.length > 200 ? `${q.slice(0, 199)}…` : q}»`;
     };
-    const showChecks = (list) => {
+    const showChecks = (all) => {
+      // Only marks (with a colour): a place with a note only is checked in the notes list (T-017).
+      const list = all.filter((a) => COLORS.includes(a.color));
       const fuzzy = list.filter((a) => a.anchorState === 'fuzzy');
       const orphan = list.filter((a) => a.anchorState === 'orphan');
       checkBox.hidden = !fuzzy.length && !orphan.length;
@@ -186,8 +195,11 @@ export function readerScreen({ params, query }) {
       fontScale: settings.fontScale,
       initialScroll: startY,
       hash,
-      onAnchored: (list) => { if (!destroyed) showChecks(list); },
-      onEscape: () => tools?.escape(),
+      onAnchored: (list) => { if (!destroyed) { showChecks(list); notes?.onAnchored(); } },
+      onEscape: () => { if (tools?.tool) tools.escape(); else notes?.escape(); },
+      onSelection: (sel) => notes?.onSelection(sel),
+      onTap: (annotation) => notes?.onTap(annotation),
+      onLayout: (places) => notes?.onLayout(places),
       onNavigate: (other, otherHash) => {
         const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
         location.hash = `${readerLink(courseId, other)}${at}`;
@@ -203,11 +215,25 @@ export function readerScreen({ params, query }) {
       lesson,
       settings,
       announce,
-      onChange: (tool) => { doc.dataset.tool = tool || 'none'; },
+      onChange: (tool) => { doc.dataset.tool = tool || 'none'; notes?.onTool(); },
       onLayout: (hidden) => { doc.dataset.bar = hidden ? 'hidden' : 'shown'; },
+      onErased: () => notes?.reload(),
     });
     doc.dataset.bar = tools.hidden ? 'hidden' : 'shown';
     mount(toolSlot, tools.handle, tools.element);
+    // T-017 (D-045): the notes strip right of the lesson.
+    notes = createNotesStrip({
+      getFrame: () => frame,
+      getTool: () => tools?.tool || null,
+      course,
+      lesson,
+      settings,
+      announce,
+      onLayout: (hidden) => { doc.dataset.notes = hidden ? 'hidden' : 'shown'; },
+    });
+    doc.dataset.notes = notes.hidden ? 'hidden' : 'shown';
+    mount(notesSlot, notes.element);
+    mount(panelSlot, notes.panel, notes.toast);
     frame.element.append(tools.layer);
     mount(content, frame.element);
   })().catch((err) => {
@@ -220,6 +246,7 @@ export function readerScreen({ params, query }) {
     back: { href: link('c', courseId), label: courseId },
     destroy() {
       destroyed = true;
+      notes?.destroy();
       tools?.destroy();
       frame?.destroy();
     },
@@ -236,6 +263,7 @@ export function readerScreen({ params, query }) {
       checkBox,
       liveStatus,
       doc,
+      panelSlot,
       quizzesBox,
     ),
   };

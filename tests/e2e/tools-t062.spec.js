@@ -524,7 +524,8 @@ test.describe('T-062 phone (360×800 portrait / 800×360 landscape)', () => {
       const { fb } = await checkHandle(page);
       // The lesson takes the width: it starts right after the handle.
       expect(fb.x).toBeLessThanOrEqual(52);
-      expect(fb.width).toBeGreaterThanOrEqual(page.viewportSize().width - 52 - 24 - 1);
+      // T-017 (0.14.0): the handle of the notes strip (44 px + gap) is at the right edge now.
+      expect(fb.width).toBeGreaterThanOrEqual(page.viewportSize().width - 52 - 48 - 1);
       await handle(page).tap();
     }
     await expectShown(page);

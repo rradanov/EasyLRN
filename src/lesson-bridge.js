@@ -123,6 +123,8 @@
       // A pencil mark found only approximately: dashed.
       rules.push(`::highlight(lrn-uf-${c}) { text-decoration: underline dashed 3px ${line}; text-underline-offset: 3px; text-decoration-skip-ink: none; }`);
     }
+    // T-017: text with a note and no colour: a faint dotted line (the 📝 is in the app's strip).
+    rules.push('::highlight(lrn-note) { text-decoration: underline dotted 2px rgba(127, 127, 127, 0.8); text-underline-offset: 4px; text-decoration-skip-ink: none; }');
     // Found only approximately (D-012 "провери"): a dotted line under it.
     rules.push('::highlight(lrn-fuzzy) { text-decoration: underline dotted 2px; text-underline-offset: 3px; }');
     // Forced colours (high contrast): the system colours of a mark.
@@ -279,7 +281,8 @@
   });
 
   // --- Clicks: links, in-page anchors, taps on highlights -----------------------
-  let painted = []; // { id, range } of the annotations with a colour (hit-test)
+  let painted = []; // { id, range } of the annotations with a colour (the eraser, "covered")
+  let tappable = []; // { id, range } of every anchored annotation, with a colour or a note only (lrn:tap)
   const elementForFragment = (fragment) => {
     let id = fragment;
     try { id = decodeURIComponent(fragment); } catch { /* keep it raw */ }
@@ -307,11 +310,11 @@
       send('lrn:link', { href: url.href.slice(0, 2048) });
       return;
     }
-    if (!painted.length || !document.caretPositionFromPoint) return;
+    if (!tappable.length || !document.caretPositionFromPoint) return;
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     let hit = null;
     if (pos) {
-      for (const p of painted) {
+      for (const p of tappable) {
         let inside = false;
         try { inside = p.range.isPointInRange(pos.offsetNode, pos.offset); } catch { inside = false; }
         // Overlapping marks: the shortest one (the innermost) wins.
@@ -352,14 +355,24 @@
   }
   const paint = () => {
     painted = [];
+    tappable = [];
     if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight !== 'function') return;
     // lrn-<colour>: marker; lrn-u-<colour>: pencil; lrn-uf-<colour>: pencil, found approximately.
     const sets = new Map();
     for (const c of COLORS) for (const k of ['', 'u-', 'uf-']) sets.set(`lrn-${k}${c}`, []);
     const fuzzy = [];
+    const notes = [];
     for (const it of items) {
       const a = anchored.get(it.id);
-      if (!a?.range || !it.color) continue;
+      if (!a?.range) continue;
+      if (!it.color) {
+        // T-017: a place with a note and no colour: a faint dotted line, and a tap
+        // on it opens the note in the app. Never under the eraser (D-045).
+        tappable.push({ id: it.id, range: a.range, start: a.start, end: a.end });
+        notes.push(a.range);
+        continue;
+      }
+      tappable.push({ id: it.id, range: a.range, start: a.start, end: a.end });
       painted.push({ id: it.id, range: a.range, start: a.start, end: a.end, style: it.style, color: it.color });
       if (stroke.erased.has(it.id)) continue; // under the eraser right now (shown again if it is not deleted)
       if (it.style === 'underline') sets.get(`lrn-${a.state === 'fuzzy' ? 'uf-' : 'u-'}${it.color}`).push(a.range);
@@ -375,6 +388,8 @@
       }
       if (fuzzy.length) CSS.highlights.set('lrn-fuzzy', new Highlight(...fuzzy));
       else CSS.highlights.delete('lrn-fuzzy');
+      if (notes.length) CSS.highlights.set('lrn-note', new Highlight(...notes));
+      else CSS.highlights.delete('lrn-note');
     } catch { /* the lesson broke the Highlight API: no colours, the rest works */ }
     drawFocus();
   };
