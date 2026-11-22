@@ -1,6 +1,6 @@
 // Screen "Настройки" (#/settings), T-019 (UI-DESIGN §8 without the backup,
 // which is T-031): the Claude API key, the model, the monthly cost threshold,
-// the text size, the theme, the storage and the version.
+// the text size, the theme, the screen orientation (T-069), the storage and the version.
 //
 // The API key (D-037):
 // - it lives in the `secrets` store (db.js), not in the settings record;
@@ -24,10 +24,18 @@ import {
 } from '../db.js';
 import { MODELS, DEFAULT_MODEL, validateKey, maskKey, checkKey, trimBlank } from '../claude.js';
 import { THEMES } from '../theme.js';
+import { ORIENTATIONS, checkOrientation, orientationSupport, applyOrientation } from '../orientation.js';
 import { confirmBox } from './confirm.js';
 
 export const FONT_SCALES = Object.freeze([0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6]);
 const THEME_LABELS = { system: 'Като системата', light: 'Светла', dark: 'Тъмна' };
+const ORIENTATION_LABELS = { auto: 'Автоматично', portrait: 'Портрет', landscape: 'Пейзаж' };
+export const ORIENTATION_HINTS = Object.freeze({
+  none: 'Този браузър не може да заключва ориентацията: екранът се върти според устройството.',
+  'installed-only': 'Работи, когато EasyLRN е инсталирано на началния екран. Изборът се помни и важи там.',
+  ok: '„Портрет“ и „Пейзаж“ заключват екрана; „Автоматично“ го оставя да се върти според устройството.',
+  refused: 'Устройството не позволи заключването сега. Изборът е запазен; отвори EasyLRN от началния екран.',
+});
 const BUDGET_MAX = 1000;
 
 function offlineStatus() {
@@ -310,6 +318,28 @@ export function settingsScreen() {
     });
   }
 
+  // T-069: the screen orientation (src/orientation.js). No API → inactive with
+  // the reason; a browser tab → active, kept, with "works when installed".
+  const support = orientationSupport();
+  const orientationInputs = ORIENTATIONS.map((o) => h('input', {
+    type: 'radio', name: 'settings-orientation', value: o, id: `settings-orientation-${o}`, 'data-field': `orientation-${o}`,
+    disabled: support === 'none', 'aria-describedby': 'settings-orientation-hint',
+  }));
+  const orientationGroup = h('div', {
+    class: 'settings__choices', role: 'radiogroup', 'aria-label': 'Ориентация на екрана', 'data-field': 'orientation',
+    'data-support': support, 'aria-disabled': support === 'none' ? 'true' : null,
+  }, ...ORIENTATIONS.map((o, i) => h('label', { class: 'settings__choice', for: `settings-orientation-${o}` }, orientationInputs[i], ' ', ORIENTATION_LABELS[o])));
+  const orientationHint = h('p', { class: 'muted settings__hint', id: 'settings-orientation-hint', 'data-field': 'orientation-hint', role: 'status', text: ORIENTATION_HINTS[support] });
+  for (const input of orientationInputs) {
+    input.addEventListener('change', async () => {
+      if (!input.checked) return;
+      settings = await saveSettings({ orientation: input.value });
+      const result = await applyOrientation(input.value);
+      if (destroyed) return;
+      orientationHint.textContent = !result.ok && result.reason === 'refused' && support === 'ok' ? ORIENTATION_HINTS.refused : ORIENTATION_HINTS[support];
+    });
+  }
+
   // --- Data: storage ----------------------------------------------------------------
   const storageUsed = h('span', { 'data-field': 'storage', text: '…' });
   const persistStatus = h('span', { 'data-field': 'persist', text: '…' });
@@ -357,6 +387,7 @@ export function settingsScreen() {
     h('div', { class: 'settings__group' },
       row('Размер на текста', null, h('div', { class: 'settings__scale' }, smaller, scaleValue, bigger), sample),
       row('Тема', null, themeGroup, h('p', { class: 'muted settings__hint', 'data-field': 'theme-hint', text: 'Уроците следват темата на системата (браузърът не им предава избора).' })),
+      row('Ориентация на екрана', null, orientationGroup, orientationHint),
     ),
     h('h2', { class: 'screen__heading', text: 'Данни' }),
     h('div', { class: 'settings__group' },
@@ -389,6 +420,7 @@ export function settingsScreen() {
       showScale(FONT_SCALES.includes(s.fontScale) ? s.fontScale : 1);
       if (!FONT_SCALES.includes(s.fontScale)) scaleValue.textContent = `${Math.round((s.fontScale || 1) * 100)} %`;
       for (const input of themeInputs) input.checked = input.value === (THEMES.includes(s.theme) ? s.theme : 'system');
+      for (const input of orientationInputs) input.checked = input.value === checkOrientation(s.orientation);
       body.dataset.loaded = 'yes';
     } catch {
       keyStatus.textContent = 'Настройките не можаха да се прочетат.';

@@ -439,4 +439,125 @@
       setTimeoutFn(hello, 1000);
     }, true);
   } catch (e) { /* ignore */ }
+
+  // --- 4. The keys of an open note (T018-D2) ---------------------------------------
+  // While the user types a note in the app, the app says `lrn:keys` { off: true }
+  // (only a message whose source is the real parent and whose origin is the
+  // app's counts: the lesson cannot send one as the parent). Until { off: false }:
+  // - the lesson cannot take the keyboard focus: focus() / window.focus(),
+  //   dialogs, popovers, select(), reportValidity(), click() and synthetic UI
+  //   events, the Selection's caret methods and designMode do nothing (the
+  //   originals are kept here, the replacements are non-configurable);
+  // - what it holds is let go (the focused element blurs, the selection goes);
+  // - a key, an input, a composition or a clipboard event that still reaches
+  //   this document is stopped first (a capturing listener registered before
+  //   any of the lesson's) and its default is prevented.
+  // The app takes the focus back as well (src/screens/notes-strip.js); Chrome
+  // lets a frame call focus() and `inert` does not stop it.
+  var keysOff = false;
+  var appOrigin = '';
+  try { appOrigin = w.location.origin; } catch (e) { /* ignore */ }
+  function getterOf(proto, name) {
+    for (var o = proto; o; o = getPrototypeOf(o)) {
+      var dsc = getOwnPropertyDescriptor(o, name);
+      if (dsc && dsc.get) return dsc.get;
+    }
+    return null;
+  }
+  var ME = w.MessageEvent && w.MessageEvent.prototype;
+  var msgSource = ME ? getterOf(ME, 'source') : null;
+  var msgOrigin = ME ? getterOf(ME, 'origin') : null;
+  var msgData = ME ? getterOf(ME, 'data') : null;
+  var activeGet = getterOf(w.Document.prototype, 'activeElement');
+  var blurFn = w.HTMLElement && w.HTMLElement.prototype.blur;
+  var getSelectionFn = w.Document.prototype.getSelection;
+  var removeAllRanges = w.Selection && w.Selection.prototype.removeAllRanges;
+  var stopNow = w.Event.prototype.stopImmediatePropagation;
+  var preventIt = w.Event.prototype.preventDefault;
+  var cancelableGet = getterOf(w.Event.prototype, 'cancelable');
+  var addListener = w.EventTarget.prototype.addEventListener;
+  var UI_EVENTS = [w.UIEvent, w.MouseEvent, w.PointerEvent, w.KeyboardEvent, w.FocusEvent, w.InputEvent, w.TouchEvent, w.CompositionEvent];
+  function isUiEvent(ev) {
+    for (var i = 0; i < UI_EVENTS.length; i++) { try { if (UI_EVENTS[i] && ev instanceof UI_EVENTS[i]) return true; } catch (e) { /* ignore */ } }
+    return false;
+  }
+  function letGo() {
+    try {
+      var a = activeGet ? apply(activeGet, docNode, []) : null;
+      if (a && blurFn && a !== docNode.body) apply(blurFn, a, []);
+    } catch (e) { /* ignore */ }
+    try {
+      var sel = getSelectionFn ? apply(getSelectionFn, docNode, []) : null;
+      if (sel && removeAllRanges) apply(removeAllRanges, sel, []);
+    } catch (e) { /* ignore */ }
+  }
+  function whileOn(orig) { return function () { if (keysOff) return undefined; return apply(orig, this, arguments); }; }
+  function guardMethod(obj, name) { if (obj) lockMethod(obj, name, whileOn); }
+  var protoOf = function (C) { return C && C.prototype; };
+  guardMethod(protoOf(w.HTMLElement), 'focus');
+  guardMethod(protoOf(w.SVGElement), 'focus');
+  guardMethod(protoOf(w.MathMLElement), 'focus');
+  guardMethod(protoOf(w.HTMLElement), 'click');
+  guardMethod(protoOf(w.HTMLElement), 'showPopover');
+  guardMethod(protoOf(w.HTMLElement), 'togglePopover');
+  guardMethod(protoOf(w.HTMLDialogElement), 'show');
+  guardMethod(protoOf(w.HTMLDialogElement), 'showModal');
+  guardMethod(protoOf(w.HTMLInputElement), 'select');
+  guardMethod(protoOf(w.HTMLTextAreaElement), 'select');
+  guardMethod(protoOf(w.HTMLInputElement), 'showPicker');
+  guardMethod(protoOf(w.HTMLSelectElement), 'showPicker');
+  var FORMS = ['HTMLFormElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLButtonElement',
+    'HTMLFieldSetElement', 'HTMLObjectElement', 'HTMLOutputElement'];
+  for (var fi = 0; fi < FORMS.length; fi++) { guardMethod(protoOf(w[FORMS[fi]]), 'reportValidity'); guardMethod(protoOf(w[FORMS[fi]]), 'requestSubmit'); }
+  var SEL = ['addRange', 'collapse', 'setPosition', 'setBaseAndExtent', 'selectAllChildren', 'extend', 'collapseToStart', 'collapseToEnd', 'modify'];
+  for (var si = 0; si < SEL.length; si++) guardMethod(protoOf(w.Selection), SEL[si]);
+  guardMethod(w.Document.prototype, 'execCommand');
+  lockMethod(w.EventTarget.prototype, 'dispatchEvent', function (orig) {
+    return function (ev) { if (keysOff && isUiEvent(ev)) return false; return apply(orig, this, arguments); };
+  });
+  // window.focus: an own property of the window (a [Global] interface), or on its prototype chain.
+  (function () {
+    for (var o = w; o; o = getPrototypeOf(o)) {
+      var dsc = getOwnPropertyDescriptor(o, 'focus');
+      if (dsc && typeof dsc.value === 'function') { lockMethod(o, 'focus', whileOn); return; }
+    }
+  })();
+  // designMode (the whole document editable): not switched on while the keys are off.
+  (function () {
+    for (var o = w.Document.prototype; o; o = getPrototypeOf(o)) {
+      var dsc = getOwnPropertyDescriptor(o, 'designMode');
+      if (dsc && dsc.set) {
+        var setFn = dsc.set;
+        try {
+          defineProperty(o, 'designMode', {
+            get: dsc.get, enumerable: dsc.enumerable, configurable: false,
+            set: function (v) { if (keysOff) return; apply(setFn, this, [v]); },
+          });
+        } catch (e) { /* ignore */ }
+        return;
+      }
+    }
+  })();
+  var stopKey = function (ev) {
+    if (!keysOff) return;
+    try { apply(stopNow, ev, []); } catch (e) { /* ignore */ }
+    try { if (cancelableGet && apply(cancelableGet, ev, [])) apply(preventIt, ev, []); } catch (e) { /* ignore */ }
+  };
+  var KEY_EVENTS = ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'textInput', 'compositionstart',
+    'compositionupdate', 'compositionend', 'paste', 'cut', 'copy'];
+  for (var ki = 0; ki < KEY_EVENTS.length; ki++) {
+    try { apply(addListener, w, [KEY_EVENTS[ki], stopKey, true]); } catch (e) { /* ignore */ }
+  }
+  try {
+    apply(addListener, w, ['message', function (ev) {
+      try {
+        if (!msgSource || apply(msgSource, ev, []) !== parentWindow) return;
+        if (msgOrigin && apply(msgOrigin, ev, []) !== appOrigin) return;
+        var m = msgData ? apply(msgData, ev, []) : null;
+        if (!m || typeof m !== 'object' || m.lrn !== 1 || m.type !== 'lrn:keys') return;
+        keysOff = m.off === true;
+        if (keysOff) letGo();
+      } catch (e) { /* ignore */ }
+    }, true]);
+  } catch (e) { /* ignore */ }
 })(window);

@@ -357,7 +357,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   // anything else on it) keeps its annotation without a colour: the note stays
   // at its place; "Отмени" brings the colour back.
   async function eraseMarks(ids) {
-    const done = []; // { id, color } — color: the colour taken away, null: the annotation was deleted
+    const done = []; // { id, color, deleted } — the colour taken away; deleted: the annotation went too
     for (const id of ids) {
       try {
         const a = await getAnnotation(id);
@@ -365,17 +365,17 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
         const on = await annotationDependents(id);
         if (on.notes || on.threads || on.subtopics) {
           await setAnnotationColor(lesson, id, null);
-          done.push({ id, color: a.color });
+          done.push({ id, color: a.color, deleted: false });
         } else {
           await deleteAnnotation(lesson, id);
-          done.push({ id, color: null });
+          done.push({ id, color: a.color, deleted: true });
         }
       } catch (err) { console.warn('Cannot delete the mark:', err?.message || err); }
     }
     await getFrame()?.reloadAnnotations();
     if (!done.length) return;
     pushUndo({ kind: 'erase', items: done });
-    const kept = done.some((d) => d.color) ? ' Бележката остава.' : '';
+    const kept = done.some((d) => !d.deleted) ? ' Бележката остава.' : '';
     announce(done.length === 1 ? `Маркировката е изтрита.${kept} „Отмени“ я връща.` : `Изтрити маркировки: ${done.length}.${kept} „Отмени“ ги връща.`);
     onErased?.();
   }
@@ -393,9 +393,12 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
         else await deleteAnnotation(lesson, last.id);
         announce(last.style === 'underline' ? 'Подчертаването е отменено.' : 'Маркирането е отменено.');
       } else {
+        // T018-D5: the annotation may have gone since (its note deleted with "Изтрий"
+        // took the uncoloured place along; or "Върни" of a note brought it back without
+        // a colour, T018-D6): it is brought back first, then its colour.
         for (const { id, color } of last.items) {
-          if (color) await setAnnotationColor(lesson, id, color);
-          else await restoreAnnotation(lesson, id);
+          await restoreAnnotation(lesson, id);
+          await setAnnotationColor(lesson, id, COLORS.includes(color) ? color : null);
         }
         announce(last.items.length === 1 ? 'Маркировката е върната.' : `Върнати маркировки: ${last.items.length}.`);
       }

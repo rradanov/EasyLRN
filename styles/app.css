@@ -524,6 +524,7 @@ a.card:active { background: var(--paper); }
 .settings__choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
 .settings__choice { display: inline-flex; align-items: center; gap: 6px; min-height: var(--touch); }
 .settings__choice input { width: 22px; height: 22px; accent-color: var(--accent); }
+.settings__choices[aria-disabled="true"] .settings__choice { opacity: 0.55; }
 .screen--settings .quiz__confirm { margin: 8px 0 0; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .settings__danger, :root:not([data-theme="light"]) .settings__spend-warning { color: #ff8a80; border-color: #ff8a80; }
@@ -985,6 +986,8 @@ ol.activity { list-style: none; }
   background: transparent;
 }
 .mark-layer[data-tool="eraser"] { cursor: cell; }
+/* T018-D2: over the lesson while the note field has the focus (a press here leaves the field; scrolling moves the page) */
+.note-guard { position: absolute; inset: 0; z-index: 3; background: transparent; }
 @media (forced-colors: active) {
   .mark-tools__tool[aria-pressed="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; }
   .mark-tools__color[aria-pressed="true"] .mark-tools__swatch { outline: 3px solid Highlight; outline-offset: 2px; }
@@ -1094,7 +1097,7 @@ ol.activity { list-style: none; }
 .notes-strip__list[aria-expanded="true"] { border-color: var(--accent); }
 @keyframes notes-attention { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent); } to { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .notes-strip__new, .notes-strip-quick { animation: none; } }
-.notes-strip__marks { position: absolute; top: 0; bottom: 0; left: 0; width: 50px; pointer-events: none; z-index: 2; }
+.notes-strip__marks { position: absolute; top: 0; bottom: 0; left: 0; width: 50px; pointer-events: none; z-index: 2; overflow: clip; } /* T018-D1: a forged place far below never grows the page */
 .notes-strip__mark {
   position: absolute;
   left: 3px;

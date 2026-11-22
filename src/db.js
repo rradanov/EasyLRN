@@ -81,6 +81,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   ],
   fontScale: 1,
   theme: 'system', // 'system' | 'light' | 'dark' (T-019)
+  orientation: 'auto', // 'auto' | 'portrait' | 'landscape' (T-069, src/orientation.js)
   twoColumnMode: false,
   lastBackupAt: null,
 });

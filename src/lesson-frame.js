@@ -252,6 +252,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   let readyTimer = null;
   let silentTimer = null;
   let heard = false; // any message from the current document of the frame since its load
+  let keysOffNow = false; // T018-D2: told to the guard again when the lesson (re)starts
   let innerScroll = false; // the lesson is taller than MAX_HEIGHT: it scrolls inside the frame
   let rate = { start: 0, count: 0 };
   let selfNavigations = 0;
@@ -413,6 +414,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       restore();
       sendAnnotations();
       if (focused) post({ type: 'lrn:focus', annotationId: focused });
+      if (keysOffNow) post({ type: 'lrn:keys', off: true });
     },
     'lrn:hello'() { /* `heard` is set for every message */ },
     'lrn:violation'() { stopForFrames(); },
@@ -705,6 +707,14 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     focus(id) {
       focused = typeof id === 'string' && known.has(id) ? id : null;
       if (initialized) post({ type: 'lrn:focus', annotationId: focused });
+    },
+    /**
+     * T018-D2: the user types a note in the app — the guard in the lesson
+     * (src/lesson-guard.js §4) lets go of the focus and stops keys until `false`.
+     */
+    keysOff(off) {
+      keysOffNow = off === true;
+      post({ type: 'lrn:keys', off: keysOffNow });
     },
     /** Clear the selection in the lesson (after a mark is made: the system menu goes away). */
     clearSelection() {

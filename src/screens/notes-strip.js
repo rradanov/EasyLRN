@@ -42,7 +42,10 @@ import { h, mount } from '../dom.js';
 import { saveSettings, COLORS } from '../db.js';
 import { renderMarkdown } from '../markdown.js';
 import { confirmAnnotationPlace } from '../annotations.js';
-import { lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH } from '../notes.js';
+import {
+  lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH,
+  keepPendingNote, dropPendingNote,
+} from '../notes.js';
 
 const NARROW_PX = 600; // below this the strip starts hidden and a note fills the window
 const SAVE_MS = 1000;
@@ -51,6 +54,10 @@ const SELECTION_GRACE_MS = 700; // the button stays this long after the selectio
 const FOCUS_MS = 5000;
 const SAME_LINE_PX = 14; // notes closer than this share one 📝 (with a number)
 const QUOTE_MAX = 200;
+const LIST_BODY_MAX = 2000; // T018-D13: the list shows this much of a note (a 1 MB body from a backup froze it)
+const SWITCH_GUARD_MS = 350; // T018-D11: as the tool bar (T066-D4): a press this soon after the strip was shown / hidden…
+const SWITCH_NEAR_PX = 64; // …this near the press that switched it is the rest of a double tap
+const USER_MOVE_MS = 400; // T018-D2: a blur of the note field this soon after a press / Tab of the user is the user's
 
 /**
  * Buttons for a selection (D-045). Only "Бележка" now; "Въпрос" (T-023) and
@@ -82,12 +89,45 @@ export function stripChoice(settings) {
  */
 export function createNotesStrip({ getFrame, getTool = () => null, course, lesson, settings, announce, onLayout }) {
   let hidden = stripChoice(settings).hidden ?? narrowScreen();
+  // T018-D14: until the user chooses (here or before: `notesStrip.hidden`), the
+  // strip follows the width of the window — also when it becomes narrow after
+  // the reader opened (rotation, split screen on Android).
+  let chosen = stripChoice(settings).hidden !== null;
   let destroyed = false;
   let notes = []; // [{ note, annotation }] of this lesson (live ones)
   let places = new Map(); // annotation id → { top, bottom } (frame coordinates, lrn:layout)
   let selection = null; // the last selection of the lesson (checked), for "Бележка"
   let selectionTimer = 0;
   let pressingUntil = 0;
+
+  // T018-D11: the strip shown / hidden at a press: for 350 ms another press
+  // within 64 px of it is the second tap of a double tap (it would land on
+  // "» Скрий" / "☰", now under the finger) and is ignored. A press elsewhere,
+  // and a switch from the keyboard (no press), act at once.
+  let switchedAt = -Infinity;
+  let switchedFrom = null; // { x, y } of the press that switched the strip, or null
+  let lastPress = null; // { x, y, t } of the last pointer press anywhere
+  let lastUserMove = -Infinity; // T018-D2: a press in the app or a focus key (Tab, Escape, F6) of the user
+  const onAnyPress = (e) => {
+    if (!e.isTrusted) return;
+    lastUserMove = performance.now();
+    if (e.isPrimary) lastPress = { x: e.clientX, y: e.clientY, t: performance.now() };
+  };
+  const onFocusKey = (e) => { if (e.isTrusted && (e.key === 'Tab' || e.key === 'Escape' || e.key === 'F6')) lastUserMove = performance.now(); };
+  window.addEventListener('pointerdown', onAnyPress, true);
+  window.addEventListener('keydown', onFocusKey, true);
+  // T018-D2: the page focus went into the lesson (the window blurs while the
+  // document still has the focus: a child frame has it) while the note field is
+  // guarded and the user did not press anything since: taken back at once.
+  const onWindowBlur = () => {
+    const ed = editing;
+    if (!ed || !guarded || destroyed) return;
+    if (lastUserMove > (ed.focusedAt ?? 0) && performance.now() - lastUserMove < USER_MOVE_MS) return;
+    queueMicrotask(() => { if (document.hasFocus()) reclaimFocus(ed); });
+  };
+  window.addEventListener('blur', onWindowBlur);
+  const ghost = (e) => switchedFrom !== null && performance.now() - switchedAt < SWITCH_GUARD_MS
+    && Math.hypot(e.clientX - switchedFrom.x, e.clientY - switchedFrom.y) <= SWITCH_NEAR_PX;
 
   // A finger / pen acts on pointerup (a tap right after a selection may lose its
   // click on Android), the mouse and the keyboard through click; one action per press.
@@ -96,6 +136,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     let tappedAt = -Infinity;
     button.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' || !e.isPrimary) return;
+      if (ghost(e)) { down = null; return; }
       down = e.pointerId;
       pressingUntil = performance.now() + 1500;
     });
@@ -113,7 +154,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       action(e);
     });
     button.addEventListener('click', (e) => {
-      if (e.detail !== 0 && performance.now() - tappedAt < 700) return;
+      if (e.detail !== 0 && (performance.now() - tappedAt < 700 || ghost(e))) return;
       action(e);
     });
     return button;
@@ -176,6 +217,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   const fixRove = () => { if (!bar.querySelector('button[tabindex="0"]:not([hidden])')) rove(stripButtons()[0] || hideButton); };
 
   function setHidden(next, { focus = false, save = true } = {}) {
+    if (!!next !== hidden || element.hidden !== !!next) {
+      switchedAt = performance.now();
+      switchedFrom = lastPress && switchedAt - lastPress.t < 1000 ? { x: lastPress.x, y: lastPress.y } : null;
+    }
+    if (save) chosen = true;
     hidden = !!next;
     element.hidden = hidden;
     handleBox.hidden = !hidden;
@@ -230,11 +276,13 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const frame = getFrame();
     const f = frame?.frame;
     if (hidden || !f || frame.innerScroll || !f.isConnected) { mount(marks); return; }
-    const offset = f.getBoundingClientRect().top - marks.getBoundingClientRect().top;
+    const fr = f.getBoundingClientRect();
+    const offset = fr.top - marks.getBoundingClientRect().top;
     const rows = [];
     for (const item of ordered().placed) {
       const top = lineMiddle(item);
-      if (top === null) continue;
+      // T018-D1: a place the lesson reports below its own frame is not drawn (it would make the page that tall).
+      if (top === null || top > fr.height + 1) continue;
       const row = rows.find((r) => Math.abs(r.top - top) < SAME_LINE_PX);
       if (row) row.items.push(item);
       else rows.push({ top, items: [item] });
@@ -315,11 +363,14 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const was = editing;
     editing = null;
     const done = was ? finishEditing(was) : Promise.resolve();
+    // T018-D12: whether the focus was in the panel is known only before it is emptied.
+    const hadFocus = panel.contains(document.activeElement);
     setMode(null);
     mount(panelBody);
+    unguardFrame();
     const back = returnFocus;
     returnFocus = null;
-    if (focus || panel.contains(document.activeElement)) {
+    if (focus || hadFocus) {
       (back?.isConnected && !back.hidden ? back : (hidden ? handle : listButton)).focus({ preventScroll: true });
     }
     getFrame()?.focus(null);
@@ -346,22 +397,53 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
 
   /** Open the editor of a note (or of a draft). */
   async function openEditor({ draft, quote, annotation = null, body = '', focusText = false, from = null }) {
+    const active = document.activeElement;
+    const fromPanel = panel.contains(active);
     await closePanel();
     if (destroyed) return;
-    returnFocus = from || document.activeElement;
+    // T018-D12: back to where the user was; an item of the list (gone with it) → the list button.
+    returnFocus = from || (fromPanel || !active || active === document.body || !active.isConnected ? (hidden ? handle : listButton) : active);
     const textarea = h('textarea', {
       class: 'notes-panel__text', 'data-field': 'note-text', rows: '8', maxlength: String(MAX_NOTE_LENGTH),
       'aria-label': 'Текст на бележката', placeholder: 'Напиши бележката си… (Markdown: **удебелен**, - списък)',
     });
-    textarea.value = body;
+    // T018-D13: a body longer than the field keeps (an old backup) is shown up to
+    // the limit (a 1 MB word froze the field); the database keeps it all until it is edited.
+    const tooLong = String(body).length > MAX_NOTE_LENGTH;
+    textarea.value = tooLong ? String(body).slice(0, MAX_NOTE_LENGTH) : body;
     const status = h('p', { class: 'notes-panel__status', 'data-field': 'note-status', role: 'status', 'aria-live': 'polite' });
-    const ed = { draft, quote, textarea, status, dirty: false, timer: 0, saving: Promise.resolve(), annotationId: annotation?.id || draft.annotationId || null, noteId: draft.noteId || null };
+    const ed = {
+      draft, quote, textarea, status, dirty: false, timer: 0, saving: Promise.resolve(),
+      annotationId: annotation?.id || draft.annotationId || null, noteId: draft.noteId || null,
+      savedBody: String(body).slice(0, MAX_NOTE_LENGTH), // what the database has (T018-D3; a longer body: its start)
+    };
     editing = ed;
     textarea.addEventListener('input', () => {
       ed.dirty = true;
-      status.textContent = 'Пиша…';
+      // T018-I5: the field keeps MAX_NOTE_LENGTH characters; say so instead of cutting silently.
+      status.textContent = textarea.value.length >= MAX_NOTE_LENGTH ? `Бележката е до ${MAX_NOTE_LENGTH.toLocaleString('bg-BG')} знака; останалото не се пази.` : 'Пиша…';
       clearTimeout(ed.timer);
       ed.timer = setTimeout(() => { save(ed); }, SAVE_MS);
+    });
+    // T018-D2: while the user is in the field, the lesson cannot take the focus:
+    // focus moved into the frame without the user (no press of the user reaches
+    // the frame then: a layer of the app lies over it) goes straight back to the
+    // field, before a key can follow. A tap on the lesson leaves the field (the
+    // layer goes) and the lesson is live again.
+    textarea.addEventListener('focus', () => { ed.focusedAt = performance.now(); if (editing === ed) guardFrame(); });
+    textarea.addEventListener('blur', () => {
+      if (ed.reclaiming) return;
+      // The user's own move (a press in the app, Tab / Escape / F6, since the field got the focus) — or a steal.
+      const own = !guarded || (lastUserMove > (ed.focusedAt ?? 0) && performance.now() - lastUserMove < USER_MOVE_MS);
+      const back = () => {
+        if (editing !== ed || !guarded) return;
+        const at = document.activeElement;
+        if (at === textarea || (at !== guarded.frame && at !== document.body && at !== null)) return;
+        reclaimFocus(ed);
+      };
+      if (own) { queueMicrotask(() => { if (document.activeElement !== textarea) unguardFrame(); }); return; }
+      queueMicrotask(back);
+      setTimeout(back, 0);
     });
     // Escape in the field closes the note (saved first); the field keeps every other key.
     textarea.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePanel({ focus: true }); } });
@@ -385,6 +467,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       h('blockquote', { class: 'notes-panel__quote', 'data-field': 'note-quote' }, quoted(quote, 400)),
       annotation ? stateBadge(annotation) : null,
       hintText ? h('p', { class: 'notes-panel__hint', text: hintText }) : null,
+      tooLong ? h('p', { class: 'notes-panel__hint', 'data-field': 'note-too-long', text: `Бележката е по-дълга от ${MAX_NOTE_LENGTH.toLocaleString('bg-BG')} знака (напр. от резервно копие). Показано е началото; ако я промениш, ще се запази само то.` }) : null,
       // T-041: the 🎤 comes next to this field (dictation of the keyboard works already).
       textarea,
       status,
@@ -400,18 +483,23 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (!ed.dirty) return ed.saving;
     ed.dirty = false;
     const body = ed.textarea.value.slice(0, MAX_NOTE_LENGTH);
+    const since = Date.now();
     ed.saving = ed.saving.then(async () => {
       // A new note is created only when it has text; an empty one is not kept.
       if (!ed.noteId && !body.trim()) { ed.status.textContent = ''; return; }
       if (ed.noteId && !body.trim()) { ed.status.textContent = 'Празна бележка: ще бъде изтрита, ако я затвориш така.'; return; }
       ed.status.textContent = 'Записвам…';
       const draft = ed.noteId ? { noteId: ed.noteId } : ed.draft;
-      const { note, annotation, createdAnnotation } = await saveNote({ course, lesson, draft, body });
+      const { note, annotation, createdAnnotation, revived } = await saveNote({ course, lesson, draft, body });
       ed.noteId = note.id;
       ed.annotationId = annotation.id;
+      ed.savedBody = body;
+      dropPendingNote({ body, since });
       if (ed.deleteButton) ed.deleteButton.hidden = false;
       if (editing === ed) panelTitle.textContent = 'Бележка';
-      ed.status.textContent = 'Записано.';
+      // T018-D10: deleted meanwhile (another tab): it is back, with what was typed here.
+      ed.status.textContent = revived ? 'Записано. Бележката беше изтрита (в друг раздел) и е върната.' : 'Записано.';
+      if (revived) announce('Бележката беше изтрита в друг раздел; върната е с написаното.');
       if (createdAnnotation) await getFrame()?.reloadAnnotations();
       await reload();
     }).catch((err) => {
@@ -460,8 +548,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     toast.hidden = true;
     if (!entry) return;
     try {
-      await restoreNote(lesson, entry);
-      if (entry.annotationDeleted) await getFrame()?.reloadAnnotations();
+      const { annotationRestored } = await restoreNote(lesson, entry);
+      if (annotationRestored) await getFrame()?.reloadAnnotations();
       await reload();
       announce('Бележката е върната.');
       openNote(entry.noteId);
@@ -499,6 +587,10 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     }).then(() => { if (!scroll) getFrame()?.focus(item.annotation.id); });
   }
 
+  const listBody = (body) => {
+    const text = String(body || '');
+    return text.length > LIST_BODY_MAX ? `${text.slice(0, LIST_BODY_MAX)}…` : text;
+  };
   async function openList() {
     const from = document.activeElement;
     await closePanel();
@@ -509,7 +601,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
         h('span', { class: 'notes-list__quote', text: quoted(x.annotation.selector?.quote?.exact, 160) }),
         stateBadge(x.annotation)),
       () => openNote(x.note.id, { scroll: stateOf(x.annotation) !== 'orphan' })),
-      h('div', { class: 'notes-list__body md' }, renderMarkdown(x.note.body || '', { headingOffset: 3 })));
+      h('div', { class: 'notes-list__body md' }, renderMarkdown(listBody(x.note.body), { headingOffset: 3 })));
     setMode('list');
     panelTitle.textContent = `Бележки (${all.length})`;
     mount(panelBody,
@@ -638,10 +730,78 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   }
 
   const onResize = () => {
+    if (!chosen && !destroyed) {
+      const want = narrowScreen();
+      if (want !== hidden) setHidden(want, { save: false });
+    }
     queuePlace();
     if (panelMode) fitViewport();
   };
   window.addEventListener('resize', onResize);
+
+  // T018-D2: while the note field has the focus a transparent layer of the app
+  // lies over the lesson (a press of the user there is the app's: it leaves the
+  // field, the next press reaches the lesson; a scroll still moves the page);
+  // the frame is out of the tab order. Note: `inert` on the iframe (or a modal
+  // dialog) does NOT stop the lesson's own focus() in Chrome — checked.
+  let guarded = null; // { frame, tabindex }
+  /** Bring the keyboard back into the note field (the lesson took it). */
+  function reclaimFocus(ed) {
+    if (editing !== ed || !guarded) return;
+    const ta = ed.textarea;
+    // With the lesson in its own process the browser hands the focus over
+    // asynchronously: the field lets go now (its focus() would do nothing while
+    // it is still the active element here) and takes it back in the next task.
+    ed.reclaiming = true;
+    try { if (document.activeElement === ta) ta.blur(); } finally { ed.reclaiming = false; }
+    setTimeout(() => { if (editing === ed && guarded) ta.focus({ preventScroll: true }); }, 0);
+    if (!ed.stolen) announce('Урокът се опита да вземе фокуса; бележката го задържа.');
+    ed.stolen = (ed.stolen || 0) + 1;
+  }
+  const guardLayer = h('div', { class: 'note-guard', 'data-field': 'note-guard', 'aria-hidden': 'true' });
+  guardLayer.addEventListener('pointerdown', () => {
+    const ta = editing?.textarea;
+    unguardFrame();
+    if (ta && document.activeElement === ta) ta.blur();
+  });
+  function guardFrame() {
+    const lf = getFrame();
+    const f = lf?.frame;
+    if (!f) return;
+    if (guarded?.frame === f) return;
+    unguardFrame();
+    guarded = { frame: f, lessonFrame: lf, tabindex: f.getAttribute('tabindex') };
+    lf.keysOff?.(true);
+    f.setAttribute('tabindex', '-1');
+    f.setAttribute('data-note-guard', 'on');
+    lf.element?.append(guardLayer);
+  }
+  function unguardFrame() {
+    if (!guarded) return;
+    const { frame: f, lessonFrame: lf, tabindex } = guarded;
+    guarded = null;
+    lf.keysOff?.(false);
+    if (tabindex === null) f.removeAttribute('tabindex'); else f.setAttribute('tabindex', tabindex);
+    f.removeAttribute('data-note-guard');
+    guardLayer.remove();
+  }
+
+  // T018-D3: the page goes (reload, closed tab, Android puts Chrome away and may
+  // kill it): the text not yet in the database is kept at once (synchronously)
+  // and saved; the next start writes a kept text that did not make it.
+  const keepNow = () => {
+    const ed = editing;
+    if (!ed || destroyed) return;
+    const body = ed.textarea.value.slice(0, MAX_NOTE_LENGTH);
+    if (body === ed.savedBody || (!ed.noteId && !body.trim())) return;
+    keepPendingNote({ courseId: course.id, lessonId: lesson.id, draft: ed.noteId ? { noteId: ed.noteId } : ed.draft, body });
+    ed.dirty = true;
+    save(ed);
+  };
+  const onVisibility = () => { if (document.visibilityState === 'hidden') keepNow(); };
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', keepNow);
+  window.addEventListener('beforeunload', keepNow);
   window.visualViewport?.addEventListener('resize', fitViewport);
   let observer = null;
   try { observer = new ResizeObserver(queuePlace); observer.observe(slot); } catch { /* old engine: resize only */ }
@@ -697,6 +857,13 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       cancelAnimationFrame(placeQueued);
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointerdown', onAnyPress, true);
+      window.removeEventListener('keydown', onFocusKey, true);
+      window.removeEventListener('blur', onWindowBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', keepNow);
+      window.removeEventListener('beforeunload', keepNow);
+      unguardFrame();
       window.visualViewport?.removeEventListener('resize', fitViewport);
       observer?.disconnect();
     },

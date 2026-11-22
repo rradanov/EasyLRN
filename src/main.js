@@ -6,7 +6,9 @@ import { APP_NAME } from './config.js';
 import { h, mount } from './dom.js';
 import { addRoute, startRouter } from './router.js';
 import { registerServiceWorker } from './sw-client.js';
-import { initStorage, getSettings } from './db.js';
+import { initStorage, getSettings, getCourse, getLesson } from './db.js';
+import { flushPendingNote } from './notes.js';
+import { applyOrientation } from './orientation.js';
 import { applyTheme } from './theme.js';
 import { coursesScreen } from './screens/courses.js';
 import { courseScreen } from './screens/course.js';
@@ -120,9 +122,15 @@ function startApp() {
     box.hidden = false;
   });
 
-  // Theme (T-019): from the settings at start, then on every change.
-  getSettings().then((s) => applyTheme(s.theme)).catch(() => {});
-  window.addEventListener('easylrn:settings', (event) => applyTheme(event.detail?.theme));
+  // T018-D3: the text of a note kept at the last pagehide goes into the database.
+  flushPendingNote({ getCourse, getLesson });
+
+  // Theme (T-019) and the screen orientation (T-069): from the settings at start, then on every change.
+  getSettings().then((s) => { applyTheme(s.theme); applyOrientation(s.orientation); }).catch(() => {});
+  window.addEventListener('easylrn:settings', (event) => {
+    applyTheme(event.detail?.theme);
+    if (event.detail && 'orientation' in event.detail) applyOrientation(event.detail.orientation);
+  });
 
   const banner = document.getElementById('update-banner');
   const updateButton = document.getElementById('update-button');

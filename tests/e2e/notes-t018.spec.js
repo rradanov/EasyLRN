@@ -327,7 +327,6 @@ test.describe('T018-S security of the notes (the lesson is untrusted)', () => {
     const after = await annotations(page);
     expect(after.map((a) => [a.id, a.exact, a.color, a.deleted])).toEqual(before.a.map((a) => [a.id, a.exact, a.color, a.deleted]));
     expect(await notesOf(page)).toEqual(before.n);
-    if (height > frameH + 20000) test.fail(true, 'T018-D1: a forged lrn:layout place (top up to 1e8, allowed by MAX_COORD) puts a 📝 that far down the strip: the window of the app becomes that tall (the scroll bar of a 1e8 px page), past the MAX_HEIGHT limit of the frame (T046-D2)');
     expect(height).toBeLessThan(frameH + 20000);
   });
 
@@ -394,7 +393,6 @@ test.describe('T018-S security of the notes (the lesson is untrusted)', () => {
     const value = await noteText(page).inputValue();
     info('T018-S4', { focusedInApp, stolen, value });
     problems = problems.filter((p) => !/ТАЙНА/.test(p));
-    if (stolen.keys || stolen.down) test.fail(true, 'T018-D2: a lesson that calls focus() on its own field (every 30 ms) takes the keyboard focus out of the open note: what the user types for the note goes into the lesson (keydown / input there), against D-045 "the text of a note never goes to the lesson"');
     expect(stolen).toEqual({ keys: '', down: '' });
     expect(value).toBe('ТАЙНАБЕЛЕЖКА');
   });
@@ -493,7 +491,6 @@ test.describe('T018-D the data of the notes', () => {
     await page.waitForTimeout(500);
     const bodies = (await liveNotes(page)).map((n) => n.body);
     info('T018-D3 after a reload 200 ms after typing', bodies);
-    if (bodies[0] !== 'Бързо излизане и презареждане') test.fail(true, 'T018-D3: the text typed in the last second before the tab is reloaded / closed / killed (Android puts Chrome away) is lost: it is written only by the 1 s timer, at "Готово" / ✕ / Escape and when the reader is left inside the app — not at pagehide / visibilitychange');
     expect(bodies).toEqual(['Бързо излизане и презареждане']);
   });
 
@@ -548,7 +545,6 @@ test.describe('T018-D the data of the notes', () => {
     info('T018-D5', { status, a: a.map((x) => [x.color, x.deleted]) });
     problems = problems.filter((p) => !/Marking failed|not an annotation/.test(p));
     const ok = a.some((x) => !x.deleted && x.color === 'green');
-    if (!ok) test.fail(true, 'T018-D5: "Отмени" of the eraser on a mark with a note (colour taken) after that note was deleted ("Изтрий": the uncoloured annotation went with it): setAnnotationColor finds no live annotation, "Маркировката не можа да се запише." and the undo step is gone — the mark is lost (only "Върни" of the note, within 8 s, brings back the place without the colour)');
     expect(ok).toBe(true);
   });
 
@@ -574,7 +570,6 @@ test.describe('T018-D the data of the notes', () => {
     const shown = await page.locator('[data-field="notes-count"]').textContent();
     info('T018-D6', { notes: n.length, annotations: a.length, shown, status: await marksStatus(page).textContent() });
     expect(n.map((x) => x.body)).toEqual(['Ще се загуби ли?']);
-    if (shown !== '1') test.fail(true, 'T018-D6: "Върни" of a note whose mark was erased in the 8 s since "Изтрий" brings back the note record only: its annotation stays deleted (annotationDeleted was false at the delete), the note is live but in no list, no 📝, count 0 — invisible until "Отмени" of the eraser');
     expect(shown).toBe('1');
     expect(a.length).toBe(1);
   });
@@ -692,7 +687,6 @@ test.describe('T018-D the data of the notes', () => {
     info('T018-D10', { status, notes: all.map((n) => [n.body, !!n.deleted]) });
     allowWarn.push(/Cannot save the note/);
     const kept = all.some((n) => !n.deleted && n.body.includes('важно допълнение'));
-    if (!kept) test.fail(true, 'T018-D10: two tabs — a note deleted in one tab while open in the other: the other tab\'s save fails ("Бележката не можа да се запише. Опитай пак.") and when it closes the typed text is gone for good (no new note, no copy)');
     expect(kept).toBe(true);
     await other.close();
   });
@@ -758,7 +752,6 @@ test.describe('T018-P size: a note of 1 MB, 1000 notes', () => {
     const ms20k = await time();
     info('T018-P3 unbroken 20 000 (ms)', ms20k);
     expect(ms20k).toBeLessThan(10000);
-    test.fail(true, 'T018-D13: a note of 1 MB without a space (only from a backup / an old version: the field keeps 20 000) freezes the app when the list is opened and the note is tapped: the whole body is rendered in the list unbroken; the page does not answer for > 30 s');
     await db(page, async (db, big) => { const n = (await db.list('notes'))[0]; await db.update('notes', n.id, { body: big }); }, 'Б'.repeat(1_000_000));
     await openLesson(page);
     const ms1m = await time();
@@ -917,7 +910,6 @@ test.describe('T018-L layout, keyboard, aria', () => {
     await page.waitForTimeout(500);
     const where = await page.evaluate(() => ({ el: document.activeElement?.dataset?.action || document.activeElement?.tagName, log: window.__focusLog }));
     info('T018-L3 focus after Escape (a note opened from the list)', where);
-    if (where.el === 'BODY') test.fail(true, 'T018-D12: a note opened from the list ("☷" → an item, keyboard) and closed with Escape leaves the focus on <body>: openEditor() takes document.activeElement as the place to go back to AFTER closePanel() has emptied the list (the focused item is gone, the focus is already on <body>)');
     expect(where.el).not.toBe('BODY');
   });
 });
@@ -999,7 +991,6 @@ test.describe('T018-M phone (360×800 / 800×360), touch', () => {
     info('T018-M2', { handle: out, hide: outHide });
     expect(await page.evaluate(() => document.querySelector('[data-field="reader-doc"]')?.dataset.tool)).toBe('none');
     const bad = [...out.filter((r) => !r.shown), ...outHide.filter((r) => r.shown)];
-    if (bad.length) test.fail(true, 'T018-D11: the notes strip has no guard after it is shown / hidden (the tool bar has one, T066-D4): a double tap on the notes "☰" lands its second tap on "» Скрий", which is now under the finger — the strip shows and hides again (and the other way round)');
     expect(bad).toEqual([]);
   });
 });

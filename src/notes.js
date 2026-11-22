@@ -15,7 +15,7 @@
 //   takes the colour away (src/screens/mark-tools.js).
 // - NOTHING of a note ever goes to the lesson: the bridge gets the annotation
 //   (id, colour null, selector = a quote of the lesson itself), never the body.
-import { STORES, byIndex, create, get, update, remove, restore, getAnnotation, COLORS } from './db.js';
+import { STORES, byIndex, list, create, get, update, remove, restore, getAnnotation, updateAnnotation, COLORS } from './db.js';
 import { lessonRef, lessonAnnotations, annotateSelection, annotationDependents } from './annotations.js';
 
 export const MAX_NOTE_LENGTH = 20000;
@@ -29,21 +29,41 @@ async function ownAnnotation(lesson, id, opts) {
 }
 
 const clip = (body) => String(body ?? '').slice(0, MAX_NOTE_LENGTH);
+const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
  * The notes of a lesson: [{ note, annotation }], one per annotation (the
  * oldest live note of it), the annotations in their stored order.
+ * T018-I4: one read of the store `notes` (not one request per annotation:
+ * 5000 marks made every redraw slow).
  */
 export async function lessonNotes(lesson) {
-  const annotations = await lessonAnnotations(lesson);
+  if (flushRun) await flushRun; // a text kept at the last pagehide is in first (never throws)
+  const [annotations, all] = await Promise.all([lessonAnnotations(lesson), list(STORES.notes)]);
+  const first = new Map(); // annotation id → its oldest live note
+  for (const note of all) {
+    const had = first.get(note.annotationId);
+    if (!had || byId(note, had) < 0) first.set(note.annotationId, note);
+  }
   const out = [];
-  await Promise.all(annotations.map(async (annotation) => {
-    const notes = await byIndex(STORES.notes, 'by_annotation', annotation.id);
-    if (!notes.length) return;
-    notes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    out.push({ note: notes[0], annotation });
-  }));
+  for (const annotation of annotations) {
+    const note = first.get(annotation.id);
+    if (note) out.push({ note, annotation });
+  }
   return out;
+}
+
+/**
+ * The annotation of a note is live again (T018-D6 / D10): one deleted since
+ * (the eraser took a mark whose note was deleted, or another tab) comes back
+ * as a place with a note only (`color: null`) — the note is never invisible.
+ * Returns true when it had to be brought back.
+ */
+async function reviveAnnotation(lesson, id) {
+  const a = await ownAnnotation(lesson, id, { includeDeleted: true });
+  if (!a.deleted) return false;
+  await updateAnnotation(id, { deleted: false, color: null });
+  return true;
 }
 
 /**
@@ -55,11 +75,14 @@ export async function lessonNotes(lesson) {
 export async function saveNote({ course, lesson, draft, body }) {
   const text = clip(body);
   if (draft.noteId) {
-    const note = await get(STORES.notes, draft.noteId);
+    // T018-D10: the note may have been deleted meanwhile (another tab, "Изтрий"
+    // there): what is typed here is not lost — the note comes back with it.
+    const note = await get(STORES.notes, draft.noteId, { includeDeleted: true });
     if (!note) throw new Error('note not found');
+    const revivedAnnotation = await reviveAnnotation(lesson, note.annotationId);
     const annotation = await ownAnnotation(lesson, note.annotationId);
-    const saved = await update(STORES.notes, note.id, { body: text });
-    return { note: saved, annotation, createdAnnotation: false };
+    const saved = await update(STORES.notes, note.id, { body: text, deleted: false });
+    return { note: saved, annotation, createdAnnotation: revivedAnnotation, revived: !!note.deleted || revivedAnnotation };
   }
   let annotation;
   let createdAnnotation = false;
@@ -101,11 +124,91 @@ export async function deleteNote(lesson, noteId) {
   return { noteId: note.id, annotationId: annotation.id, annotationDeleted };
 }
 
-/** Undo a delete ("Върни"). */
+/**
+ * Undo a delete ("Върни"). T018-D6: the annotation is brought back too when it
+ * went since (the eraser on the mark after "Изтрий"): as a place with a note
+ * only. Returns { annotationRestored } (the frame must reload its marks).
+ */
 export async function restoreNote(lesson, { noteId, annotationId, annotationDeleted }) {
   await ownAnnotation(lesson, annotationId, { includeDeleted: true });
-  if (annotationDeleted) await restore(STORES.annotations, annotationId);
+  let annotationRestored = false;
+  if (annotationDeleted) { await restore(STORES.annotations, annotationId); annotationRestored = true; }
+  if (await reviveAnnotation(lesson, annotationId)) annotationRestored = true;
   await restore(STORES.notes, noteId);
+  return { annotationRestored };
+}
+
+// --- T018-D3: the last words before the page goes ---------------------------------
+// When the page is hidden / unloaded the text of an open note is saved, but an
+// IndexedDB write begun in `pagehide` may not finish before the page dies (a
+// reload, Android killing Chrome in the background). So the text is also put,
+// synchronously, into localStorage (same origin as the database; the lesson
+// runs in an opaque origin and cannot read it) and written into the database at
+// the next start (`flushPendingNote`). Removed once the database has it.
+const PENDING_KEY = 'lrn-note-pending';
+
+/** Keep the text of an open note synchronously (pagehide / visibilitychange / beforeunload). */
+export function keepPendingNote({ courseId, lessonId, draft, body }) {
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify({ courseId, lessonId, draft, body: clip(body), at: Date.now() }));
+  } catch { /* storage full / unavailable: the async save is all there is */ }
+}
+
+/**
+ * The database has this text: the kept copy is not needed — when it is the
+ * same text, or it was kept before this save began (`since`, ms). No argument: always.
+ */
+export function dropPendingNote({ body, since } = {}) {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (raw === null) return;
+    const kept = JSON.parse(raw);
+    const all = body === undefined && since === undefined;
+    if (all || kept?.body === clip(body) || (Number.isFinite(since) && Number(kept?.at) <= since)) localStorage.removeItem(PENDING_KEY);
+  } catch { try { localStorage.removeItem(PENDING_KEY); } catch { /* */ } }
+}
+
+/**
+ * At start: a text kept at pagehide goes into its note (only a note of a
+ * known lesson; nothing here comes from the lesson). Returns the saved note or null.
+ * @param {{ getCourse: Function, getLesson: Function }} db
+ */
+let flushRun = null;
+export function flushPendingNote(db) {
+  flushRun = writePending(db);
+  return flushRun;
+}
+async function writePending({ getCourse, getLesson }) {
+  let kept;
+  try { kept = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch { kept = null; }
+  if (!kept || typeof kept !== 'object') { dropPendingNote(); return null; }
+  try {
+    const { courseId, lessonId, draft, body } = kept;
+    if (typeof body !== 'string' || !draft || typeof draft !== 'object') return null;
+    const lesson = typeof lessonId === 'string' ? await getLesson(lessonId, { includeDeleted: true }) : null;
+    const course = typeof courseId === 'string' ? await getCourse(courseId, { includeDeleted: true }) : null;
+    if (!lesson || !course) return null;
+    if (!draft.noteId && !body.trim()) return null; // an empty new note is not kept
+    if (draft.noteId) {
+      const note = await get(STORES.notes, draft.noteId, { includeDeleted: true });
+      if (note && note.body === body) return note; // nothing to write
+    }
+    let target = draft;
+    if (draft.selection && !draft.noteId && !draft.annotationId) {
+      // The async save of the page may have made the note already: write in it, never a second one.
+      const p = draft.selection.position;
+      const same = (await lessonAnnotations(lesson)).find((a) => a.selector?.position?.start === p?.start
+        && a.selector?.position?.end === p?.end && a.selector?.quote?.exact === draft.selection.quote?.exact);
+      if (same) target = { annotationId: same.id };
+    }
+    const { note } = await saveNote({ course, lesson, draft: target, body });
+    return note;
+  } catch (err) {
+    console.warn('Cannot write the kept note:', err?.message || err);
+    return null;
+  } finally {
+    dropPendingNote();
+  }
 }
 
 /**
