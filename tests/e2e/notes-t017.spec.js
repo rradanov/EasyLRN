@@ -205,8 +205,9 @@ test.describe('T-017 notes on the tablet', () => {
     const line = await textBox(page, 'оценява рисковете');
     const icon = await noteMarks(page).first().boundingBox();
     expect(Math.abs(icon.y + icon.height / 2 - (line.top + line.bottom) / 2)).toBeLessThan(26);
-    expect(icon.width).toBeGreaterThanOrEqual(44);
-    expect(icon.height).toBeGreaterThanOrEqual(44);
+    // T-069 (the user): a smaller strip — the 📝 is 36 px (still a finger's size).
+    expect(icon.width).toBeGreaterThanOrEqual(36);
+    expect(icon.height).toBeGreaterThanOrEqual(36);
     await expect.poll(() => highlights(page), { timeout: 5000 }).toMatchObject({ 'lrn-note': ['оценява рисковете'] });
     expect(await noHorizontalScroll(page)).toBe(true);
     await openLesson(page);
@@ -465,19 +466,19 @@ test.describe('T-017 notes on a phone (360×800 portrait / 800×360 landscape), 
     expect(await importCourse(page, C, files())).not.toMatch(/^ERROR/);
   });
 
-  test('P1 narrow: the strip starts hidden behind "☰" at the right edge; a selection lights "📝 Бележка" next to it; a tap → the note fills the window; the 📝 / list after showing the strip; kept; no horizontal scroll', async ({ page }) => {
+  // T-069 (the user, an addition to D-045): a phone has no bar and no "☰" — only the column of the 📝.
+  test('P1 narrow: only the 📝 column at the right edge (no bar, no "☰"); a selection floats "📝 Бележка"; a tap → the note fills the window; the 📝 after "Готово"; no horizontal scroll', async ({ page }) => {
     const narrow = page.viewportSize().width < 600;
     await openLesson(page);
     const handle = page.locator('[data-field="notes-strip-handle"]');
     if (narrow) {
-      await expect(strip(page)).toBeHidden();
-      await expect(handle).toBeVisible();
-      const hb = await handle.boundingBox();
-      expect(hb.x + hb.width).toBeGreaterThan(page.viewportSize().width - 4);
-      expect(hb.width).toBeGreaterThanOrEqual(44);
+      await expect(handle).toBeHidden();
+      await expect(page.locator('.notes-strip__bar')).toBeHidden();
+      const sb = await strip(page).boundingBox();
+      expect(sb.x + sb.width).toBeGreaterThan(page.viewportSize().width - 8);
+      expect(sb.width).toBeLessThanOrEqual(48);
       await select(page, 'оценява рисковете');
       await expect(quick(page)).toBeVisible({ timeout: 3000 });
-      await expect(handle).toHaveAttribute('data-attention', 'true');
       await quick(page).tap();
       await expect(panel(page)).toHaveAttribute('data-layout', 'full');
       const p = await panel(page).boundingBox();
@@ -486,17 +487,14 @@ test.describe('T-017 notes on a phone (360×800 portrait / 800×360 landscape), 
       await noteText(page).pressSequentially('От телефона');
       await page.locator('[data-action="note-done"]').tap();
       await expect.poll(async () => (await liveNotes(page)).map((n) => n.body)).toEqual(['От телефона']);
+      await expect(panel(page)).toBeHidden();
       expect(await noHorizontalScroll(page)).toBe(true);
-      await handle.tap();
-      await expect(strip(page)).toBeVisible();
       await expect(noteMarks(page)).toHaveCount(1, { timeout: 5000 });
+      await noteMarks(page).first().tap();
+      await expect(noteText(page)).toHaveValue('От телефона');
+      await page.locator('[data-action="close-notes-panel"]').tap();
+      await expect(panel(page)).toBeHidden();
       expect(await noHorizontalScroll(page)).toBe(true);
-      await openLesson(page);
-      await expect(strip(page)).toBeVisible(); // the choice is kept
-      await page.locator('[data-action="hide-notes"]').tap();
-      await expect(handle).toBeVisible();
-      await openLesson(page);
-      await expect(strip(page)).toBeHidden();
     } else {
       await expect(strip(page)).toBeVisible();
       await writeNote(page, 'оценява рисковете', 'Широк телефон');

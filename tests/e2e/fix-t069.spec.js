@@ -6,7 +6,7 @@
 //   key / character reaches it; after the note closes the lesson works again;
 // - T018-D3: the text of an open note survives an immediate reload and a closed
 //   tab; a text kept at pagehide is written at the next start (once, no second note);
-// - T018-D14: the notes strip follows the width until the user chooses;
+// - T018-D14 / T-069: the note is a column next to the lesson on a tablet (never over its text), a phone has the 📝 column only and follows the width live;
 // - T018-D5 / D6 / D10: the eraser, "Отмени", "Изтрий", "Върни" and another tab together;
 // - T018-D13, T018-I4: a long body in the list / the field; lessonNotes reads one store;
 // - the orientation: screen.orientation mocked (lock / unlock recorded), installed
@@ -327,34 +327,153 @@ test.describe('T069-S the last words are kept (T018-D3)', () => {
 });
 
 // ===========================================================================
-test.describe('T069-W the strip follows the width until the user chooses (T018-D14)', () => {
+// T-069 (the user, an addition to D-045): on a tablet the note is a column of its
+// own next to the lesson — the lesson narrows, nothing of its text is covered; a
+// phone shows the 📝 column only, the note over the whole window.
+async function layoutOf(page) {
+  const box = async (sel) => { const l = page.locator(sel); return (await l.count()) && await l.first().isVisible() ? l.first().boundingBox() : null; };
+  return {
+    vw: page.viewportSize().width,
+    frame: await box('iframe.lesson-frame'),
+    strip: await box('[data-field="notes-strip"]'),
+    bar: await box('.notes-strip__bar'),
+    panel: await box('[data-field="notes-panel"]'),
+    tools: await box('[data-field="mark-tools"]'),
+  };
+}
+const SIZES = [[1920, 1200], [1200, 1920], [1200, 800], [800, 1280], [360, 800]];
+test.describe('T069-L the note next to the lesson, not over it', () => {
   test.beforeEach(async ({ page }) => { await start(page); await importCourse(page); });
 
-  test('T069-W1 1920 → 360 → 1920 without a choice: hidden, shown again; after "Скрий" at 1920 it stays hidden at any width; after "☰" at 360 it stays shown', async ({ page }, ti) => {
-    test.skip(ti.project.name.includes('portrait'), 'one width run is enough');
-    await page.setViewportSize({ width: 1920, height: 1080 });
+  test('T069-L1 1920 / 1200 / 800 / 360: an open note never covers the lesson on a tablet (a column, the lesson narrower: ≥ 58 % of the window at 1200, ≥ 85 % of its own width at 1920); a phone: only the 📝 column, the note over the whole window; the list and a mark card too; no sideways scroll', async ({ page }, ti) => {
+    test.skip(ti.project.name.includes('portrait'), 'the sizes are set here');
+    const out = [];
+    for (const [w, hgt] of SIZES) {
+      await page.setViewportSize({ width: w, height: hgt });
+      await openLesson(page);
+      const closed = await layoutOf(page);
+      const phone = w < 600;
+      if (!(await liveNotes(page)).length) await writeNote(page, 'оценява рисковете', `Бележка ${w}`);
+      else { await noteMarks(page).first().click(); await expect(noteText(page)).toBeVisible(); }
+      await page.waitForTimeout(400);
+      const open = await layoutOf(page);
+      out.push({ w, closedFrame: Math.round(closed.frame.width), openFrame: Math.round(open.frame.width), panel: open.panel && Math.round(open.panel.width), strip: closed.strip && Math.round(closed.strip.width) });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `${w}: no sideways scroll`).toBe(true);
+      if (phone) {
+        expect(closed.bar, `${w}: no bar on a phone`).toBeNull();
+        expect(closed.strip.width, `${w}: the 📝 column only`).toBeLessThanOrEqual(48);
+        expect(closed.frame.width, `${w}: the lesson keeps the room`).toBeGreaterThan(w * 0.6);
+        await expect(panel(page)).toHaveAttribute('data-layout', 'full');
+        expect(open.panel.x).toBeLessThanOrEqual(1);
+        expect(open.panel.width).toBeGreaterThanOrEqual(w - 1);
+        await page.locator('[data-action="note-done"]').click();
+        await expect(panel(page)).toBeHidden();
+        continue;
+      }
+      await expect(panel(page)).toHaveAttribute('data-layout', 'side');
+      // Side by side: the lesson, then the strip, then the note column.
+      expect(open.frame.x + open.frame.width, `${w}: the lesson ends before the strip`).toBeLessThanOrEqual(open.strip.x + 1);
+      expect(open.strip.x + open.strip.width, `${w}: the strip ends before the note`).toBeLessThanOrEqual(open.panel.x + 1);
+      expect(open.panel.x + open.panel.width).toBeLessThanOrEqual(w + 1);
+      // 1920: the reader is centred (max 1200 px): the free space at the right takes most of the column.
+      if (w >= 1900) expect(open.frame.width, `${w}: the lesson keeps most of its width`).toBeGreaterThanOrEqual(closed.frame.width * 0.85);
+      else if (w >= 1200) expect(open.frame.width / w, `${w}: the lesson's share`).toBeGreaterThanOrEqual(0.58);
+      else expect(open.frame.width, `${w}: the lesson still readable`).toBeGreaterThanOrEqual(280);
+      // The text of the noted line is at the left of the note column (seen side by side).
+      const line = await textBox(page, 'оценява рисковете');
+      expect(line.x).toBeLessThan(open.panel.x);
+      // The list and the card of a mark are columns too.
+      await page.locator('[data-action="notes-list"]').click();
+      await expect(panel(page)).toHaveAttribute('data-mode', 'list');
+      const list = await layoutOf(page);
+      expect(list.frame.x + list.frame.width).toBeLessThanOrEqual(list.panel.x + 1);
+      await page.keyboard.press('Escape');
+      await expect(panel(page)).toBeHidden();
+      const after = await layoutOf(page);
+      expect(Math.abs(after.frame.width - closed.frame.width), `${w}: the lesson gets its width back`).toBeLessThan(2);
+    }
+    info('T069-L1 widths (px)', out);
+  });
+
+  test('T069-L2 the strip is smaller and still fits a finger: buttons ≥ 40 px high and ≥ 40 px wide, the 📝 ≥ 36 px, the strip ≤ 100 px; the note\'s buttons ≥ 40 px', async ({ page }) => {
     await openLesson(page);
-    await expect(strip(page)).toBeVisible();
-    await page.setViewportSize({ width: 360, height: 640 });
-    await expect(strip(page)).toBeHidden();
-    const f = await page.locator('iframe.lesson-frame').boundingBox();
-    expect(f.width).toBeGreaterThan(180);
-    await page.setViewportSize({ width: 1920, height: 1080 });
-    await expect(strip(page)).toBeVisible();
-    // The user's choice wins from now on.
+    await writeNote(page, 'оценява рисковете', 'Размери');
+    const s = await strip(page).boundingBox();
+    expect(s.width).toBeLessThanOrEqual(100);
+    const sizes = await page.locator('.notes-strip__bar button:not([hidden]), .notes-strip__mark, [data-field="notes-panel"] button:not([hidden])').evaluateAll((els) => els.filter((e) => e.getClientRects().length)
+      .map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.action || e.className, Math.round(r.width), Math.round(r.height)]; }));
+    info('T069-L2 sizes', sizes);
+    for (const [name, bw, bh] of sizes) {
+      const min = /notes-strip__mark/.test(name) ? 36 : 40;
+      expect(bh, `${name} height`).toBeGreaterThanOrEqual(min);
+      if (!/back-to-list/.test(name)) expect(bw, `${name} width`).toBeGreaterThanOrEqual(min);
+    }
+  });
+
+  test('T069-L3 a phone (360): no bar, no "☰"; "📝 Бележка" floats while text is selected; a 📝 opens the note over the window, ✕ hides it; "☷" only when a note has no 📝; 360 → 1200 → 360 follows the width live', async ({ page }, ti) => {
+    test.skip(ti.project.name.includes('portrait'), 'the sizes are set here');
+    await page.setViewportSize({ width: 360, height: 800 });
+    await openLesson(page);
+    await expect(page.locator('[data-field="notes-strip-handle"]')).toBeHidden();
+    await expect(page.locator('.notes-strip__bar')).toBeHidden();
+    await select(page, 'оценява рисковете');
+    await expect(page.locator('[data-action="new-note-quick"]')).toBeVisible();
+    await page.locator('[data-action="new-note-quick"]').click();
+    await expect(panel(page)).toHaveAttribute('data-layout', 'full');
+    await noteText(page).pressSequentially('Телефон');
+    await page.locator('[data-action="close-notes-panel"]').click();
+    await expect(panel(page)).toBeHidden();
+    await expect(noteMarks(page)).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('[data-action="notes-list-phone"]')).toBeHidden();
+    await noteMarks(page).first().click();
+    await expect(noteText(page)).toHaveValue('Телефон');
+    // The buttons of the bar are in the panel.
+    await expect(page.locator('[data-action="notes-back-to-list"]')).toBeVisible();
+    await expect(page.locator('[data-action="panel-next-note"]')).toBeVisible();
+    await page.locator('[data-action="notes-back-to-list"]').click();
+    await expect(panel(page)).toHaveAttribute('data-mode', 'list');
+    await page.keyboard.press('Escape');
+    // A note whose place is gone ("Неприкачени"): the small "☷" is the way to it.
+    await db(page, async (db, id) => { const a = (await db.annotationsFor({ type: 'lesson', id }))[0]; await db.updateAnnotation(a.id, { selector: { quote: { exact: 'Няма го в урока изобщо', prefix: '', suffix: '' }, position: { start: 1, end: 5 } } }); }, L1);
+    await openLesson(page);
+    await expect(page.locator('[data-action="notes-list-phone"]')).toBeVisible({ timeout: 8000 });
+    await page.locator('[data-action="notes-list-phone"]').click();
+    await expect(page.locator('[data-field="notes-orphans"] .notes-list__item')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    // Wider: the tablet strip with its bar; narrower again: the phone.
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await expect(page.locator('.notes-strip__bar')).toBeVisible();
+    await expect(page.locator('[data-action="notes-list-phone"]')).toBeHidden();
+    await page.setViewportSize({ width: 360, height: 800 });
+    await expect(page.locator('.notes-strip__bar')).toBeHidden();
+  });
+
+  test('T069-L4 a tablet strip hidden by the user ("» Скрий") stays hidden at any tablet width and the note column still keeps the lesson free; a phone ignores it (the 📝 column)', async ({ page }, ti) => {
+    test.skip(ti.project.name.includes('portrait'), 'the sizes are set here');
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await openLesson(page);
+    await writeNote(page, 'оценява рисковете', 'Скрита лента');
+    await page.keyboard.press('Escape');
     await page.locator('[data-action="hide-notes"]').click();
     await expect(strip(page)).toBeHidden();
-    await page.setViewportSize({ width: 1280, height: 800 });
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.waitForTimeout(200);
     await expect(strip(page)).toBeHidden();
-    await page.setViewportSize({ width: 360, height: 640 });
     await page.locator('[data-field="notes-strip-handle"]').click();
+    await page.waitForTimeout(400); // the double-tap guard (T018-D11): "» Скрий" is near "☰"
+    await page.locator('[data-action="hide-notes"]').click();
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.waitForTimeout(400);
+    await select(page, 'Уязвимостите се докладват');
+    await page.locator('[data-action="new-note-quick"]').click();
+    await expect(panel(page)).toHaveAttribute('data-layout', 'side');
+    const l = await layoutOf(page);
+    expect(l.frame.x + l.frame.width).toBeLessThanOrEqual(l.panel.x + 1);
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 360, height: 800 });
     await expect(strip(page)).toBeVisible();
-    await page.setViewportSize({ width: 400, height: 700 });
-    await page.waitForTimeout(200);
-    await expect(strip(page)).toBeVisible();
-    expect(await db(page, async (db) => (await db.getSettings()).notesStrip)).toEqual({ hidden: false });
+    await expect(noteMarks(page)).toHaveCount(1, { timeout: 5000 });
+    expect(await db(page, async (db) => (await db.getSettings()).notesStrip)).toEqual({ hidden: true });
   });
 });
 
@@ -559,7 +678,7 @@ test.describe('T069-O "Ориентация на екрана" in Настрой
     await p2.close();
   });
 
-  test('T069-O4 a stored value that is not one of the three (hand-edited / an old backup) means Автоматично; the settings screen shows 0.14.1', async ({ page }) => {
+  test('T069-O4 a stored value that is not one of the three (hand-edited / an old backup) means Автоматично; the settings screen shows the version', async ({ page }) => {
     await mockOrientation(page);
     await start(page);
     await db(page, (db) => db.saveSettings({ orientation: 'upside-down' }));
@@ -567,6 +686,6 @@ test.describe('T069-O "Ориентация на екрана" in Настрой
     await openSettings(page);
     await expect(oInput(page, 'auto')).toBeChecked();
     expect(await orient(page)).not.toContain('lock:upside-down');
-    await expect(page.locator('[data-field="version"]')).toHaveText('0.14.1');
+    await expect(page.locator('[data-field="version"]')).toHaveText('0.14.2');
   });
 });

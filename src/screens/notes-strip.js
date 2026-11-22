@@ -29,9 +29,22 @@
 // - Notes whose text is no longer found exactly: "⚠ провери" (found
 //   approximately: "Да, тук е" confirms the place) and "Неприкачени" (not
 //   found) — at the end of the list, never lost; "Бележки (N)" shows ⚠.
-// - A narrow window (< 600 px) starts with the strip hidden behind a handle
-//   "☰" at the right edge, like the tool bar; the choice is kept
-//   (`notesStrip.hidden`).
+// - T-069 (the user, an addition to D-045):
+//   - a tablet (≥ 600 px): the panel of a note is a COLUMN of its own at the
+//     right edge; the lesson becomes narrower (the space is kept free with a
+//     margin of the strip, only as much as the free space right of the centred
+//     reader does not give), so the text of the lesson and of the note are seen
+//     side by side, never one over the other. Its width: a quarter of the
+//     window, 280…440 px;
+//   - a smaller strip (buttons 44 × 40 px, the 📝 36 px, ≈ 95 px in all);
+//   - a phone (< 600 px, followed live: rotation, split screen): no lesson and
+//     note at once. Only the column of the 📝 next to the lesson (≈ 41 px), no
+//     bar; "📝 Бележка" floats at the right edge while text is selected; a 📝 →
+//     the note over the whole window; ✕ / "Готово" → back to the lesson. The
+//     buttons of the bar are in the panel (▲ / ▼, "← Всички бележки"); a small
+//     "☷" shows only when some note has no 📝 (not found in the text).
+// - A tablet strip can be hidden ("» Скрий" → a handle "☰" at the right edge);
+//   the choice is kept (`notesStrip.hidden`).
 // - Security: the lesson is untrusted. What it sends is checked in
 //   lesson-frame.js (known ids only, numbers only); a selection or a tap from
 //   the lesson can only SHOW a button or a note of the user — nothing is
@@ -47,7 +60,9 @@ import {
   keepPendingNote, dropPendingNote,
 } from '../notes.js';
 
-const NARROW_PX = 600; // below this the strip starts hidden and a note fills the window
+const NARROW_PX = 600; // below this: a phone (only the 📝 column; a note fills the window)
+const PANEL_MIN = 280; // the note column on a tablet: a quarter of the window within these
+const PANEL_MAX = 440;
 const SAVE_MS = 1000;
 const UNDO_MS = 8000;
 const SELECTION_GRACE_MS = 700; // the button stays this long after the selection went (a tap on it may clear it)
@@ -88,11 +103,10 @@ export function stripChoice(settings) {
  *   settings: object, announce: (text: string) => void, onLayout?: (hidden: boolean) => void }} opts
  */
 export function createNotesStrip({ getFrame, getTool = () => null, course, lesson, settings, announce, onLayout }) {
-  let hidden = stripChoice(settings).hidden ?? narrowScreen();
-  // T018-D14: until the user chooses (here or before: `notesStrip.hidden`), the
-  // strip follows the width of the window — also when it becomes narrow after
-  // the reader opened (rotation, split screen on Android).
-  let chosen = stripChoice(settings).hidden !== null;
+  let hidden = stripChoice(settings).hidden ?? false; // a tablet strip hidden by the user
+  // T018-D14 / T-069: a phone follows the width of the window live (also when it
+  // becomes narrow after the reader opened: rotation, split screen on Android).
+  let phone = narrowScreen();
   let destroyed = false;
   let notes = []; // [{ note, annotation }] of this lesson (live ones)
   let places = new Map(); // annotation id → { top, bottom } (frame coordinates, lrn:layout)
@@ -196,7 +210,17 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     class: 'notes-strip-quick', 'data-action': 'new-note-quick', hidden: true,
     'aria-label': 'Бележка към избрания текст', title: 'Бележка към избрания текст',
   }, h('span', { 'aria-hidden': 'true', text: '📝' }), h('span', { class: 'notes-strip-quick__label', text: 'Бележка' })), () => newFromSelection());
-  const handleBox = h('div', { class: 'notes-strip-handle-box' }, handle, quickNote);
+  // A phone: "☷" only when some note has no 📝 (not found in the text): else the list is one 📝 away.
+  const phoneList = press(button({
+    class: 'notes-strip-phone-list', 'data-action': 'notes-list-phone', hidden: true,
+    'aria-label': 'Всички бележки', title: 'Всички бележки на урока',
+  }, h('span', { 'aria-hidden': 'true', text: '☷' }), h('span', { class: 'notes-strip-phone-list__count', 'aria-hidden': 'true' })), () => openList());
+  const refreshPhoneList = () => {
+    const unplaced = notes.length > 0 && (ordered().orphans.length > 0 || !marks.querySelector('.notes-strip__mark'));
+    phoneList.hidden = !phone || !unplaced;
+    phoneList.querySelector('.notes-strip-phone-list__count').textContent = notes.length ? String(notes.length) : '';
+  };
+  const handleBox = h('div', { class: 'notes-strip-handle-box' }, handle, quickNote, phoneList);
   const slot = h('div', { class: 'reader__notes', 'data-field': 'reader-notes' }, handleBox, element);
 
   // Keyboard: one stop for the strip, arrows move inside (a toolbar).
@@ -221,21 +245,33 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       switchedAt = performance.now();
       switchedFrom = lastPress && switchedAt - lastPress.t < 1000 ? { x: lastPress.x, y: lastPress.y } : null;
     }
-    if (save) chosen = true;
     hidden = !!next;
-    element.hidden = hidden;
-    handleBox.hidden = !hidden;
-    hideButton.setAttribute('aria-expanded', String(!hidden));
-    handle.setAttribute('aria-expanded', String(!hidden));
-    slot.dataset.hidden = String(hidden);
     if (save) saveSettings({ notesStrip: { hidden } }).catch((err) => console.warn('Cannot save the notes strip:', err?.name || err));
-    showSelectionButtons();
-    if (!hidden) queuePlace();
-    if (panelMode) fitViewport();
+    applyLayout();
     if (focus) (hidden ? handle : (bar.querySelector('button[tabindex="0"]:not([hidden])') || hideButton)).focus();
     if (save) announce(hidden ? 'Бележките са скрити.' : 'Бележките са показани.');
-    onLayout?.(hidden);
   }
+  /** What is shown, from `phone` (the width) and `hidden` (the user's choice on a tablet). */
+  function applyLayout() {
+    const off = hidden && !phone; // the tablet strip hidden behind "☰"
+    element.hidden = off;
+    handleBox.hidden = !(off || phone); // a phone: the box carries only the floating "📝 Бележка" / "☷"
+    handle.hidden = phone;
+    hideButton.setAttribute('aria-expanded', String(!off));
+    handle.setAttribute('aria-expanded', String(!off));
+    slot.dataset.hidden = String(off);
+    slot.dataset.phone = String(phone);
+    showSelectionButtons();
+    refreshPhoneList();
+    if (!off) queuePlace();
+    if (panelMode) fitViewport();
+    onLayout?.(off);
+  }
+  /** Where the focus goes back when nothing else is there. */
+  const homeButton = () => {
+    if (phone) return marks.querySelector('.notes-strip__mark') || (phoneList.hidden ? document.getElementById('main') : phoneList);
+    return hidden ? handle : listButton;
+  };
 
   // --- Order and places ---------------------------------------------------------------
   const startOf = (a) => (Number.isInteger(a.anchoredStart) ? a.anchoredStart : a.selector?.position?.start ?? 0);
@@ -275,7 +311,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (destroyed) return;
     const frame = getFrame();
     const f = frame?.frame;
-    if (hidden || !f || frame.innerScroll || !f.isConnected) { mount(marks); return; }
+    if ((hidden && !phone) || !f || frame.innerScroll || !f.isConnected) { mount(marks); refreshPhoneList(); return; }
     const fr = f.getBoundingClientRect();
     const offset = fr.top - marks.getBoundingClientRect().top;
     const rows = [];
@@ -300,6 +336,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       b.style.top = `${Math.round(offset + row.top)}px`;
       return b;
     }));
+    refreshPhoneList();
   }
 
   // --- The panel (a note, the list, a mark) ------------------------------------------
@@ -328,29 +365,37 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     slot.dataset.panel = mode || 'none';
     fitViewport();
   };
-  // Where the panel goes: on a phone over the whole window; else right of the
-  // strip when there is room (a wide window: nothing of the lesson is covered),
-  // or left of it, over the right part of the lesson — the strip (▲ / ▼, the
-  // list) stays reachable either way. A phone keyboard: the panel ends above it.
+  // Where the panel goes (T-069): on a phone over the whole window; on a tablet
+  // a column of its own at the right edge, and the strip keeps that much free
+  // (its margin): the lesson becomes narrower and nothing of it is covered.
+  let keepPlace = null; // { id, until }: the place of the opened note is brought back into view after the lesson reflows
+  const panelWidth = () => {
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    return Math.round(Math.max(PANEL_MIN, Math.min(PANEL_MAX, vw * 0.25)));
+  };
   const fitViewport = () => {
-    if (panel.hidden) { panel.style.removeProperty('--notes-vv-bottom'); return; }
-    const full = narrowScreen();
+    if (panel.hidden) {
+      panel.style.removeProperty('--notes-vv-bottom');
+      if (slot.style.marginRight) { slot.style.marginRight = ''; queuePlace(); }
+      return;
+    }
+    const full = phone;
     panel.dataset.layout = full ? 'full' : 'side';
     panel.style.left = '';
     panel.style.right = '';
     panel.style.width = '';
     if (!full) {
-      const r = (hidden ? handleBox : element).getBoundingClientRect();
+      const w = panelWidth();
+      panel.style.right = '0px';
+      panel.style.width = `${w}px`;
+      // Only what the free space right of the reader (a wide window: the content is centred) does not give.
       const vw = document.documentElement.clientWidth || window.innerWidth;
-      const free = vw - r.right;
-      if (free >= 340) {
-        panel.style.left = `${Math.round(r.right)}px`;
-        panel.style.right = '0px';
-        panel.style.width = 'auto';
-      } else {
-        panel.style.right = `${Math.max(0, Math.round(vw - r.left))}px`;
-        panel.style.width = `${Math.max(260, Math.min(400, Math.round(r.left) - 8))}px`;
-      }
+      const now = parseFloat(slot.style.marginRight) || 0;
+      const free = vw - (slot.getBoundingClientRect().right + now);
+      const margin = `${Math.max(0, Math.ceil(w - free))}px`;
+      if (slot.style.marginRight !== margin) { slot.style.marginRight = margin; queuePlace(); }
+    } else if (slot.style.marginRight) {
+      slot.style.marginRight = '';
     }
     const vv = window.visualViewport;
     if (!vv) return;
@@ -371,7 +416,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const back = returnFocus;
     returnFocus = null;
     if (focus || hadFocus) {
-      (back?.isConnected && !back.hidden ? back : (hidden ? handle : listButton)).focus({ preventScroll: true });
+      (back?.isConnected && !back.hidden && back.getClientRects().length ? back : homeButton())?.focus({ preventScroll: true });
     }
     getFrame()?.focus(null);
     return done;
@@ -402,7 +447,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     await closePanel();
     if (destroyed) return;
     // T018-D12: back to where the user was; an item of the list (gone with it) → the list button.
-    returnFocus = from || (fromPanel || !active || active === document.body || !active.isConnected ? (hidden ? handle : listButton) : active);
+    returnFocus = from || (fromPanel || !active || active === document.body || !active.isConnected ? homeButton() : active);
+    if (annotation && !phone) keepPlace = { id: annotation.id, until: performance.now() + 1500 };
     const textarea = h('textarea', {
       class: 'notes-panel__text', 'data-field': 'note-text', rows: '8', maxlength: String(MAX_NOTE_LENGTH),
       'aria-label': 'Текст на бележката', placeholder: 'Напиши бележката си… (Markdown: **удебелен**, - списък)',
@@ -635,9 +681,10 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   // --- A new note from the selection ------------------------------------------------
   function showSelectionButtons() {
     const on = Boolean(selection) && !getTool();
-    noteButton.hidden = !on || hidden;
-    quickNote.hidden = !on || !hidden;
-    handle.dataset.attention = String(on && hidden);
+    const off = hidden && !phone;
+    noteButton.hidden = !on || off || phone;
+    quickNote.hidden = !on || !(off || phone);
+    handle.dataset.attention = String(on && off);
     slot.dataset.selection = String(on);
     fixRove();
   }
@@ -665,7 +712,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const mark = markAtSelection(sel, frame?.annotations || []);
     await openEditor({
       draft: mark ? { annotationId: mark.id } : { selection: sel },
-      quote: sel.quote.exact, annotation: mark, focusText: true, from: hidden ? handle : listButton,
+      quote: sel.quote.exact, annotation: mark, focusText: true, from: homeButton(),
     });
   }
 
@@ -727,13 +774,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     prevButton.disabled = !all.length;
     nextButton.disabled = !all.length;
     fixRove();
+    refreshPhoneList();
   }
 
   const onResize = () => {
-    if (!chosen && !destroyed) {
-      const want = narrowScreen();
-      if (want !== hidden) setHidden(want, { save: false });
-    }
+    if (!destroyed && narrowScreen() !== phone) { phone = narrowScreen(); applyLayout(); }
     queuePlace();
     if (panelMode) fitViewport();
   };
@@ -836,7 +881,16 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       if (item) { openNote(item.note.id); return; }
       if (COLORS.includes(annotation.color)) openMarkCard(annotation);
     },
-    onLayout(next) { places = next; queuePlace(); },
+    onLayout(next) {
+      places = next;
+      queuePlace();
+      // The lesson reflowed for the note column: the note's place back into view (once, just after opening).
+      if (keepPlace && performance.now() < keepPlace.until && panelMode) {
+        const id = keepPlace.id;
+        keepPlace = null;
+        getFrame()?.scrollToAnnotation(id);
+      }
+    },
     onAnchored() { refreshCounts(); queuePlace(); if (panelMode === 'list') reload(); },
     /** The tool changed: no "Бележка" while a tool is on. */
     onTool() { showSelectionButtons(); },

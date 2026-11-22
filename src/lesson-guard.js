@@ -509,8 +509,49 @@
   var FORMS = ['HTMLFormElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLButtonElement',
     'HTMLFieldSetElement', 'HTMLObjectElement', 'HTMLOutputElement'];
   for (var fi = 0; fi < FORMS.length; fi++) { guardMethod(protoOf(w[FORMS[fi]]), 'reportValidity'); guardMethod(protoOf(w[FORMS[fi]]), 'requestSubmit'); }
-  var SEL = ['addRange', 'collapse', 'setPosition', 'setBaseAndExtent', 'selectAllChildren', 'extend', 'collapseToStart', 'collapseToEnd', 'modify'];
-  for (var si = 0; si < SEL.length; si++) guardMethod(protoOf(w.Selection), SEL[si]);
+  // The Selection: only a caret / range in an EDITABLE place (designMode, contenteditable)
+  // would take the focus there; a selection of ordinary text stays allowed.
+  var designGet = getterOf(w.Document.prototype, 'designMode');
+  var editableGet = w.HTMLElement ? getterOf(w.HTMLElement.prototype, 'isContentEditable') : null;
+  var parentGet = getterOf(w.Node.prototype, 'parentNode');
+  var nodeTypeGet = getterOf(w.Node.prototype, 'nodeType');
+  var startGet = w.Range ? getterOf(w.Range.prototype, 'startContainer') : null;
+  var anchorGet = w.Selection ? getterOf(w.Selection.prototype, 'anchorNode') : null;
+  function editableNode(node) {
+    try {
+      if (designGet && apply(designGet, docNode, []) === 'on') return true;
+      var n = node;
+      for (var k = 0; n && k < 4; k++) {
+        if (apply(nodeTypeGet, n, []) === 1) return Boolean(editableGet && apply(editableGet, n, []));
+        n = apply(parentGet, n, []);
+      }
+    } catch (e) { return true; }
+    return false;
+  }
+  function selectionGuard(kind) {
+    return function (orig) {
+      return function (a) {
+        if (keysOff) {
+          var node = null;
+          try {
+            if (kind === 'range') node = a && startGet ? apply(startGet, a, []) : null;
+            else if (kind === 'node') node = a;
+            else node = anchorGet ? apply(anchorGet, this, []) : null;
+          } catch (e) { return undefined; }
+          if (!node || editableNode(node)) return undefined;
+        }
+        return apply(orig, this, arguments);
+      };
+    };
+  }
+  var SELP = w.Selection && w.Selection.prototype;
+  if (SELP) {
+    lockMethod(SELP, 'addRange', selectionGuard('range'));
+    var SEL_NODE = ['collapse', 'setPosition', 'setBaseAndExtent', 'selectAllChildren', 'extend'];
+    for (var si = 0; si < SEL_NODE.length; si++) lockMethod(SELP, SEL_NODE[si], selectionGuard('node'));
+    var SEL_SELF = ['collapseToStart', 'collapseToEnd', 'modify'];
+    for (var sj = 0; sj < SEL_SELF.length; sj++) lockMethod(SELP, SEL_SELF[sj], selectionGuard('self'));
+  }
   guardMethod(w.Document.prototype, 'execCommand');
   lockMethod(w.EventTarget.prototype, 'dispatchEvent', function (orig) {
     return function (ev) { if (keysOff && isUiEvent(ev)) return false; return apply(orig, this, arguments); };

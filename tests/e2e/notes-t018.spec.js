@@ -11,6 +11,8 @@
 //   Изтрий", two tabs, a retired lesson, a renamed file;
 // - size: a note of 1 MB (the field keeps 20 000), 1000 notes in a lesson;
 // - layout: 1920 / 1200 / 360, dark theme, 160 %, aria.
+// T-069 (developer): M2 is skipped on a phone and L1 / M1 follow the new layout (the user's addition to D-045:
+// the note a column next to the lesson on a tablet, only the 📝 column on a phone).
 // Known defects: test.fail(true, 'T018-D…'). Synthetic data only, no network (D-026).
 import { test, expect } from '@playwright/test';
 import { makeZip, asFile } from '../fixtures/zips.mjs';
@@ -835,18 +837,17 @@ test.describe('T018-L layout, keyboard, aria', () => {
     const p = await panel(page).boundingBox();
     await expect(panel(page)).toHaveAttribute('role', 'dialog');
     await expect(panel(page)).toHaveAttribute('aria-labelledby', 'notes-panel-title');
-    const vw = page.viewportSize().width;
-    if (vw - (s.x + s.width) >= 340) {
-      expect(p.x).toBeGreaterThanOrEqual(s.x + s.width - 1); // right of the strip
-      expect(p.x).toBeGreaterThanOrEqual(f.x + f.width - 1); // nothing of the lesson covered
-    } else {
-      expect(p.x + p.width).toBeLessThanOrEqual(s.x + 1); // left of the strip
-      // The strip's buttons are not under the panel.
-      const listBtn = await page.locator('[data-action="notes-list"]').boundingBox();
-      expect(listBtn.x).toBeGreaterThanOrEqual(p.x + p.width - 1);
-      await page.locator('[data-action="notes-list"]').click();
-      await expect(page.locator('[data-action="notes-list"]')).toHaveAttribute('aria-expanded', 'true');
-    }
+    // T-069 (the user, an addition to D-045): on a tablet the note is always a column of its own right of
+    // the strip; the lesson narrows (measured again with the note open) and nothing of it is covered.
+    const s2 = await strip(page).boundingBox();
+    const f2 = await page.locator('iframe.lesson-frame').boundingBox();
+    expect(p.x).toBeGreaterThanOrEqual(s2.x + s2.width - 1); // right of the strip
+    expect(p.x).toBeGreaterThanOrEqual(f2.x + f2.width - 1); // nothing of the lesson covered
+    const listBtn = await page.locator('[data-action="notes-list"]').boundingBox();
+    expect(listBtn.x + listBtn.width).toBeLessThanOrEqual(p.x + 1); // the strip's buttons are not under the panel
+    await page.locator('[data-action="notes-list"]').click();
+    await expect(page.locator('[data-action="notes-list"]')).toHaveAttribute('aria-expanded', 'true');
+    void f;
     expect(p.y + p.height).toBeLessThanOrEqual(page.viewportSize().height + 1);
     expect(await noHorizontalScroll(page)).toBe(true);
   });
@@ -942,7 +943,7 @@ test.describe('T018-M phone (360×800 / 800×360), touch', () => {
     await page.waitForTimeout(700);
     await expect(panel(page)).toBeHidden();
     // "Изтрий" → "Върни" fast.
-    if (narrow) { await page.locator('[data-field="notes-strip-handle"]').tap(); await page.waitForTimeout(400); }
+    // T-069: a phone has no "☰" any more (the 📝 column is always there).
     await expect(noteMarks(page)).toHaveCount(1, { timeout: 5000 });
     await noteMarks(page).first().tap();
     await page.locator('[data-action="delete-note"]').tap();
@@ -954,6 +955,8 @@ test.describe('T018-M phone (360×800 / 800×360), touch', () => {
   });
 
   test('T018-M2 a double tap on the notes "☰" (second tap 60…290 ms later, Android\'s double tap) leaves the strip shown; a double tap on "» Скрий" leaves it hidden (T066-D4 for the right strip)', async ({ page }) => {
+    // T-069 (the user, an addition to D-045): a phone (< 600 px) has no notes bar and no "☰" — only the 📝 column.
+    test.skip(page.viewportSize().width < 600, 'T-069: no notes bar / "☰" on a phone');
     await openLesson(page);
     const cdp = await page.context().newCDPSession(page);
     const tap = async (x, y) => {
