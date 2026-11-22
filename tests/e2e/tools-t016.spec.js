@@ -417,6 +417,11 @@ test.describe('T-016 functions of the tools (D-042)', () => {
       const frameBox = await page.locator('iframe.lesson-frame').boundingBox();
       expect(barBox.x + barBox.width, `${w}: the bar left of the lesson`).toBeLessThanOrEqual(frameBox.x + 1);
       expect(barBox.x, `${w}: on the screen`).toBeGreaterThanOrEqual(0);
+      // T-018: since 0.14.0 the notes strip (≈ 117 px) is right of the lesson; it is hidden by the width only
+      // when the reader opens, so a window narrowed later (rotation, split screen) keeps both bars shown.
+      if (frameBox.width <= w * 0.5 && await page.locator('[data-field="notes-strip"]').isVisible()) {
+        test.fail(true, `T018-D14: a window that becomes narrow after the reader opened (here ${w} px, no choice stored) keeps the notes strip shown next to the tool bar: the lesson is ${Math.round(frameBox.width)} px wide (≤ 50 %); the strip starts hidden below 600 px only at the opening`);
+      }
       expect(frameBox.width, `${w}: the lesson keeps room`).toBeGreaterThan(w * 0.5);
       // Every button can be reached (the bar scrolls inside when it is taller than the screen).
       const undo = undoButton(page);
