@@ -15,6 +15,9 @@
 import { test, expect } from '@playwright/test';
 import { makeZip, asFile } from '../fixtures/zips.mjs';
 import { strToU8 } from '../../vendor/fflate.js';
+import { readFileSync } from 'node:fs';
+
+const APP_VERSION = /APP_VERSION = '([^']+)'/.exec(readFileSync(new URL('../../src/config.js', import.meta.url), 'utf8'))[1];
 
 test.describe.configure({ timeout: 120000 });
 test.use({ trace: 'off' });
@@ -298,13 +301,15 @@ test.describe('T069-S the last words are kept (T018-D3)', () => {
     const kept = await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
       document.dispatchEvent(new Event('visibilitychange'));
-      return JSON.parse(localStorage.getItem('lrn-note-pending') || 'null');
+      // T-071 (T070-D3): one key per note / draft.
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending:'));
+      return keys.length === 1 ? JSON.parse(localStorage.getItem(keys[0])) : null;
     });
     info('T069-S2 kept', kept);
     expect(kept?.body).toBe('Скрит раздел');
     expect(kept?.lessonId).toBe(L1);
     // The async save finishes: the kept copy is dropped.
-    await expect.poll(() => page.evaluate(() => localStorage.getItem('lrn-note-pending')), { timeout: 5000 }).toBeNull();
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending')).length), { timeout: 5000 }).toBe(0);
     expect((await liveNotes(page)).map((n) => n.body)).toEqual(['Скрит раздел']);
     // A page killed between the two: the kept copy of a NEW note (selection draft) whose async save made it already.
     await page.evaluate((k) => localStorage.setItem('lrn-note-pending', JSON.stringify({ ...k, body: 'Скрит раздел и още' })), kept);
@@ -686,6 +691,6 @@ test.describe('T069-O "Ориентация на екрана" in Настрой
     await openSettings(page);
     await expect(oInput(page, 'auto')).toBeChecked();
     expect(await orient(page)).not.toContain('lock:upside-down');
-    await expect(page.locator('[data-field="version"]')).toHaveText('0.14.2');
+    await expect(page.locator('[data-field="version"]')).toHaveText(APP_VERSION);
   });
 });

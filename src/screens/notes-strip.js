@@ -57,7 +57,7 @@ import { renderMarkdown } from '../markdown.js';
 import { confirmAnnotationPlace } from '../annotations.js';
 import {
   lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH,
-  keepPendingNote, dropPendingNote,
+  keepPendingNote, dropPendingNote, takeEmptiedNote,
 } from '../notes.js';
 
 const NARROW_PX = 600; // below this: a phone (only the 📝 column; a note fills the window)
@@ -540,7 +540,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       ed.noteId = note.id;
       ed.annotationId = annotation.id;
       ed.savedBody = body;
-      dropPendingNote({ body, since });
+      dropPendingNote({ lessonId: lesson.id, drafts: [ed.draft, { noteId: note.id }], body, since });
       if (ed.deleteButton) ed.deleteButton.hidden = false;
       if (editing === ed) panelTitle.textContent = 'Бележка';
       // T018-D10: deleted meanwhile (another tab): it is back, with what was typed here.
@@ -572,20 +572,25 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (!ed.noteId) return;
     try {
       const entry = await deleteNote(lesson, ed.noteId);
+      // A copy kept for this note (the page was hidden meanwhile) must not bring it back.
+      dropPendingNote({ lessonId: lesson.id, drafts: [ed.draft, { noteId: ed.noteId }] });
       ed.noteId = null;
       if (entry.annotationDeleted) await getFrame()?.reloadAnnotations();
       await reload();
       if (editing === ed) { editing = null; await closePanel({ focus: true }); }
-      undoEntry = entry;
-      undoText.textContent = empty ? 'Празната бележка е изтрита.' : 'Бележката е изтрита.';
-      toast.hidden = false;
-      clearTimeout(undoTimer);
-      undoTimer = setTimeout(() => { toast.hidden = true; undoEntry = null; }, UNDO_MS);
-      announce(`${undoText.textContent} „Върни“ я връща.`);
+      offerUndo(entry, empty ? 'Празната бележка е изтрита.' : 'Бележката е изтрита.');
     } catch (err) {
       console.warn('Cannot delete the note:', err?.message || err);
       announce('Бележката не можа да се изтрие.');
     }
+  }
+  function offerUndo(entry, text) {
+    undoEntry = entry;
+    undoText.textContent = text;
+    toast.hidden = false;
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => { toast.hidden = true; undoEntry = null; }, UNDO_MS);
+    announce(`${text} „Върни“ я връща.`);
   }
   async function runUndo() {
     const entry = undoEntry;
@@ -855,6 +860,10 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   setHidden(hidden, { save: false });
   refreshCounts();
   reload();
+  // T070-D2: a note emptied when the page went last time was deleted at this start: "Върни".
+  takeEmptiedNote(lesson.id).then((entry) => {
+    if (entry && !destroyed) offerUndo(entry, 'Празната бележка е изтрита (беше изпразнена преди затварянето).');
+  }).catch(() => {});
 
   return {
     element: slot,
@@ -876,7 +885,9 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     },
     /** A tap on a mark / a noted place of the lesson (a known id), without a tool. */
     onTap(annotation) {
-      if (!annotation || getTool()) return;
+      // T070-S2: while the note field is guarded no press of the user reaches the
+      // lesson (the layer lies over it): a tap from the lesson then is its own.
+      if (!annotation || getTool() || guarded) return;
       const item = notes.find((x) => x.annotation.id === annotation.id);
       if (item) { openNote(item.note.id); return; }
       if (COLORS.includes(annotation.color)) openMarkCard(annotation);
@@ -897,6 +908,9 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     reload,
     /** Escape inside the lesson (lrn:escape). */
     escape() {
+      // T070-S2: no key of the user reaches the lesson while the note field is
+      // guarded — an Escape from the lesson then is forged: the note stays open.
+      if (guarded) return true;
       if (panelMode) { closePanel({ focus: true }); return true; }
       return false;
     },

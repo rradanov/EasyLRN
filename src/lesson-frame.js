@@ -253,6 +253,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   let silentTimer = null;
   let heard = false; // any message from the current document of the frame since its load
   let keysOffNow = false; // T018-D2: told to the guard again when the lesson (re)starts
+  let keysPort = null; // T070-S1: the app's end of the port the guard in the lesson listens on
   let innerScroll = false; // the lesson is taller than MAX_HEIGHT: it scrolls inside the frame
   let rate = { start: 0, count: 0 };
   let selfNavigations = 0;
@@ -389,6 +390,21 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   };
 
   // --- Messages ----------------------------------------------------------------------
+  // T070-S1: the keys of an open note go to the guard in the lesson over a
+  // MessagePort of their own, never on the window (a lesson can dispatch a
+  // synthetic message event on its window; and it would see the message).
+  // Every document of the frame gets a fresh port (lrn:hello, lrn:ready: a
+  // lesson that reloads itself is a new document with a new guard); the guard
+  // takes it only from a trusted event of the real parent and hides it from the
+  // lesson (src/lesson-guard.js §4). The state is sent at once.
+  const sendKeysPort = () => {
+    if (!frame?.contentWindow || typeof MessageChannel !== 'function') return;
+    try { keysPort?.close(); } catch { /* closed */ }
+    const channel = new MessageChannel();
+    keysPort = channel.port1;
+    post({ type: 'lrn:keys-port' }, [channel.port2]);
+    keysPort.postMessage({ off: keysOffNow });
+  };
   const sendInit = () => {
     initSent = true;
     post({
@@ -414,9 +430,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       restore();
       sendAnnotations();
       if (focused) post({ type: 'lrn:focus', annotationId: focused });
-      if (keysOffNow) post({ type: 'lrn:keys', off: true });
+      sendKeysPort();
     },
-    'lrn:hello'() { /* `heard` is set for every message */ },
+    'lrn:hello'() { sendKeysPort(); /* `heard` is set for every message */ },
     'lrn:violation'() { stopForFrames(); },
     'lrn:size'({ height }) {
       if (!frame || element.getAttribute('data-lesson-state') === 'fallback') return;
@@ -714,7 +730,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
      */
     keysOff(off) {
       keysOffNow = off === true;
-      post({ type: 'lrn:keys', off: keysOffNow });
+      try { keysPort?.postMessage({ off: keysOffNow }); } catch { /* closed */ }
     },
     /** Clear the selection in the lesson (after a mark is made: the system menu goes away). */
     clearSelection() {
@@ -797,6 +813,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       flush(); // the last value recorded from a scroll event, never re-measured here
       saver.flush();
       destroyed = true;
+      try { keysPort?.close(); } catch { /* closed */ }
+      keysPort = null;
       clearTimeout(readyTimer);
       clearTimeout(silentTimer);
       clearTimeout(positionTimer);

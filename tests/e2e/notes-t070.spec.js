@@ -185,7 +185,9 @@ const SPY = `<input id="v1" aria-label="v1"><div id="ce" contenteditable="true">
 <script>
   window.__keys = '';
   window.__msgs = [];
-  window.__off = null;
+  // T-071 (T070-S1): the app no longer tells the lesson (the keys go to the guard over
+  // a port the lesson never sees); the lesson can only probe: is designMode refused?
+  Object.defineProperty(window, '__off', { get() { const was = document.designMode; document.designMode = 'on'; const on = document.designMode === 'on'; document.designMode = was; return !on; } });
   const log = (e) => {
     const d = e.type === 'drop' ? (e.dataTransfer && e.dataTransfer.getData('text')) : (e.key || e.data || '');
     window.__keys += e.type[0] + d + ' ';
@@ -196,7 +198,6 @@ const SPY = `<input id="v1" aria-label="v1"><div id="ce" contenteditable="true">
     + '|' + (window.__sr ? [...window.__sr.querySelectorAll('input,[contenteditable]')].map((x) => x.value || x.textContent).join('|') : '');
   addEventListener('message', (e) => {
     try { window.__msgs.push(JSON.stringify(e.data)); } catch (err) { window.__msgs.push('?'); }
-    if (e.isTrusted && e.data && e.data.type === 'lrn:keys') window.__off = e.data.off;
   });
 </script>`;
 const leakedBy = (page) => {
@@ -208,13 +209,23 @@ const leakedBy = (page) => {
 // ===========================================================================
 test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the layer)', () => {
   test('T070-S1 a lesson forges the parent\'s "lrn:keys" { off: false } as a synthetic MessageEvent (source: parent, origin: the app\'s) the moment it hears { off: true }, then calls focus() every 5 ms: the guard must stay on and no character may reach the lesson', async ({ page }) => {
+    // T-071: the lesson no longer hears { off: true }; armed by the test once the guard is on,
+    // it forges every 5 ms: a synthetic "lrn:keys" { off: false }, a synthetic "lrn:keys-port"
+    // with a port of its own (then "off: false" on it), designMode, focus().
     const THIEF = `${SPY}<script>
-      addEventListener('message', (e) => {
-        if (!e.isTrusted || !e.data || e.data.type !== 'lrn:keys' || e.data.off !== true) return;
+      window.__design = null;
+      setInterval(() => {
+        if (!window.__armed) return;
+        try {
+          const ch = new MessageChannel();
+          dispatchEvent(new MessageEvent('message', { source: parent, origin: location.origin, data: { lrn: 1, type: 'lrn:keys-port' }, ports: [ch.port2] }));
+          ch.port1.postMessage({ off: false });
+        } catch (err) { /* */ }
         dispatchEvent(new MessageEvent('message', { source: parent, origin: location.origin, data: { lrn: 1, type: 'lrn:keys', off: false } }));
-        document.designMode = 'on'; window.__design = document.designMode; document.designMode = 'off';
-        if (!window.__loop) window.__loop = setInterval(() => document.getElementById('v1').focus(), 5);
-      });
+        window.postMessage({ lrn: 1, type: 'lrn:keys', off: false }, '*');
+        document.designMode = 'on'; if (document.designMode === 'on') window.__design = 'on'; document.designMode = 'off';
+        document.getElementById('v1').focus();
+      }, 5);
     </script>`;
     const leaked = leakedBy(page);
     await start(page);
@@ -222,14 +233,15 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
     const frame = await openLesson(page);
     await openNewNote(page, 'оценява рисковете');
     await expect.poll(() => frame.evaluate(() => window.__off)).toBe(true);
+    await frame.evaluate(() => { window.__armed = true; });
     await page.waitForTimeout(200);
     await typeAll(page, 'abcdefghijklmnopqrstuvwxyz0123456789', 'ТАЙНАбележкаЗаУрока');
     await page.waitForTimeout(400);
     const seen = await frame.evaluate(() => ({ design: window.__design, keys: window.__keys, vals: window.__vals() }));
     const value = await noteText(page).inputValue();
     info('T070-S1', { seen, leaked: leaked.join(''), value });
-    const bad = seen.design === 'on' || leaked.join('') !== '' || /[a-zТ-Я0-9]/i.test(seen.vals.split('|')[0]);
-    if (bad) test.fail(true, 'T070-S1: the guard (lesson-guard.js §4) takes any MessageEvent whose `source` is the parent and whose `origin` is the app\'s — also a synthetic one the lesson dispatches itself (new MessageEvent(\'message\', { source: parent, origin: location.origin, data: { lrn: 1, type: \'lrn:keys\', off: false } })): isTrusted is not checked. The guard is off (designMode can be set again), focus() works, and under a 5 ms steal loop characters typed into the note reach the lesson\'s field (the app\'s re-focus only narrows the race)');
+    await frame.evaluate(() => { window.__armed = false; });
+    // T-071: fixed (the keys over a MessagePort taken only from a trusted event of the parent): test.fail removed.
     expect(seen.design).not.toBe('on');
     expect(leaked.join('')).toBe('');
     expect(value).toBe('abcdefghijklmnopqrstuvwxyz0123456789ТАЙНАбележкаЗаУрокадума');
@@ -239,17 +251,22 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
     const THIEF = `${SPY}<script>
       window.__mode = 'none';
       window.__ids = [];
+      window.__fired = false;
       addEventListener('message', (e) => {
         if (!e.isTrusted || !e.data) return;
         if (e.data.type === 'lrn:annotations' && Array.isArray(e.data.annotations)) window.__ids = e.data.annotations.map((a) => a.id);
-        if (e.data.type !== 'lrn:keys' || e.data.off !== true) return;
+      });
+      // T-071: the lesson no longer hears { off: true }: it probes the guard (designMode refused) every 50 ms.
+      setInterval(() => {
+        if (window.__mode === 'none' || window.__fired || !window.__off) return;
+        window.__fired = true;
         setTimeout(() => {
           if (window.__mode === 'none') return;
           if (window.__mode === 'escape') parent.postMessage({ lrn: 1, type: 'lrn:escape' }, '*');
           else window.__ids.forEach((id, k) => setTimeout(() => parent.postMessage({ lrn: 1, type: 'lrn:tap', annotationId: id }, '*'), k * 60));
           for (let i = 0; i < 200; i++) setTimeout(() => document.getElementById('v1').focus(), i * 10);
         }, 300);
-      });
+      }, 50);
     </script>`;
     const leaked = leakedBy(page);
     await start(page);
@@ -262,7 +279,7 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
     const out = {};
     for (const mode of ['escape', 'tap']) {
       frame = await lessonFrame(page);
-      await frame.evaluate((m) => { window.__mode = m; window.__keys = ''; }, mode);
+      await frame.evaluate((m) => { window.__mode = m; window.__keys = ''; window.__fired = false; }, mode);
       leaked.length = 0;
       await openNewNote(page, 'оценява рисковете');
       await page.keyboard.type('ТАЙНАнов', { delay: 60 });
@@ -275,8 +292,8 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
       await page.waitForTimeout(300);
     }
     info('T070-S2', out);
-    const bad = Object.values(out).some((r) => r.leaked !== '' || r.vals !== '');
-    if (bad) test.fail(true, 'T070-S2: a lesson can close the user\'s open note at any moment: "lrn:escape" (and "lrn:tap" on another place) from the lesson are taken while the note field is guarded, although no key / press of the user can reach the lesson then. The lesson knows when the user starts a note (it gets lrn:keys { off: true }), closes the note 300 ms later, the guard is switched off with it, and the next characters the user types (meant for the note) go into the lesson\'s field');
+    // T-071: fixed (no message of the lesson closes a guarded note): test.fail removed; the note stays open.
+    for (const r of Object.values(out)) expect(r.open).toBe(true);
     for (const r of Object.values(out)) { expect(r.leaked).toBe(''); expect(r.vals).toBe(''); }
   });
 
@@ -352,7 +369,8 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
     page.on('response', (r) => { if (r.status() === 404) notFound.push(r.url()); });
     const RELOADER = `${SPY}<script>
       if (location.hash === '#steal') { setInterval(() => document.getElementById('v1').focus(), 3); setTimeout(() => location.reload(), 400); }
-      addEventListener('message', (e) => { if (e.isTrusted && e.data && e.data.type === 'lrn:keys' && e.data.off === true && location.hash !== '#steal') { location.hash = '#steal'; location.reload(); } });
+      // T-071: no message says { off: true } to the lesson now; it probes the guard instead.
+      setInterval(() => { if (location.hash !== '#steal' && window.__off) { location.hash = '#steal'; location.reload(); } }, 50);
     </script>`;
     await start(page);
     await importCourse(page, RELOADER);
@@ -397,7 +415,8 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
       document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-      return localStorage.getItem('lrn-note-pending');
+      // T-071 (T070-D3): one key per note / draft.
+      return Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending')).map((k) => localStorage.getItem(k)).join('\n');
     });
     expect(kept).toContain('ТАЙНАнаЛокално');
     const store = await frame.evaluate(() => window.__probe());
@@ -413,6 +432,8 @@ test.describe('T070-S the keys of an open note vs the lesson (lrn:keys, the laye
     expect(msgs.join('\n')).not.toContain('ТАЙНА');
     // The note's message to the lesson is `lrn:keys` only (no text in it).
     expect(msgs.filter((m) => /lrn:keys/.test(m)).every((m) => Object.keys(JSON.parse(m)).sort().join() === 'lrn,off,type')).toBe(true);
+    // T-071 (T070-S1, I1): the keys go over a port the guard hides: the lesson sees no "lrn:keys*" at all.
+    expect(msgs.filter((m) => /lrn:keys/.test(m))).toEqual([]);
   });
 
   test('T070-S6 the transparent layer covers the whole lesson while the field has the focus (every point over the frame is the app\'s); a first tap on a link of the lesson only leaves the field, the second works; text dragged from the note onto the lesson never lands there; after the note closes the lesson works as before (its field, its link, a selection, a mark)', async ({ page }) => {
@@ -498,9 +519,12 @@ test.describe('T070-D the text kept when the page goes (T018-D3 fix)', () => {
     window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
-    return JSON.parse(localStorage.getItem('lrn-note-pending') || 'null');
+    // T-071 (T070-D3): one key per note / draft ("lrn-note-pending:<place>"); the newest copy.
+    const all = Object.keys(localStorage).filter((k) => k === 'lrn-note-pending' || k.startsWith('lrn-note-pending:')).map((k) => JSON.parse(localStorage.getItem(k)));
+    return all.sort((a, b) => b.at - a.at)[0] || null;
   });
-  const kill = (page) => page.evaluate(() => localStorage.getItem('lrn-note-pending'));
+  // Every kept copy (null: none).
+  const kill = (page) => page.evaluate(() => { const v = Object.keys(localStorage).filter((k) => k === 'lrn-note-pending' || k.startsWith('lrn-note-pending:')).map((k) => localStorage.getItem(k)); return v.length ? v.join('\n') : null; });
 
   test('T070-D1 beforeunload + pagehide + visibilitychange together, for a new note on a selection and on a mark, the kept copy left over as if the page died after the save: one note each, the last text', async ({ page }) => {
     await openLesson(page);
@@ -548,8 +572,12 @@ test.describe('T070-D the text kept when the page goes (T018-D3 fix)', () => {
     const all = await notesOf(page);
     info('T070-D2', all.map((n) => [n.body, n.deleted]));
     const emptyLive = all.filter((n) => !n.deleted && !n.body.trim());
-    if (emptyLive.length) test.fail(true, 'T070-D2: an existing note emptied and the page reloaded / killed at once: the empty text is kept at pagehide and written at the next start — a live note with an empty body (an empty 📝), the old text gone without "Върни" (closing an empty note deletes it with "Върни", D-045 addition)');
+    // T-071: fixed — as a note closed empty: deleted at the start, "Върни" brings the old text back. test.fail removed.
     expect(emptyLive).toEqual([]);
+    expect(all.filter((n) => n.deleted).map((n) => n.body)).toEqual(['Важен текст']);
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeVisible();
+    await page.locator('[data-action="undo-note-delete"]').click();
+    await expect.poll(async () => (await liveNotes(page)).map((n) => n.body), { timeout: 5000 }).toEqual(['Важен текст']);
   });
 
   test('T070-D3 two tabs: tab A dies with its last words kept (not yet in the database), tab B saves ANOTHER note before A is opened again: A\'s words must not be dropped', async ({ page, context }) => {
@@ -571,7 +599,7 @@ test.describe('T070-D the text kept when the page goes (T018-D3 fix)', () => {
     const bodies = (await liveNotes(other)).map((n) => n.body).sort();
     info('T070-D3', { left, bodies });
     const lost = !bodies.includes('Бележка А + последни думи');
-    if (lost) test.fail(true, 'T070-D3: the kept copy (one localStorage key for all tabs) is dropped by ANY later save that began after it was kept (dropPendingNote: kept.at <= since), also a save of another note in another tab: tab A killed by Android right after pagehide loses its last words when tab B saves something first');
+    void lost; // T-071: fixed (one key per note: a save of another note keeps A's copy). test.fail removed.
     expect(bodies).toEqual(['Бележка Б', 'Бележка А + последни думи'].sort());
     await other.close();
   });

@@ -440,10 +440,23 @@
     }, true);
   } catch (e) { /* ignore */ }
 
-  // --- 4. The keys of an open note (T018-D2) ---------------------------------------
-  // While the user types a note in the app, the app says `lrn:keys` { off: true }
-  // (only a message whose source is the real parent and whose origin is the
-  // app's counts: the lesson cannot send one as the parent). Until { off: false }:
+  // --- 4. The keys of an open note (T018-D2, T070-S1) ------------------------------
+  // While the user types a note in the app, the app says { off: true } — NOT on
+  // the window, but on a MessagePort of its own (T070-S1: a lesson can dispatch
+  // a synthetic MessageEvent on its window with `source: parent` and any
+  // `origin`; and whatever the guard tells apart on the window, the lesson sees
+  // the message too and learns when the user starts a note, T070-I1):
+  // - the app sends `lrn:keys-port` with one transferred port to every new
+  //   document (at lrn:hello and at lrn:ready; a newer port replaces the older);
+  // - this guard takes it only from a TRUSTED message event (Event#isTrusted, a
+  //   saved getter: a synthetic event is never trusted) whose source is the real
+  //   parent and whose origin is the app's, and stops the event at once (its
+  //   listener is the first of the window, registered before any script of the
+  //   lesson): no listener of the lesson ever sees the message or its port;
+  // - the port lives only in this closure: the lesson has no reference to it,
+  //   cannot post to the app's end, cannot dispatch an event on it. Every
+  //   `lrn:keys` on the window is ignored.
+  // Until { off: false }:
   // - the lesson cannot take the keyboard focus: focus() / window.focus(),
   //   dialogs, popovers, select(), reportValidity(), click() and synthetic UI
   //   events, the Selection's caret methods and designMode do nothing (the
@@ -589,15 +602,40 @@
   for (var ki = 0; ki < KEY_EVENTS.length; ki++) {
     try { apply(addListener, w, [KEY_EVENTS[ki], stopKey, true]); } catch (e) { /* ignore */ }
   }
+  var trustedGet = getterOf(w.Event.prototype, 'isTrusted');
+  if (!trustedGet) { try { var probe = new w.Event('x'); var td = getOwnPropertyDescriptor(probe, 'isTrusted'); trustedGet = td && td.get; } catch (e) { trustedGet = null; } }
+  var msgPorts = ME ? getterOf(ME, 'ports') : null;
+  var MPP = w.MessagePort && w.MessagePort.prototype;
+  var portStart = MPP && MPP.start;
+  var portClose = MPP && MPP.close;
+  var keysPort = null;
+  var onPortMessage = function (ev) {
+    try {
+      var m = msgData ? apply(msgData, ev, []) : null;
+      if (!m || typeof m !== 'object') return;
+      keysOff = m.off === true;
+      if (keysOff) letGo();
+    } catch (e) { /* ignore */ }
+  };
+  var takePort = function (port) {
+    if (keysPort && portClose) { try { apply(portClose, keysPort, []); } catch (e) { /* ignore */ } }
+    keysPort = port;
+    try { apply(addListener, port, ['message', onPortMessage]); } catch (e) { /* ignore */ }
+    try { if (portStart) apply(portStart, port, []); } catch (e) { /* ignore */ }
+  };
   try {
     apply(addListener, w, ['message', function (ev) {
       try {
+        if (!trustedGet || apply(trustedGet, ev, []) !== true) return;
         if (!msgSource || apply(msgSource, ev, []) !== parentWindow) return;
         if (msgOrigin && apply(msgOrigin, ev, []) !== appOrigin) return;
         var m = msgData ? apply(msgData, ev, []) : null;
-        if (!m || typeof m !== 'object' || m.lrn !== 1 || m.type !== 'lrn:keys') return;
-        keysOff = m.off === true;
-        if (keysOff) letGo();
+        if (!m || typeof m !== 'object' || m.lrn !== 1 || m.type !== 'lrn:keys-port') return;
+        // Nobody else sees this message, nor its port.
+        try { apply(stopNow, ev, []); } catch (e) { /* ignore */ }
+        var ports = msgPorts ? apply(msgPorts, ev, []) : null;
+        var port = ports && ports.length === 1 ? ports[0] : null;
+        if (port) takePort(port);
       } catch (e) { /* ignore */ }
     }, true]);
   } catch (e) { /* ignore */ }

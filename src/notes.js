@@ -145,70 +145,137 @@ export async function restoreNote(lesson, { noteId, annotationId, annotationDele
 // synchronously, into localStorage (same origin as the database; the lesson
 // runs in an opaque origin and cannot read it) and written into the database at
 // the next start (`flushPendingNote`). Removed once the database has it.
-const PENDING_KEY = 'lrn-note-pending';
+// T070-D3: one key PER NOTE / DRAFT (`lrn-note-pending:<place>`): a save of
+// another note, in this tab or another, never drops a copy that is not its own.
+// The single key of 0.14.1–0.14.2 (`lrn-note-pending`) is still read at start.
+// T070-D2: an existing note emptied when the page goes is kept as such (an
+// empty body) and, at the next start, deleted like a note closed empty — a soft
+// delete, offered back with "Върни" when its lesson is opened (`takeEmptiedNote`);
+// never an empty live note, never the old text lost without a way back.
+const PENDING_PREFIX = 'lrn-note-pending:';
+const LEGACY_KEY = 'lrn-note-pending';
+const EMPTIED_KEY = 'lrn-note-emptied';
+
+/** The place a kept copy belongs to: a note, a mark, or a selection of a lesson. */
+function placeOf(lessonId, draft) {
+  if (!draft || typeof draft !== 'object') return null;
+  if (typeof draft.noteId === 'string' && draft.noteId) return `n:${draft.noteId}`;
+  if (typeof draft.annotationId === 'string' && draft.annotationId) return `a:${draft.annotationId}`;
+  const p = draft.selection?.position;
+  if (Number.isInteger(p?.start) && Number.isInteger(p?.end)) return `s:${lessonId}:${p.start}-${p.end}`;
+  return null;
+}
+const storage = () => { try { return window.localStorage; } catch { return null; } };
+/** Every kept copy: [{ key, kept }] (a broken one has kept: null). */
+function keptCopies() {
+  const ls = storage();
+  if (!ls) return [];
+  const out = [];
+  try {
+    for (let i = 0; i < ls.length; i++) {
+      const key = ls.key(i);
+      if (key !== LEGACY_KEY && !key?.startsWith(PENDING_PREFIX)) continue;
+      let kept = null;
+      try { kept = JSON.parse(ls.getItem(key) || 'null'); } catch { kept = null; }
+      out.push({ key, kept: kept && typeof kept === 'object' ? kept : null });
+    }
+  } catch { /* unavailable */ }
+  return out;
+}
+const removeKey = (key) => { try { storage()?.removeItem(key); } catch { /* */ } };
 
 /** Keep the text of an open note synchronously (pagehide / visibilitychange / beforeunload). */
 export function keepPendingNote({ courseId, lessonId, draft, body }) {
+  const place = placeOf(lessonId, draft);
+  if (!place) return;
   try {
-    localStorage.setItem(PENDING_KEY, JSON.stringify({ courseId, lessonId, draft, body: clip(body), at: Date.now() }));
+    storage()?.setItem(PENDING_PREFIX + place, JSON.stringify({ courseId, lessonId, draft, body: clip(body), at: Date.now() }));
   } catch { /* storage full / unavailable: the async save is all there is */ }
 }
 
 /**
- * The database has this text: the kept copy is not needed — when it is the
- * same text, or it was kept before this save began (`since`, ms). No argument: always.
+ * The database has this text: the kept copies of THESE places (`drafts`: the
+ * draft and the note it became) are not needed — when it is the same text, or
+ * it was kept before this save began (`since`, ms). Copies of other notes stay.
  */
-export function dropPendingNote({ body, since } = {}) {
-  try {
-    const raw = localStorage.getItem(PENDING_KEY);
-    if (raw === null) return;
-    const kept = JSON.parse(raw);
-    const all = body === undefined && since === undefined;
-    if (all || kept?.body === clip(body) || (Number.isFinite(since) && Number(kept?.at) <= since)) localStorage.removeItem(PENDING_KEY);
-  } catch { try { localStorage.removeItem(PENDING_KEY); } catch { /* */ } }
+export function dropPendingNote({ lessonId, drafts = [], body, since } = {}) {
+  const places = new Set(drafts.map((d) => placeOf(lessonId, d)).filter(Boolean));
+  if (!places.size) return;
+  for (const { key, kept } of keptCopies()) {
+    if (!kept) continue;
+    if (!places.has(placeOf(kept.lessonId, kept.draft))) continue;
+    if (body === undefined || kept.body === clip(body) || (Number.isFinite(since) && Number(kept.at) <= since)) removeKey(key);
+  }
 }
 
 /**
- * At start: a text kept at pagehide goes into its note (only a note of a
- * known lesson; nothing here comes from the lesson). Returns the saved note or null.
+ * At start: every text kept at a pagehide goes into its note (only a note of a
+ * known lesson; nothing here comes from the lesson). Returns the saved notes.
  * @param {{ getCourse: Function, getLesson: Function }} db
  */
 let flushRun = null;
 export function flushPendingNote(db) {
-  flushRun = writePending(db);
+  flushRun = (async () => {
+    const out = [];
+    for (const { key, kept } of keptCopies()) {
+      try {
+        const note = kept ? await writeKept(db, kept) : null;
+        if (note) out.push(note);
+      } catch (err) {
+        console.warn('Cannot write the kept note:', err?.message || err);
+      } finally {
+        removeKey(key);
+      }
+    }
+    return out;
+  })();
   return flushRun;
 }
-async function writePending({ getCourse, getLesson }) {
-  let kept;
-  try { kept = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch { kept = null; }
-  if (!kept || typeof kept !== 'object') { dropPendingNote(); return null; }
-  try {
-    const { courseId, lessonId, draft, body } = kept;
-    if (typeof body !== 'string' || !draft || typeof draft !== 'object') return null;
-    const lesson = typeof lessonId === 'string' ? await getLesson(lessonId, { includeDeleted: true }) : null;
-    const course = typeof courseId === 'string' ? await getCourse(courseId, { includeDeleted: true }) : null;
-    if (!lesson || !course) return null;
-    if (!draft.noteId && !body.trim()) return null; // an empty new note is not kept
-    if (draft.noteId) {
-      const note = await get(STORES.notes, draft.noteId, { includeDeleted: true });
-      if (note && note.body === body) return note; // nothing to write
+async function writeKept({ getCourse, getLesson }, kept) {
+  const { courseId, lessonId, draft, body } = kept;
+  if (typeof body !== 'string' || !draft || typeof draft !== 'object') return null;
+  const lesson = typeof lessonId === 'string' ? await getLesson(lessonId, { includeDeleted: true }) : null;
+  const course = typeof courseId === 'string' ? await getCourse(courseId, { includeDeleted: true }) : null;
+  if (!lesson || !course) return null;
+  if (!draft.noteId && !body.trim()) return null; // an empty new note is not kept
+  if (draft.noteId) {
+    const note = await get(STORES.notes, draft.noteId, { includeDeleted: true });
+    if (!note) return null;
+    if (note.body === body) return note; // nothing to write
+    if (!body.trim()) {
+      // T070-D2: emptied, then the page went: as a note closed empty — deleted, with "Върни".
+      if (note.deleted) return null;
+      const entry = await deleteNote(lesson, note.id);
+      try { storage()?.setItem(EMPTIED_KEY, JSON.stringify({ lessonId: lesson.id, entry, at: Date.now() })); } catch { /* */ }
+      return null;
     }
-    let target = draft;
-    if (draft.selection && !draft.noteId && !draft.annotationId) {
-      // The async save of the page may have made the note already: write in it, never a second one.
-      const p = draft.selection.position;
-      const same = (await lessonAnnotations(lesson)).find((a) => a.selector?.position?.start === p?.start
-        && a.selector?.position?.end === p?.end && a.selector?.quote?.exact === draft.selection.quote?.exact);
-      if (same) target = { annotationId: same.id };
-    }
-    const { note } = await saveNote({ course, lesson, draft: target, body });
-    return note;
-  } catch (err) {
-    console.warn('Cannot write the kept note:', err?.message || err);
-    return null;
-  } finally {
-    dropPendingNote();
   }
+  let target = draft;
+  if (draft.selection && !draft.noteId && !draft.annotationId) {
+    // The async save of the page may have made the note already: write in it, never a second one.
+    const p = draft.selection.position;
+    const same = (await lessonAnnotations(lesson)).find((a) => a.selector?.position?.start === p?.start
+      && a.selector?.position?.end === p?.end && a.selector?.quote?.exact === draft.selection.quote?.exact);
+    if (same) target = { annotationId: same.id };
+  }
+  const { note } = await saveNote({ course, lesson, draft: target, body });
+  return note;
+}
+
+/**
+ * T070-D2: a note emptied when the page went and deleted at this start, for
+ * `lessonId` (once): the entry for "Върни" (restoreNote), or null.
+ */
+export async function takeEmptiedNote(lessonId) {
+  if (flushRun) await flushRun;
+  const ls = storage();
+  let kept = null;
+  try { kept = JSON.parse(ls?.getItem(EMPTIED_KEY) || 'null'); } catch { kept = null; }
+  if (!kept || typeof kept !== 'object') return null;
+  if (!(Date.now() - Number(kept.at) < 7 * 864e5)) { removeKey(EMPTIED_KEY); return null; } // a week old: gone
+  if (kept.lessonId !== lessonId || !kept.entry || typeof kept.entry.noteId !== 'string') return null;
+  removeKey(EMPTIED_KEY);
+  return kept.entry;
 }
 
 /**
