@@ -194,7 +194,12 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     await expect(bar).toHaveAttribute('role', 'toolbar');
     const barBox = await bar.boundingBox();
     const frameBox = await page.locator('iframe.lesson-frame').boundingBox();
-    expect(barBox.x + barBox.width).toBeLessThanOrEqual(frameBox.x + 1);
+    // T-071 (D-046): in portrait (≥ 600 px wide) the bar is a row at the top, above the lesson.
+    const vp = page.viewportSize();
+    if (vp.height > vp.width && vp.width >= 600) {
+      expect(barBox.y + barBox.height).toBeLessThanOrEqual(frameBox.y + 1);
+      await expect(bar).toHaveAttribute('aria-orientation', 'horizontal');
+    } else expect(barBox.x + barBox.width).toBeLessThanOrEqual(frameBox.x + 1);
     const tools = await bar.locator('[data-tool]').evaluateAll((els) => els.map((e) => [e.dataset.tool, e.getAttribute('aria-label'), e.getAttribute('aria-pressed')]));
     expect(tools).toEqual([['marker', 'Маркер', 'false'], ['pencil', 'Молив', 'false'], ['eraser', 'Гума', 'false']]);
     const colours = await bar.locator('[data-color]').evaluateAll((els) => els.map((e) => [e.dataset.color, e.getAttribute('aria-label'), e.getAttribute('aria-pressed')]));

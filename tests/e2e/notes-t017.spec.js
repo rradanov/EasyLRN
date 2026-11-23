@@ -187,7 +187,10 @@ test.describe('T-017 notes on the tablet', () => {
     const f = await page.locator('iframe.lesson-frame').boundingBox();
     const tools = await page.locator('[data-field="mark-tools"]').boundingBox();
     expect(s.x).toBeGreaterThanOrEqual(f.x + f.width - 1); // right of the lesson
-    expect(tools.x + tools.width).toBeLessThanOrEqual(f.x + 1); // the tools on the left
+    // T-071 (D-046): portrait → the tools in a row at the top; landscape → at the left.
+    const vp = page.viewportSize();
+    if (vp.height > vp.width) expect(tools.y + tools.height).toBeLessThanOrEqual(f.y + 1);
+    else expect(tools.x + tools.width).toBeLessThanOrEqual(f.x + 1); // the tools on the left
     await expect(newNote(page)).toBeHidden();
     await writeNote(page, 'оценява рисковете', 'Моя бележка **важно**');
     await expect(page.locator('[data-field="note-quote"]')).toContainText('оценява рисковете');
@@ -333,13 +336,14 @@ test.describe('T-017 notes on the tablet', () => {
     expect(last.top).toBeGreaterThan(0);
     expect(last.bottom).toBeLessThan(page.viewportSize().height);
     // ▲ from the last → the middle one → the first; ▲ again: "първата".
-    await page.locator('[data-action="prev-note"]').click();
+    // T-071 (D-046): while the panel is open the strip is hidden: the panel's own ▲ / ▼.
+    await page.locator('[data-action="panel-prev-note"]').click();
     await expect(noteText(page)).toHaveValue('Средна');
-    await page.locator('[data-action="prev-note"]').click();
+    await page.locator('[data-action="panel-prev-note"]').click();
     await expect(noteText(page)).toHaveValue('Първа');
-    await page.locator('[data-action="prev-note"]').click();
+    await page.locator('[data-action="panel-prev-note"]').click();
     await expect(page.locator('[data-field="marks-status"]')).toHaveText('Това е първата бележка.');
-    await page.locator('[data-action="next-note"]').click();
+    await page.locator('[data-action="panel-next-note"]').click();
     await expect(noteText(page)).toHaveValue('Средна');
     const mid = await textBox(page, 'Уязвимостите се докладват');
     expect(mid.top).toBeGreaterThan(0);
@@ -373,7 +377,7 @@ test.describe('T-017 notes on the tablet', () => {
     await openLesson(page);
     await noteMarks(page).first().click();
     await noteText(page).pressSequentially(' ОЩЕ-ТАЙНА');
-    await page.locator('[data-action="notes-list"]').click();
+    await page.locator('[data-action="notes-back-to-list"]').click(); // T-071 (D-046): the strip is hidden behind the panel
     await page.waitForTimeout(500);
     const frame = await lessonFrame(page);
     const got = await frame.evaluate(() => window.__got.join('\n'));
@@ -449,7 +453,7 @@ test.describe('T-017 notes on the tablet', () => {
     const colors = await panel(page).evaluate((el) => ({ bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color }));
     expect(colors.bg).not.toBe(colors.fg);
     expect(colors.bg).toBe('rgb(21, 21, 19)');
-    await page.locator('[data-action="notes-list"]').click();
+    await page.locator('[data-action="notes-back-to-list"]').click(); // T-071 (D-046): the strip is hidden behind the panel
     expect(await noHorizontalScroll(page)).toBe(true);
     const p = await panel(page).boundingBox();
     expect(p.x + p.width).toBeLessThanOrEqual(page.viewportSize().width + 1);

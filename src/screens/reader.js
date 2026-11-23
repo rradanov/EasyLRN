@@ -17,6 +17,10 @@
 // draws on the lesson and two fingers scroll. Marks found only approximately
 // or not at all after a change of the lesson are listed in "Маркировки за
 // проверка" (show it, "Да, тук е", delete).
+// Layout (D-046, src/screens/reader-layout.js): in portrait both bars are
+// horizontal at the top (a sticky row under the title: tools left, notes
+// right) and a note opens under the lesson; in landscape the bars are at the
+// sides; a phone has only the 📝. `data-layout` on the screen follows the window.
 import { h, mount } from '../dom.js';
 import { link } from '../router.js';
 import { getCourse, listLessons, getSettings, setLessonProgress, quizzesForLesson, visitPlace, movePlace } from '../db.js';
@@ -27,6 +31,7 @@ import { COLORS } from '../db.js';
 import { confirmAnnotationPlace } from '../annotations.js';
 import { quizLink } from './quiz-link.js';
 import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
+import { readerLayout } from './reader-layout.js';
 
 /**
  * Find a lesson by id, number (case-insensitive, "R1" = "R01", "3" = "0003")
@@ -75,6 +80,21 @@ export function readerScreen({ params, query }) {
   const notesSlot = h('div', { class: 'reader__notes-slot' });
   const panelSlot = h('div', { class: 'reader__panel-slot' });
   const doc = h('div', { class: 'reader__doc', 'data-field': 'reader-doc' }, toolSlot, content, notesSlot);
+  // D-046: the row of the bars in portrait (sticky under the app bar).
+  const topTools = h('div', { class: 'reader__top-tools' });
+  const topNotes = h('div', { class: 'reader__top-notes' });
+  const topbar = h('div', { class: 'reader__topbar', 'data-field': 'reader-topbar' }, topTools, topNotes);
+  const screen = h('section', { class: 'screen screen--reader', 'data-screen': 'reader', 'data-layout': readerLayout() });
+  const onResize = () => { screen.dataset.layout = readerLayout(); };
+  window.addEventListener('resize', onResize);
+  // What of the window the lesson is seen in: below the app bar (and the row of
+  // the bars in portrait), above the panel of a note in portrait.
+  const viewInsets = () => {
+    const bar = document.querySelector('.app-bar')?.getBoundingClientRect().height ?? 0;
+    const row = screen.dataset.layout === 'portrait' && topbar.getClientRects().length ? topbar.getBoundingClientRect().height : 0;
+    const bottom = parseFloat(document.documentElement.style.getPropertyValue('--notes-cover-bottom')) || 0;
+    return { top: Math.round(bar + row), bottom: Math.round(bottom) };
+  };
 
   (async () => {
     const [course, lessons, settings] = await Promise.all([getCourse(courseId), listLessons(courseId), getSettings()]);
@@ -195,6 +215,7 @@ export function readerScreen({ params, query }) {
       fontScale: settings.fontScale,
       initialScroll: startY,
       hash,
+      viewInsets,
       onAnchored: (list) => { if (!destroyed) { showChecks(list); notes?.onAnchored(); } },
       onEscape: () => { if (tools?.tool) tools.escape(); else notes?.escape(); },
       onSelection: (sel) => notes?.onSelection(sel),
@@ -218,9 +239,9 @@ export function readerScreen({ params, query }) {
       onChange: (tool) => { doc.dataset.tool = tool || 'none'; notes?.onTool(); },
       onLayout: (hidden) => { doc.dataset.bar = hidden ? 'hidden' : 'shown'; },
       onErased: () => notes?.reload(),
+      slots: { side: toolSlot, top: topTools },
     });
     doc.dataset.bar = tools.hidden ? 'hidden' : 'shown';
-    mount(toolSlot, tools.handle, tools.element);
     // T-017 (D-045): the notes strip right of the lesson.
     notes = createNotesStrip({
       getFrame: () => frame,
@@ -230,6 +251,8 @@ export function readerScreen({ params, query }) {
       settings,
       announce,
       onLayout: (hidden) => { doc.dataset.notes = hidden ? 'hidden' : 'shown'; },
+      topSlot: topNotes,
+      viewInsets,
     });
     doc.dataset.notes = notes.hidden ? 'hidden' : 'shown';
     mount(notesSlot, notes.element);
@@ -246,11 +269,12 @@ export function readerScreen({ params, query }) {
     back: { href: link('c', courseId), label: courseId },
     destroy() {
       destroyed = true;
+      window.removeEventListener('resize', onResize);
       notes?.destroy();
       tools?.destroy();
       frame?.destroy();
     },
-    body: h('section', { class: 'screen screen--reader', 'data-screen': 'reader' },
+    body: (mount(screen,
       h('div', { class: 'reader__bar' },
         h('nav', { class: 'breadcrumb', 'aria-label': 'Път' },
           h('span', { text: label(lessonId) }),
@@ -262,9 +286,10 @@ export function readerScreen({ params, query }) {
       retiredNote,
       checkBox,
       liveStatus,
+      topbar,
       doc,
       panelSlot,
       quizzesBox,
-    ),
+    ), screen),
   };
 }

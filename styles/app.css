@@ -1303,3 +1303,127 @@ ol.activity { list-style: none; }
 }
 .notes-undo[hidden] { display: none; }
 .notes-undo__button { min-height: 44px; }
+
+/* ---- D-046: the bars by the orientation; the movable divider ---- */
+/* Portrait (taller than wide, ≥ 600 px): both bars horizontal in one sticky row
+   under the title (tools left, notes right; a second row only if they do not fit). */
+.reader__topbar { display: none; }
+.screen--reader[data-layout="portrait"] .reader__topbar {
+  position: sticky;
+  top: calc(var(--bar-h) + env(safe-area-inset-top));
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0 calc(-1 * max(24px, env(safe-area-inset-right)) + 4px) 8px calc(-1 * max(24px, env(safe-area-inset-left)) + 4px);
+  padding: 4px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+.reader__top-tools, .reader__top-notes { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.reader__top-notes { margin-left: auto; }
+.screen--reader[data-layout="portrait"] .reader__tools { display: none; }
+.screen--reader[data-layout="portrait"] .reader__doc,
+.screen--reader[data-layout="portrait"] .reader__doc[data-bar="hidden"] { gap: 0; margin-left: calc(-1 * max(24px, env(safe-area-inset-left)) + 8px); }
+.mark-tools[data-orientation="horizontal"] {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 4px;
+  max-height: none;
+  overflow: visible;
+  border-radius: 12px;
+}
+.mark-tools[data-orientation="horizontal"] .mark-tools__group { flex-direction: row; gap: 2px; }
+.mark-tools[data-orientation="horizontal"] .mark-tools__group + .mark-tools__group,
+.mark-tools[data-orientation="horizontal"] .mark-tools__undo { border-top: 0; padding-top: 0; border-left: 1px solid var(--rule); padding-left: 4px; }
+.mark-tools[data-orientation="horizontal"] .mark-tools__button { width: 52px; min-height: 48px; }
+.mark-tools[data-orientation="horizontal"] .mark-tools__hide { min-height: 48px; border-bottom: 0; border-right: 1px solid var(--rule); border-radius: 10px 0 0 10px; }
+.mark-tools[data-orientation="horizontal"] .mark-tools__undo { min-height: 48px; border-radius: 0 10px 10px 0; }
+.mark-tools[data-orientation="horizontal"] .mark-tools__hint { left: 0; top: calc(100% + 8px); }
+/* T063-I6 in a row: the handle is not where "Скрий" was (the second tap of a double tap lands on nothing). */
+.mark-tools-handle[data-orientation="horizontal"] { width: 48px; height: 44px; margin-top: 0; margin-left: 72px; border: 1px solid var(--rule); border-radius: 12px; }
+.notes-strip__bar[data-orientation="horizontal"] {
+  position: static;
+  flex-direction: row;
+  max-height: none;
+  overflow: visible;
+  margin: 0;
+  padding: 2px 4px;
+}
+.notes-strip__bar[data-orientation="horizontal"] .notes-strip__button { min-height: 44px; }
+/* "Скрий" first (left); the handle "☰" comes at the right end of the row, far from it. */
+.notes-strip__bar[data-orientation="horizontal"] .notes-strip__hide { border-bottom: 0; border-right: 1px solid var(--rule); border-radius: 10px 0 0 10px; }
+.notes-strip__bar[hidden] { display: none; }
+.notes-strip-handle[data-orientation="horizontal"] { width: 44px; height: 44px; border: 1px solid var(--rule); border-radius: 12px; box-shadow: none; }
+/* A short row (an 800 px tablet in portrait): icons only; the names stay as aria-label / title. */
+@media (max-width: 999.98px) {
+  .reader__topbar .mark-tools__label, .reader__topbar .notes-strip__label { display: none; }
+  .mark-tools[data-orientation="horizontal"] .mark-tools__button { width: 44px; min-height: 44px; }
+  .mark-tools[data-orientation="horizontal"] .mark-tools__hide,
+  .mark-tools[data-orientation="horizontal"] .mark-tools__undo { min-height: 44px; }
+  .mark-tools[data-orientation="horizontal"] .mark-tools__swatch { width: 30px; height: 30px; }
+}
+/* The panel is open (tablet): the 📝 column and the bar go; "📝 Бележка" floats at the right edge. */
+.reader__notes[data-panel-open="true"] .notes-strip-handle-box { width: 0; }
+.reader__notes[data-panel-open="true"] .notes-strip-quick { top: 8px; }
+/* Portrait: the panel UNDER the lesson; the page gets as much room below it. */
+.screen--reader { padding-bottom: var(--notes-cover-bottom, 0px); }
+.notes-panel[data-layout="bottom"] {
+  top: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  border-left: 0;
+  border-top: 1px solid var(--rule);
+  box-shadow: 0 -2px 8px rgb(0 0 0 / 0.10);
+  padding-top: 22px;
+  padding-left: env(safe-area-inset-left);
+}
+.notes-panel[data-layout="side"] { padding-left: 22px; border-left: 0; }
+/* The divider: a grip of 24 px for a finger, a line and "⋮" / "⋯". */
+.notes-panel__divider {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.notes-panel[data-layout="side"] .notes-panel__divider { left: 0; top: 0; bottom: 0; width: 24px; cursor: col-resize; }
+.notes-panel[data-layout="bottom"] .notes-panel__divider { left: 0; right: 0; top: 0; height: 24px; cursor: row-resize; }
+.notes-panel[data-layout="full"] .notes-panel__divider { display: none; }
+.notes-panel__line { position: absolute; background: var(--rule); pointer-events: none; }
+.notes-panel[data-layout="side"] .notes-panel__line { left: 11px; top: 0; bottom: 0; width: 2px; }
+.notes-panel[data-layout="bottom"] .notes-panel__line { top: 11px; left: 0; right: 0; height: 2px; }
+.notes-panel__grip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ink-muted);
+  border-radius: 8px;
+  background: var(--paper-2);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.notes-panel[data-layout="side"] .notes-panel__grip { width: 20px; height: 56px; }
+.notes-panel[data-layout="bottom"] .notes-panel__grip { width: 64px; height: 20px; }
+.notes-panel__divider:hover .notes-panel__line,
+.notes-panel__divider[data-dragging="true"] .notes-panel__line { background: var(--accent); }
+.notes-panel__divider[data-dragging="true"] .notes-panel__grip { border-color: var(--accent); }
+.notes-panel__divider:focus { outline: none; }
+.notes-panel__divider:focus-visible .notes-panel__grip { outline: 3px solid var(--focus); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .notes-panel__line { background: CanvasText; }
+  .notes-panel__grip { border-color: ButtonText; }
+}

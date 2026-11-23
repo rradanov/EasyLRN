@@ -802,20 +802,29 @@ test.describe('T070-L the layout of 0.14.2', () => {
         // The noted line (do not scroll it: it must already be in view after the reflow).
         const frame = await lessonFrame(page);
         const rel = await frame.evaluate(() => { const r = document.getElementById('p2').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
-        const inView = l.frame.y + rel.top >= -1 && l.frame.y + rel.bottom <= hgt + 1;
-        out.push({ w, hgt, frame: Math.round(l.frame.width), panel: Math.round(l.panel.width), strip: Math.round(l.strip.width), inView });
+        // T-071 (D-046): portrait → the note UNDER the lesson (fixed at the bottom; the page has as much
+        // room below, so the lesson can be read to its end above it); landscape → a column at the right.
+        const portrait = hgt > w;
+        const seenBottom = portrait ? l.panel.y : hgt;
+        const inView = l.frame.y + rel.top >= -1 && l.frame.y + rel.bottom <= seenBottom + 1;
+        out.push({ w, hgt, frame: Math.round(l.frame.width), panel: Math.round(portrait ? l.panel.height : l.panel.width), inView });
         expect(await noSideScroll(page), `${w}: no sideways scroll`).toBe(true);
-        expect(overlap(l.panel, l.frame), `${w}: the note over the lesson`).toBeFalsy();
-        expect(overlap(l.strip, l.frame), `${w}: the strip over the lesson`).toBeFalsy();
-        expect(overlap(l.panel, l.strip), `${w}: the note over the strip`).toBeFalsy();
+        expect(l.strip, `${w}: the 📝 column hidden while the note is open (D-046)`).toBeNull();
+        if (portrait) {
+          const room = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('[data-screen="reader"]')).paddingBottom));
+          expect(room, `${w}: the page has room below the lesson for the note`).toBeGreaterThanOrEqual(l.panel.height - 1);
+          expect(l.panel.y + l.panel.height, `${w}: the note at the bottom`).toBeGreaterThanOrEqual(hgt - 1);
+        } else {
+          expect(overlap(l.panel, l.frame), `${w}: the note over the lesson`).toBeFalsy();
+        }
         expect(overlap(l.tools, l.frame), `${w}: the tools over the lesson`).toBeFalsy();
         expect(l.panel.x + l.panel.width, `${w}: the note on the screen`).toBeLessThanOrEqual(w + 1);
         expect(l.frame.width, `${w}: the lesson readable`).toBeGreaterThanOrEqual(280);
         expect(inView, `${w}: the noted line in view`).toBe(true);
-        // The list and a mark card: columns too.
-        await page.locator('[data-action="notes-list"]').click();
+        // The list and a mark card: in the same place.
+        await page.locator('[data-action="notes-back-to-list"]').click();
         const list = await layoutOf(page);
-        expect(overlap(list.panel, list.frame), `${w}: the list over the lesson`).toBeFalsy();
+        if (!portrait) expect(overlap(list.panel, list.frame), `${w}: the list over the lesson`).toBeFalsy();
         await page.keyboard.press('Escape');
         await expect(panel(page)).toBeHidden();
       }

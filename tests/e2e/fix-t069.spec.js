@@ -375,23 +375,33 @@ test.describe('T069-L the note next to the lesson, not over it', () => {
         await expect(panel(page)).toBeHidden();
         continue;
       }
-      await expect(panel(page)).toHaveAttribute('data-layout', 'side');
-      // Side by side: the lesson, then the strip, then the note column.
-      expect(open.frame.x + open.frame.width, `${w}: the lesson ends before the strip`).toBeLessThanOrEqual(open.strip.x + 1);
-      expect(open.strip.x + open.strip.width, `${w}: the strip ends before the note`).toBeLessThanOrEqual(open.panel.x + 1);
-      expect(open.panel.x + open.panel.width).toBeLessThanOrEqual(w + 1);
-      // 1920: the reader is centred (max 1200 px): the free space at the right takes most of the column.
-      if (w >= 1900) expect(open.frame.width, `${w}: the lesson keeps most of its width`).toBeGreaterThanOrEqual(closed.frame.width * 0.85);
-      else if (w >= 1200) expect(open.frame.width / w, `${w}: the lesson's share`).toBeGreaterThanOrEqual(0.58);
-      else expect(open.frame.width, `${w}: the lesson still readable`).toBeGreaterThanOrEqual(280);
-      // The text of the noted line is at the left of the note column (seen side by side).
+      // T-071 (D-046): while the panel is open the strip is hidden; portrait → the note UNDER the
+      // lesson, landscape → a column at the right edge.
+      const portrait = hgt > w;
+      await expect(panel(page)).toHaveAttribute('data-layout', portrait ? 'bottom' : 'side');
+      expect(open.strip, `${w}: the strip hidden while the panel is open`).toBeNull();
       const line = await textBox(page, 'оценява рисковете');
-      expect(line.x).toBeLessThan(open.panel.x);
-      // The list and the card of a mark are columns too.
-      await page.locator('[data-action="notes-list"]').click();
+      if (portrait) {
+        expect(open.panel.x).toBeLessThanOrEqual(1);
+        expect(open.panel.width).toBeGreaterThanOrEqual(w - 1);
+        expect(open.frame.width / w, `${w}: the lesson keeps the width`).toBeGreaterThanOrEqual(0.9);
+        expect(line.y, `${w}: the noted line above the note`).toBeLessThan(open.panel.y);
+      } else {
+        // Side by side: the lesson, then the note column.
+        expect(open.frame.x + open.frame.width, `${w}: the lesson ends before the note`).toBeLessThanOrEqual(open.panel.x + 1);
+        expect(open.panel.x + open.panel.width).toBeLessThanOrEqual(w + 1);
+        // 1920: the reader is centred (max 1200 px): the free space at the right takes most of the column.
+        if (w >= 1900) expect(open.frame.width, `${w}: the lesson keeps most of its width`).toBeGreaterThanOrEqual(closed.frame.width * 0.85);
+        else expect(open.frame.width / w, `${w}: the lesson's share`).toBeGreaterThanOrEqual(0.58);
+        // The text of the noted line is at the left of the note column (seen side by side).
+        expect(line.x).toBeLessThan(open.panel.x);
+      }
+      // The list and the card of a mark are in the same place.
+      await page.locator('[data-action="notes-back-to-list"]').click();
       await expect(panel(page)).toHaveAttribute('data-mode', 'list');
       const list = await layoutOf(page);
-      expect(list.frame.x + list.frame.width).toBeLessThanOrEqual(list.panel.x + 1);
+      if (portrait) expect(list.panel.x).toBeLessThanOrEqual(1);
+      else expect(list.frame.x + list.frame.width).toBeLessThanOrEqual(list.panel.x + 1);
       await page.keyboard.press('Escape');
       await expect(panel(page)).toBeHidden();
       const after = await layoutOf(page);
@@ -403,10 +413,15 @@ test.describe('T069-L the note next to the lesson, not over it', () => {
   test('T069-L2 the strip is smaller and still fits a finger: buttons ≥ 40 px high and ≥ 40 px wide, the 📝 ≥ 36 px, the strip ≤ 100 px; the note\'s buttons ≥ 40 px', async ({ page }) => {
     await openLesson(page);
     await writeNote(page, 'оценява рисковете', 'Размери');
+    const measure = () => page.locator('.notes-strip__bar button:not([hidden]), .notes-strip__mark, [data-field="notes-panel"] button:not([hidden])').evaluateAll((els) => els.filter((e) => e.getClientRects().length)
+      .map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.action || e.className, Math.round(r.width), Math.round(r.height)]; }));
+    const inPanel = await measure();
+    // T-071 (D-046): the strip is hidden while the panel is open: measured closed.
+    await page.keyboard.press('Escape');
+    await expect(panel(page)).toBeHidden();
     const s = await strip(page).boundingBox();
     expect(s.width).toBeLessThanOrEqual(100);
-    const sizes = await page.locator('.notes-strip__bar button:not([hidden]), .notes-strip__mark, [data-field="notes-panel"] button:not([hidden])').evaluateAll((els) => els.filter((e) => e.getClientRects().length)
-      .map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.action || e.className, Math.round(r.width), Math.round(r.height)]; }));
+    const sizes = [...inPanel, ...await measure()];
     info('T069-L2 sizes', sizes);
     for (const [name, bw, bh] of sizes) {
       const min = /notes-strip__mark/.test(name) ? 36 : 40;

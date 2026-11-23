@@ -201,7 +201,7 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
  *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape, viewInsets = null }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -279,7 +279,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   // --- Geometry and scrolling of the app window ---------------------------------
   const barHeight = () => document.querySelector('.app-bar')?.getBoundingClientRect().height ?? 0;
   const frameTop = () => (frame || element).getBoundingClientRect().top + window.scrollY;
-  const scrollToLessonY = (y) => window.scrollTo({ top: Math.max(0, frameTop() + y - barHeight() - 8) });
+  // D-046: what of the window the lesson is seen in (below the bars at the top, above a note panel at the bottom).
+  const insets = () => viewInsets?.() || { top: barHeight(), bottom: 0 };
+  const scrollToLessonY = (y) => window.scrollTo({ top: Math.max(0, frameTop() + y - insets().top - 8) });
   const scrollToLessonTop = () => window.scrollTo({ top: Math.max(0, frameTop() - barHeight()) });
 
   // --- Reading position (T010-D2) ------------------------------------------------
@@ -740,7 +742,12 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     /** Scroll the app window to a mark of this lesson. */
     scrollToAnnotation(id) {
       const place = layout.get(id) || (known.get(id)?.anchoredTop != null ? { top: known.get(id).anchoredTop } : null);
-      if (place) scrollToLessonY(Math.max(0, place.top - Math.round(window.innerHeight / 3)));
+      if (place) {
+        // A third down the part of the window where the lesson is seen.
+        const { top, bottom } = insets();
+        const seen = Math.max(80, window.innerHeight - top - bottom);
+        window.scrollTo({ top: Math.max(0, frameTop() + place.top - top - Math.round(seen / 3)) });
+      }
       return Boolean(place);
     },
     /** The selector of a mark at the place the bridge found it now (for "Да, тук е"), or null. */

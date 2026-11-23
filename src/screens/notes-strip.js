@@ -45,6 +45,25 @@
 //     "☷" shows only when some note has no 📝 (not found in the text).
 // - A tablet strip can be hidden ("» Скрий" → a handle "☰" at the right edge);
 //   the choice is kept (`notesStrip.hidden`).
+// - D-046 (the user, after 0.14.2 on the tablet; src/screens/reader-layout.js):
+//   - portrait (taller than wide, ≥ 600 px): the bar of the strip is
+//     HORIZONTAL at the top of the reader (`topSlot`, right of the tool bar;
+//     "Скрий" leaves a small "☰" there); the 📝 column stays next to the lesson;
+//     a note / the list / a mark card opens UNDER the lesson (fixed at the
+//     bottom of the window; the page gets as much room below, so the end of the
+//     lesson can still be read above it) and the place of the note is scrolled
+//     into the part of the lesson that is seen;
+//   - landscape: as before (the strip right of the lesson, the panel a column at
+//     the right edge);
+//   - a movable divider between the lesson and the panel (a 24 px grip, a
+//     line and "⋮" / "⋯"; a finger, the mouse, the arrow keys); the lesson keeps
+//     ≥ 45 % (of the width / of the height below the bars), the panel ≥ 200 px;
+//     the place is kept per orientation (`notesSplit`: { portrait, landscape }:
+//     a part of the window) and the right one is used after a rotation;
+//   - while the panel is open the 📝 column and the bar of the strip are hidden
+//     (the panel has ▲ / ▼, ✕, "← Всички бележки"); "📝 Бележка" for a new
+//     selection floats at the right edge then;
+//   - a phone (< 600 px): unchanged (only the 📝, the note over the whole window).
 // - Security: the lesson is untrusted. What it sends is checked in
 //   lesson-frame.js (known ids only, numbers only); a selection or a tap from
 //   the lesson can only SHOW a button or a note of the user — nothing is
@@ -59,10 +78,15 @@ import {
   lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH,
   keepPendingNote, dropPendingNote, takeEmptiedNote,
 } from '../notes.js';
+import { readerLayout } from './reader-layout.js';
 
-const NARROW_PX = 600; // below this: a phone (only the 📝 column; a note fills the window)
-const PANEL_MIN = 280; // the note column on a tablet: a quarter of the window within these
+const PANEL_MIN = 280; // the note column in landscape, at first: a quarter of the window within these
 const PANEL_MAX = 440;
+const PORTRAIT_SHARE = 0.4; // the panel under the lesson in portrait, at first: this part of the window's height
+const NOTE_MIN_PX = 200; // D-046: the divider keeps the panel at least this big …
+const LESSON_MIN_SHARE = 0.45; // … and the lesson at least this part (of the width / of the height below the bars)
+const DIVIDER_STEP_PX = 24; // an arrow key moves the divider this far
+const SPLIT_SAVE_MS = 400;
 const SAVE_MS = 1000;
 const UNDO_MS = 8000;
 const SELECTION_GRACE_MS = 700; // the button stays this long after the selection went (a tap on it may clear it)
@@ -85,12 +109,18 @@ export const SELECTION_ACTIONS = Object.freeze([
   { id: 'expand', label: 'Развий ми го', icon: '✨', ready: false }, // T-025
 ]);
 
-const narrowScreen = () => (window.innerWidth || document.documentElement.clientWidth) < NARROW_PX;
 const short = (text, max = QUOTE_MAX) => {
   const t = String(text || '').replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 const quoted = (text, max) => `«${short(text, max)}»`;
+
+/** D-046: the stored places of the divider: a part of the window (0…1) per orientation, or null (the default). */
+export function splitChoice(settings) {
+  const s = settings?.notesSplit && typeof settings.notesSplit === 'object' ? settings.notesSplit : {};
+  const part = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1 ? v : null);
+  return { portrait: part(s.portrait), landscape: part(s.landscape) };
+}
 
 /** The stored choice: true / false when the user chose, null when not yet (→ by the width). */
 export function stripChoice(settings) {
@@ -102,11 +132,13 @@ export function stripChoice(settings) {
  * @param {{ getFrame: () => object|null, getTool: () => string|null, course: object, lesson: object,
  *   settings: object, announce: (text: string) => void, onLayout?: (hidden: boolean) => void }} opts
  */
-export function createNotesStrip({ getFrame, getTool = () => null, course, lesson, settings, announce, onLayout }) {
+export function createNotesStrip({ getFrame, getTool = () => null, course, lesson, settings, announce, onLayout, topSlot = null, viewInsets = null }) {
   let hidden = stripChoice(settings).hidden ?? false; // a tablet strip hidden by the user
-  // T018-D14 / T-069: a phone follows the width of the window live (also when it
-  // becomes narrow after the reader opened: rotation, split screen on Android).
-  let phone = narrowScreen();
+  // T018-D14 / T-069 / D-046: the layout follows the window live (rotation,
+  // split screen on Android): 'phone' | 'portrait' | 'landscape'.
+  let layout = readerLayout();
+  let phone = layout === 'phone';
+  const split = splitChoice(settings); // D-046: the divider per orientation
   let destroyed = false;
   let notes = []; // [{ note, annotation }] of this lesson (live ones)
   let places = new Map(); // annotation id → { top, bottom } (frame coordinates, lrn:layout)
@@ -230,7 +262,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const list = stripButtons();
     const i = list.indexOf(document.activeElement);
     if (i < 0) return;
-    const next = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: list.length - 1 }[event.key];
+    const next = { ArrowDown: i + 1, ArrowRight: i + 1, ArrowUp: i - 1, ArrowLeft: i - 1, Home: 0, End: list.length - 1 }[event.key];
     if (next === undefined) return;
     event.preventDefault();
     const b = list[(next + list.length) % list.length];
@@ -251,25 +283,47 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (focus) (hidden ? handle : (bar.querySelector('button[tabindex="0"]:not([hidden])') || hideButton)).focus();
     if (save) announce(hidden ? 'Бележките са скрити.' : 'Бележките са показани.');
   }
-  /** What is shown, from `phone` (the width) and `hidden` (the user's choice on a tablet). */
+  /** D-046: the bar and the handle at the top (portrait) or in the strip. */
+  function placeBar() {
+    const top = layout === 'portrait' && topSlot;
+    const had = bar.contains(document.activeElement) || document.activeElement === handle;
+    if (top) {
+      if (handle.parentNode !== topSlot || bar.parentNode !== topSlot) topSlot.append(handle, bar);
+    } else {
+      if (bar.parentNode !== element) element.prepend(bar);
+      if (handle.parentNode !== handleBox) handleBox.prepend(handle);
+    }
+    bar.setAttribute('aria-orientation', top ? 'horizontal' : 'vertical');
+    bar.dataset.orientation = top ? 'horizontal' : 'vertical';
+    handle.dataset.orientation = bar.dataset.orientation;
+    if (had && !document.activeElement?.isConnected) homeButton()?.focus({ preventScroll: true });
+  }
+  /** What is shown, from the layout, `hidden` (the user's choice on a tablet) and the panel (D-046). */
   function applyLayout() {
     const off = hidden && !phone; // the tablet strip hidden behind "☰"
-    element.hidden = off;
-    handleBox.hidden = !(off || phone); // a phone: the box carries only the floating "📝 Бележка" / "☷"
-    handle.hidden = phone;
+    const panelOpen = Boolean(panelMode) && !phone; // D-046: the panel has its own ▲ / ▼ / ✕
+    placeBar();
+    element.hidden = off || panelOpen;
+    bar.hidden = off || panelOpen || phone;
+    handleBox.hidden = !(off || phone || panelOpen); // also the floating "📝 Бележка" / "☷"
+    handle.hidden = phone || !off || panelOpen;
     hideButton.setAttribute('aria-expanded', String(!off));
     handle.setAttribute('aria-expanded', String(!off));
     slot.dataset.hidden = String(off);
     slot.dataset.phone = String(phone);
+    slot.dataset.layout = layout;
+    slot.dataset.panelOpen = String(panelOpen);
+    if (topSlot) topSlot.dataset.panelOpen = String(panelOpen);
     showSelectionButtons();
     refreshPhoneList();
-    if (!off) queuePlace();
-    if (panelMode) fitViewport();
-    onLayout?.(off);
+    if (!off && !panelOpen) queuePlace();
+    fitViewport();
+    onLayout?.(off || panelOpen);
   }
   /** Where the focus goes back when nothing else is there. */
   const homeButton = () => {
     if (phone) return marks.querySelector('.notes-strip__mark') || (phoneList.hidden ? document.getElementById('main') : phoneList);
+    if (panelMode) return panelTitle; // D-046: the strip is hidden while the panel is open
     return hidden ? handle : listButton;
   };
 
@@ -311,6 +365,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (destroyed) return;
     const frame = getFrame();
     const f = frame?.frame;
+    // D-046: behind the open panel the 📝 are still made (hidden; placed again when it closes).
     if ((hidden && !phone) || !f || frame.innerScroll || !f.isConnected) { mount(marks); refreshPhoneList(); return; }
     const fr = f.getBoundingClientRect();
     const offset = fr.top - marks.getBoundingClientRect().top;
@@ -343,10 +398,16 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   const panelTitle = h('h2', { class: 'notes-panel__title', id: 'notes-panel-title', tabindex: '-1' });
   const closeButton = press(button({ class: 'notes-panel__close', 'data-action': 'close-notes-panel', 'aria-label': 'Затвори', title: 'Затвори (Esc)' }, '✕'), () => closePanel({ focus: true }));
   const panelBody = h('div', { class: 'notes-panel__body' });
+  // D-046: the divider between the lesson and the panel (a finger, the mouse, the arrow keys).
+  const grip = h('span', { class: 'notes-panel__grip', 'aria-hidden': 'true', text: '⋮' });
+  const divider = h('div', {
+    class: 'notes-panel__divider', 'data-field': 'notes-divider', role: 'separator', tabindex: '0',
+    'aria-label': 'Граница между урока и бележката', 'aria-controls': 'notes-panel', title: 'Плъзни, за да смениш размера (или стрелките)',
+  }, h('span', { class: 'notes-panel__line', 'aria-hidden': 'true' }), grip);
   const panel = h('section', {
     class: 'notes-panel', id: 'notes-panel', 'data-field': 'notes-panel', role: 'dialog', 'aria-modal': 'false',
     'aria-labelledby': 'notes-panel-title', hidden: true,
-  }, h('header', { class: 'notes-panel__head' }, panelTitle,
+  }, divider, h('header', { class: 'notes-panel__head' }, panelTitle,
     press(button({ class: 'notes-panel__step', 'data-action': 'panel-prev-note', 'aria-label': 'Предишна бележка', title: 'Предишна бележка' }, '▲'), () => step(-1)),
     press(button({ class: 'notes-panel__step', 'data-action': 'panel-next-note', 'aria-label': 'Следваща бележка', title: 'Следваща бележка' }, '▼'), () => step(1)),
     closeButton), panelBody);
@@ -363,45 +424,181 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     panel.dataset.mode = mode || 'none';
     listButton.setAttribute('aria-expanded', String(mode === 'list'));
     slot.dataset.panel = mode || 'none';
-    fitViewport();
+    applyLayout(); // D-046: the strip goes while the panel is open, comes back after
   };
-  // Where the panel goes (T-069): on a phone over the whole window; on a tablet
-  // a column of its own at the right edge, and the strip keeps that much free
-  // (its margin): the lesson becomes narrower and nothing of it is covered.
+  // Where the panel goes (T-069, D-046): on a phone over the whole window; in
+  // landscape a column of its own at the right edge, and the strip keeps that
+  // much free (its margin): the lesson becomes narrower and nothing of it is
+  // covered; in portrait under the lesson, at the bottom of the window, and the
+  // page gets as much room below (--notes-cover-bottom) so the lesson can be
+  // read to its end above the panel.
   let keepPlace = null; // { id, until }: the place of the opened note is brought back into view after the lesson reflows
-  const panelWidth = () => {
-    const vw = document.documentElement.clientWidth || window.innerWidth;
-    return Math.round(Math.max(PANEL_MIN, Math.min(PANEL_MAX, vw * 0.25)));
+  const winWidth = () => document.documentElement.clientWidth || window.innerWidth;
+  const keyboardCover = () => {
+    const vv = window.visualViewport;
+    return vv ? Math.max(0, window.innerHeight - (vv.height + vv.offsetTop)) : 0;
+  };
+  const insets = () => viewInsets?.() || {
+    top: document.querySelector('.app-bar')?.getBoundingClientRect().bottom ?? 0,
+    bottom: parseFloat(document.documentElement.style.getPropertyValue('--notes-cover-bottom')) || 0,
+  };
+  /** The limits of the panel now: [min, max] px (the lesson keeps its share, the panel 200 px). */
+  const panelBounds = () => {
+    if (layout === 'portrait') {
+      const avail = window.innerHeight - keyboardCover() - insets().top;
+      return [NOTE_MIN_PX, Math.max(NOTE_MIN_PX, Math.floor(avail * (1 - LESSON_MIN_SHARE)))];
+    }
+    const vw = winWidth();
+    const left = Math.max(0, getFrame()?.element?.getBoundingClientRect().left ?? 0);
+    return [NOTE_MIN_PX, Math.max(NOTE_MIN_PX, Math.floor(vw - left - vw * LESSON_MIN_SHARE))];
+  };
+  /** The size of the panel (px): the user's place of the divider, else the default; within the limits. */
+  const panelSize = () => {
+    const [min, max] = panelBounds();
+    let want;
+    if (layout === 'portrait') want = (split.portrait ?? PORTRAIT_SHARE) * window.innerHeight;
+    else if (split.landscape !== null) want = split.landscape * winWidth();
+    else want = Math.max(PANEL_MIN, Math.min(PANEL_MAX, winWidth() * 0.25));
+    return Math.round(Math.max(min, Math.min(max, want)));
+  };
+  const setCover = (px) => {
+    const v = px > 0 ? `${Math.round(px)}px` : '';
+    const root = document.documentElement.style;
+    if (root.getPropertyValue('--notes-cover-bottom') !== v) {
+      if (v) root.setProperty('--notes-cover-bottom', v); else root.removeProperty('--notes-cover-bottom');
+    }
   };
   const fitViewport = () => {
-    if (panel.hidden) {
+    if (panel.hidden || destroyed) {
       panel.style.removeProperty('--notes-vv-bottom');
+      setCover(0);
       if (slot.style.marginRight) { slot.style.marginRight = ''; queuePlace(); }
       return;
     }
-    const full = phone;
-    panel.dataset.layout = full ? 'full' : 'side';
+    const where = phone ? 'full' : layout === 'portrait' ? 'bottom' : 'side';
+    panel.dataset.layout = where;
     panel.style.left = '';
     panel.style.right = '';
     panel.style.width = '';
-    if (!full) {
-      const w = panelWidth();
+    panel.style.height = '';
+    const covered = keyboardCover();
+    panel.style.setProperty('--notes-vv-bottom', `${Math.round(covered)}px`);
+    const size = where === 'full' ? 0 : panelSize();
+    if (where === 'side') {
+      setCover(0);
       panel.style.right = '0px';
-      panel.style.width = `${w}px`;
+      panel.style.width = `${size}px`;
       // Only what the free space right of the reader (a wide window: the content is centred) does not give.
-      const vw = document.documentElement.clientWidth || window.innerWidth;
+      const vw = winWidth();
       const now = parseFloat(slot.style.marginRight) || 0;
       const free = vw - (slot.getBoundingClientRect().right + now);
-      const margin = `${Math.max(0, Math.ceil(w - free))}px`;
+      const margin = `${Math.max(0, Math.ceil(size - free))}px`;
       if (slot.style.marginRight !== margin) { slot.style.marginRight = margin; queuePlace(); }
-    } else if (slot.style.marginRight) {
-      slot.style.marginRight = '';
+    } else {
+      if (slot.style.marginRight) { slot.style.marginRight = ''; queuePlace(); }
+      if (where === 'bottom') {
+        panel.style.height = `${size}px`;
+        setCover(size + covered);
+      } else {
+        setCover(0);
+      }
     }
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const covered = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
-    panel.style.setProperty('--notes-vv-bottom', `${Math.round(covered)}px`);
+    // The divider: what it says to a screen reader, its look.
+    if (where !== 'full') {
+      const [min, max] = panelBounds();
+      const whole = where === 'side' ? winWidth() : window.innerHeight;
+      divider.setAttribute('aria-orientation', where === 'side' ? 'vertical' : 'horizontal');
+      divider.setAttribute('aria-valuemin', String(Math.round((min / whole) * 100)));
+      divider.setAttribute('aria-valuemax', String(Math.round((max / whole) * 100)));
+      divider.setAttribute('aria-valuenow', String(Math.round((size / whole) * 100)));
+      divider.setAttribute('aria-valuetext', `Бележката: ${Math.round((size / whole) * 100)} % от ${where === 'side' ? 'ширината' : 'височината'}`);
+      grip.textContent = where === 'side' ? '⋮' : '⋯';
+    }
   };
+
+  // --- D-046: the divider ------------------------------------------------------------
+  let splitTimer = 0;
+  const saveSplit = () => {
+    clearTimeout(splitTimer);
+    splitTimer = setTimeout(() => {
+      saveSettings({ notesSplit: { portrait: split.portrait, landscape: split.landscape } })
+        .catch((err) => console.warn('Cannot save the divider:', err?.name || err));
+    }, SPLIT_SAVE_MS);
+  };
+  /** The panel is `px` big now (within the limits); kept for this orientation. */
+  function setPanelSize(px, { save = true } = {}) {
+    if (phone || panel.hidden) return;
+    const [min, max] = panelBounds();
+    const size = Math.max(min, Math.min(max, Math.round(px)));
+    const portrait = layout === 'portrait';
+    split[portrait ? 'portrait' : 'landscape'] = size / (portrait ? window.innerHeight : winWidth());
+    fitViewport();
+    if (save) saveSplit();
+  }
+  let drag = null; // { id, frame } while the divider is dragged
+  divider.addEventListener('pointerdown', (e) => {
+    if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0) || phone) return;
+    e.preventDefault();
+    // Where the finger holds the grip: the edge of the panel keeps that distance (no jump).
+    const r = panel.getBoundingClientRect();
+    drag = { id: e.pointerId, frame: 0, x: e.clientX, y: e.clientY, dx: r.left - e.clientX, dy: r.top - e.clientY };
+    try { divider.setPointerCapture(e.pointerId); } catch { /* gone */ }
+    divider.dataset.dragging = 'true';
+  });
+  const dragSize = () => (layout === 'portrait'
+    ? window.innerHeight - keyboardCover() - (drag.y + drag.dy)
+    : winWidth() - (drag.x + drag.dx));
+  divider.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    if (drag.frame) return;
+    drag.frame = requestAnimationFrame(() => {
+      if (!drag) return;
+      drag.frame = 0;
+      setPanelSize(dragSize(), { save: false });
+    });
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    cancelAnimationFrame(drag.frame);
+    setPanelSize(dragSize());
+    drag = null;
+    delete divider.dataset.dragging;
+    keepInView();
+  };
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+  divider.addEventListener('lostpointercapture', endDrag);
+  divider.addEventListener('keydown', (e) => {
+    const portrait = layout === 'portrait';
+    const now = portrait ? panel.getBoundingClientRect().height : panel.getBoundingClientRect().width;
+    const [min, max] = panelBounds();
+    // The arrow points where the divider goes: towards the lesson = a bigger panel.
+    const grow = portrait ? { ArrowUp: 1, ArrowDown: -1 } : { ArrowLeft: 1, ArrowRight: -1 };
+    let next = null;
+    if (e.key in grow) next = now + grow[e.key] * DIVIDER_STEP_PX;
+    else if (e.key === 'Home') next = min;
+    else if (e.key === 'End') next = max;
+    if (next === null) return;
+    e.preventDefault();
+    setPanelSize(next);
+    keepInView();
+  });
+  /** The place of the open note stays where it is seen (after the divider moved / the layout changed). */
+  function keepInView() {
+    const id = editing?.annotationId;
+    if (!id || panelMode !== 'note') return;
+    const frame = getFrame();
+    const f = frame?.frame;
+    const place = frame?.layout?.get(id);
+    if (!f || !place) return;
+    const top = f.getBoundingClientRect().top + place.top;
+    const bottom = f.getBoundingClientRect().top + (Number.isFinite(place.bottom) ? place.bottom : place.top + 20);
+    const { top: seenTop, bottom: coverBottom } = insets();
+    const seenBottom = window.innerHeight - coverBottom;
+    if (top < seenTop + 4 || bottom > seenBottom - 4) frame.scrollToAnnotation(id);
+  }
 
   function closePanel({ focus = false } = {}) {
     if (!panelMode) return Promise.resolve();
@@ -520,6 +717,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       h('div', { class: 'notes-panel__actions' }, doneButton, showButton, confirmButton, deleteButton));
     if (focusText) textarea.focus({ preventScroll: true });
     else panelTitle.focus({ preventScroll: true });
+    // D-046: in portrait the panel covers the bottom of the window: the place goes where it is seen.
+    requestAnimationFrame(() => { if (editing === ed && !destroyed) keepInView(); });
   }
 
   /** Save the text of the note now (the timer, or the note closes). */
@@ -686,7 +885,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   // --- A new note from the selection ------------------------------------------------
   function showSelectionButtons() {
     const on = Boolean(selection) && !getTool();
-    const off = hidden && !phone;
+    const off = (hidden && !phone) || (Boolean(panelMode) && !phone); // D-046: no bar while the panel is open
     noteButton.hidden = !on || off || phone;
     quickNote.hidden = !on || !(off || phone);
     handle.dataset.attention = String(on && off);
@@ -783,7 +982,15 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   }
 
   const onResize = () => {
-    if (!destroyed && narrowScreen() !== phone) { phone = narrowScreen(); applyLayout(); }
+    if (destroyed) return;
+    const next = readerLayout();
+    if (next !== layout) {
+      layout = next;
+      phone = layout === 'phone';
+      applyLayout();
+      // The note's place where it is seen in the new layout (after the lesson reflowed).
+      if (panelMode === 'note' && editing?.annotationId) keepPlace = { id: editing.annotationId, until: performance.now() + 1500 };
+    }
     queuePlace();
     if (panelMode) fitViewport();
   };
@@ -932,6 +1139,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       window.removeEventListener('pagehide', keepNow);
       window.removeEventListener('beforeunload', keepNow);
       unguardFrame();
+      clearTimeout(splitTimer);
+      setCover(0);
       window.visualViewport?.removeEventListener('resize', fitViewport);
       observer?.disconnect();
     },

@@ -239,9 +239,10 @@ test.describe('T018-S security of the notes (the lesson is untrusted)', () => {
     await page.locator('[data-action="add-note-to-mark"]').click();
     await noteText(page).pressSequentially('ТАЙНА-2 на маркировка');
     await expect(noteStatus(page)).toHaveText('Записано.', { timeout: 6000 });
-    await page.locator('[data-action="notes-list"]').click();
-    await page.locator('[data-action="next-note"]').click();
-    await page.locator('[data-action="prev-note"]').click();
+    // T-071 (D-046): while the panel is open the strip is hidden — the panel's "← Всички бележки" and ▲ / ▼.
+    await page.locator('[data-action="notes-back-to-list"]').click();
+    await page.locator('[data-action="panel-next-note"]').click();
+    await page.locator('[data-action="panel-prev-note"]').click();
     await page.keyboard.press('Escape');
     await noteMarks(page).first().click();
     await noteText(page).press('End');
@@ -275,7 +276,7 @@ test.describe('T018-S security of the notes (the lesson is untrusted)', () => {
       await page.locator('[data-action="confirm-note-place"]').click();
       await expect(marksStatus(page)).toHaveText('Мястото е потвърдено.');
     }
-    await page.locator('[data-action="next-note"]').click();
+    await page.locator('[data-action="panel-next-note"]').click(); // T-071 (D-046): the panel is open
     await page.waitForTimeout(600);
     await collect();
     const all = seen.join('\n');
@@ -829,23 +830,38 @@ test.describe('T018-L layout, keyboard, aria', () => {
     const bar = await page.locator('.notes-strip__bar').boundingBox();
     const marksCol = await page.locator('[data-field="notes-marks"]').boundingBox();
     info('T018-L1 strip', { s, bar, marksCol });
-    expect(s.width).toBeGreaterThanOrEqual(90);
-    expect(s.width).toBeLessThanOrEqual(130);
+    // T-071 (D-046): in portrait the bar is in the row at the top: the strip is the 📝 column only.
+    const vp0 = page.viewportSize();
+    if (vp0.height > vp0.width) {
+      expect(s.width).toBeLessThanOrEqual(48);
+      expect(bar.y + bar.height).toBeLessThanOrEqual(f.y + 1);
+      await expect(page.locator('.notes-strip__bar')).toHaveAttribute('aria-orientation', 'horizontal');
+    } else {
+      expect(s.width).toBeGreaterThanOrEqual(90);
+      expect(s.width).toBeLessThanOrEqual(130);
+    }
     expect(s.x).toBeGreaterThanOrEqual(f.x + f.width - 1);
     await expect(page.locator('.notes-strip__bar')).toHaveAttribute('role', 'toolbar');
     await writeNote(page, 'оценява рисковете', 'Къде е панелът?');
     const p = await panel(page).boundingBox();
     await expect(panel(page)).toHaveAttribute('role', 'dialog');
     await expect(panel(page)).toHaveAttribute('aria-labelledby', 'notes-panel-title');
-    // T-069 (the user, an addition to D-045): on a tablet the note is always a column of its own right of
-    // the strip; the lesson narrows (measured again with the note open) and nothing of it is covered.
-    const s2 = await strip(page).boundingBox();
+    // T-069 (the user, an addition to D-045): on a tablet the note never covers the lesson.
+    // T-071 (D-046): while the panel is open the strip (📝 column and bar) is hidden; in landscape the
+    // panel is a column at the right edge, in portrait (1200×1920) it is UNDER the lesson.
+    await expect(strip(page)).toBeHidden();
+    await expect(page.locator('.notes-strip__bar')).toBeHidden();
     const f2 = await page.locator('iframe.lesson-frame').boundingBox();
-    expect(p.x).toBeGreaterThanOrEqual(s2.x + s2.width - 1); // right of the strip
-    expect(p.x).toBeGreaterThanOrEqual(f2.x + f2.width - 1); // nothing of the lesson covered
-    const listBtn = await page.locator('[data-action="notes-list"]').boundingBox();
-    expect(listBtn.x + listBtn.width).toBeLessThanOrEqual(p.x + 1); // the strip's buttons are not under the panel
-    await page.locator('[data-action="notes-list"]').click();
+    const vp = page.viewportSize();
+    if (vp.height > vp.width) {
+      expect(p.x).toBeLessThanOrEqual(1);
+      expect(p.y + p.height).toBeGreaterThanOrEqual(vp.height - 1);
+      const t = await textBox(page, 'оценява рисковете');
+      expect(t.bottom).toBeLessThanOrEqual(p.y + 1); // the noted line is above the panel
+    } else {
+      expect(p.x).toBeGreaterThanOrEqual(f2.x + f2.width - 1); // nothing of the lesson covered
+    }
+    await page.locator('[data-action="notes-back-to-list"]').click();
     await expect(page.locator('[data-action="notes-list"]')).toHaveAttribute('aria-expanded', 'true');
     void f;
     expect(p.y + p.height).toBeLessThanOrEqual(page.viewportSize().height + 1);
@@ -856,6 +872,9 @@ test.describe('T018-L layout, keyboard, aria', () => {
     await db(page, (db) => db.saveSettings({ theme: 'dark' }));
     await openLesson(page);
     await writeNote(page, 'Уязвимостите се докладват', 'Следва реда');
+    // T-071 (D-046): the 📝 are hidden while the panel is open: checked with it closed.
+    await page.keyboard.press('Escape');
+    await expect(panel(page)).toBeHidden();
     const check = async (why) => {
       await expect.poll(async () => {
         const line = await textBox(page, 'Уязвимостите се докладват');
@@ -868,13 +887,17 @@ test.describe('T018-L layout, keyboard, aria', () => {
     await check('scrolled');
     await db(page, (db) => db.saveSettings({ fontScale: 1.6 }));
     await check('160 %');
+    await noteMarks(page).first().click();
+    await expect(panel(page)).toBeVisible();
     const v = page.viewportSize();
     await page.setViewportSize({ width: v.height, height: v.width });
-    await check('rotated, panel open');
+    await page.waitForTimeout(300);
     await expect(panel(page)).toBeVisible();
     const pb = await panel(page).boundingBox();
     expect(pb.x + pb.width).toBeLessThanOrEqual(page.viewportSize().width + 1);
     expect(await noHorizontalScroll(page)).toBe(true);
+    await page.keyboard.press('Escape');
+    await check('rotated with the panel open, then closed');
     const dotted = await (await lessonFrame(page)).evaluate(() => {
       for (const s of document.styleSheets) {
         try { for (const r of s.cssRules) if (r.selectorText && r.selectorText.includes('lrn-note')) return r.cssText; } catch { /* */ }

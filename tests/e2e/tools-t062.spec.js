@@ -206,12 +206,22 @@ async function checkHandle(page) {
   const fb = await frameBox(page);
   expect(hb.width).toBeGreaterThanOrEqual(44);
   expect(hb.height).toBeGreaterThanOrEqual(44);
-  // At the left edge of the reader (the screen itself on a phone / in portrait; the
-  // centred column on a wide landscape screen, where the bar was).
-  const edge = await page.locator('[data-screen="reader"]').evaluate((el) => el.getBoundingClientRect().left);
-  expect(hb.x).toBeLessThanOrEqual(edge + 1);
-  if (page.viewportSize().width <= 1200) expect(hb.x).toBeLessThanOrEqual(1);
-  expect(hb.x + hb.width).toBeLessThanOrEqual(fb.x + 0.5);
+  const vp = page.viewportSize();
+  if (vp.height > vp.width && vp.width >= 600) {
+    // T-071 (D-046): portrait — the handle is in the row of the bars at the top, above the lesson,
+    // away from where "Скрий" was (T063-I6: a double tap's second tap lands on nothing).
+    const row = await page.locator('[data-field="reader-topbar"]').boundingBox();
+    expect(hb.y).toBeGreaterThanOrEqual(row.y - 1);
+    expect(hb.y + hb.height).toBeLessThanOrEqual(row.y + row.height + 1);
+    expect(hb.x).toBeGreaterThanOrEqual(64);
+  } else {
+    // At the left edge of the reader (the screen itself on a phone; the
+    // centred column on a wide landscape screen, where the bar was).
+    const edge = await page.locator('[data-screen="reader"]').evaluate((el) => el.getBoundingClientRect().left);
+    expect(hb.x).toBeLessThanOrEqual(edge + 1);
+    if (vp.width <= 1200) expect(hb.x).toBeLessThanOrEqual(1);
+    expect(hb.x + hb.width).toBeLessThanOrEqual(fb.x + 0.5);
+  }
   expect(hb.y).toBeGreaterThanOrEqual(0);
   expect(hb.y + hb.height).toBeLessThanOrEqual(page.viewportSize().height);
   await expect(handle(page)).toHaveAttribute('aria-label', 'Покажи инструментите за маркиране');
@@ -305,9 +315,15 @@ test.describe('T-062 tablet (1920×1200 / 1200×1920)', () => {
     await expectHidden(page);
     await expect(status(page)).toHaveText('Инструментите са скрити.');
     const { fb, hb: hh } = await checkHandle(page);
-    expect(hh.x).toBeLessThanOrEqual(barX + 1);
-    expect(fb.x).toBeLessThan(before.x - 20);
-    expect(fb.width).toBeGreaterThan(before.width + 20);
+    const vp = page.viewportSize();
+    if (!(vp.height > vp.width && vp.width >= 600)) {
+      expect(hh.x).toBeLessThanOrEqual(barX + 1);
+      expect(fb.x).toBeLessThan(before.x - 20);
+      expect(fb.width).toBeGreaterThan(before.width + 20);
+    } else {
+      // T-071 (D-046): portrait — the bar is a row at the top: the lesson keeps its width.
+      expect(Math.abs(fb.width - before.width)).toBeLessThan(2);
+    }
     expect(await stored(page)).toMatchObject({ hidden: true });
     // The handle stays on the screen while the lesson scrolls (sticky).
     await page.evaluate(() => window.scrollTo(0, 1500));

@@ -322,7 +322,10 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     const pressed = () => page.locator('[data-field="mark-tools"] button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-pressed')));
     const before = await pressed();
     const t = await touchApi(page);
-    await t.drag([p.x1, p.y1], [bar.x + bar.width / 2, p.y1], { steps: 20 });
+    // T-071 (D-046): in portrait the bar is a row at the top: out of the frame at the left edge of the window instead.
+    const vp = page.viewportSize();
+    const outX = vp.height > vp.width && vp.width >= 600 ? 2 : bar.x + bar.width / 2;
+    await t.drag([p.x1, p.y1], [outX, p.y1], { steps: 20 });
     expect(await lastExact(page, 1)).toBe('Производителят оценява рисковете');
     expect(await pressed()).toEqual(before);
     expect((await live(page))[0].color).toBe('yellow');
@@ -415,7 +418,13 @@ test.describe('T-016 functions of the tools (D-042)', () => {
       for (const [name, bw, bh] of sizes) { expect(bw, `${w}: ${name}`).toBeGreaterThanOrEqual(44); expect(bh, `${w}: ${name}`).toBeGreaterThanOrEqual(44); }
       const barBox = await bar.boundingBox();
       const frameBox = await page.locator('iframe.lesson-frame').boundingBox();
-      expect(barBox.x + barBox.width, `${w}: the bar left of the lesson`).toBeLessThanOrEqual(frameBox.x + 1);
+      // T-071 (D-046): portrait (≥ 600 px wide) → the bar is a row at the top, above the lesson (measured at the top of the page).
+      if (hgt > w && w >= 600) {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        const b = await bar.boundingBox();
+        const f = await page.locator('iframe.lesson-frame').boundingBox();
+        expect(b.y + b.height, `${w}: the bar above the lesson`).toBeLessThanOrEqual(f.y + 1);
+      } else expect(barBox.x + barBox.width, `${w}: the bar left of the lesson`).toBeLessThanOrEqual(frameBox.x + 1);
       expect(barBox.x, `${w}: on the screen`).toBeGreaterThanOrEqual(0);
       // T-018 / T-069: the notes strip (≈ 117 px, right of the lesson) follows the width while no choice is stored
       // (T018-D14 fixed in 0.14.1): a window narrowed after the reader opened hides it.
@@ -697,7 +706,10 @@ test.describe('T-016 attacks on the tools (the gesture is the app\'s, the bridge
     const bar = page.locator('[data-field="mark-tools"]');
     const barBox = await bar.boundingBox();
     const frameBox = await page.locator('iframe.lesson-frame').boundingBox();
-    expect(barBox.x + barBox.width).toBeLessThanOrEqual(frameBox.x + 1);
+    // T-071 (D-046): portrait → the bar is a row above the lesson.
+    const vp = page.viewportSize();
+    if (vp.height > vp.width && vp.width >= 600) expect(barBox.y + barBox.height).toBeLessThanOrEqual(frameBox.y + 1);
+    else expect(barBox.x + barBox.width).toBeLessThanOrEqual(frameBox.x + 1);
     const hits = await page.evaluate(() => [...document.querySelectorAll('[data-field="mark-tools"] button')].map((b) => {
       const r = b.getBoundingClientRect();
       const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);

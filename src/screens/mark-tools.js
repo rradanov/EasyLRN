@@ -37,10 +37,17 @@
 //   (long press: the system selection, for T-017/T-023/T-025). A selection
 //   that exists when the marker / pencil is pressed is marked at once (the
 //   keyboard / mouse way of marking).
+// - D-046: in portrait (taller than wide, ≥ 600 px) the bar is HORIZONTAL at the
+//   top of the reader (slots.top, under the title; compact icons where the row
+//   is short, the names stay as aria-label / title); in landscape it is the
+//   vertical bar left of the lesson (slots.side). It follows the rotation.
+//   The layer over the lesson takes the frame's place at every event, so the
+//   strokes follow the lesson wherever the layout puts it.
 import { h } from '../dom.js';
 import { saveSettings, getAnnotation, COLORS } from '../db.js';
 import { annotateSelection, deleteAnnotation, restoreAnnotation, setAnnotationColor, annotationDependents } from '../annotations.js';
 import { TOOL_COLORS, DEFAULT_COLOR_NAMES, colorChoices } from '../highlight.js';
+import { readerLayout } from './reader-layout.js';
 
 export const TOOLS = Object.freeze(['marker', 'pencil', 'eraser']);
 const TOOL_NAMES = Object.freeze({ marker: 'Маркер', pencil: 'Молив', eraser: 'Гума' });
@@ -117,7 +124,7 @@ export function toolChoice(settings) {
  *   announce: (text: string) => void, onChange?: (tool: string|null) => void,
  *   onLayout?: (hidden: boolean) => void, onErased?: () => void }} opts
  */
-export function createMarkTools({ getFrame, course, lesson, settings, announce, onChange, onLayout, onErased }) {
+export function createMarkTools({ getFrame, course, lesson, settings, announce, onChange, onLayout, onErased, slots = null }) {
   const choice = toolChoice(settings);
   let hidden = choice.hidden ?? narrowScreen();
   const names = new Map(colorChoices(settings).map((c) => [c.id, c]));
@@ -125,6 +132,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   const colorLabel = (id) => { const c = names.get(id); return c?.label ? `${c.name} (${c.label})` : colorName(id); };
   const undo = [];
   let destroyed = false;
+  let horizontal = false; // D-046: the bar is at the top (portrait)
 
   // --- The bar -----------------------------------------------------------------------
   // A finger / pen presses a button on pointerup (Chrome drops the click of a
@@ -149,11 +157,12 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   const ghost = (e) => performance.now() - switchedAt < SWITCH_GUARD_MS
     && (switchedFrom === null || Math.hypot(e.clientX - switchedFrom.x, e.clientY - switchedFrom.y) <= SWITCH_NEAR_PX);
   function press(button, action, { guard = true } = {}) {
+    const guarded = typeof guard === 'function' ? guard : () => guard;
     let down = null;
     let tappedAt = -Infinity;
     button.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' || !e.isPrimary) return;
-      down = guard && ghost(e) ? null : e.pointerId;
+      down = guarded() && ghost(e) ? null : e.pointerId;
       if (down === null) tappedAt = performance.now(); // its click is the same ghost tap
     });
     button.addEventListener('pointercancel', () => { down = null; });
@@ -169,7 +178,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       if (e.detail !== 0) { // a pointer click (the keyboard gives detail 0)
         const now = performance.now();
         if (now - tappedAt < CLICK_OF_TAP_MS) return; // the click of the same tap
-        if (guard && ghost(e)) return; // a double click landing on the new control
+        if (guarded() && ghost(e)) return; // a double click landing on the new control
       }
       action();
     });
@@ -755,7 +764,25 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
   };
   document.addEventListener('keydown', onKey);
 
+  // D-046: the place of the bar by the layout (top and horizontal in portrait, left and vertical else).
+  function place() {
+    const next = readerLayout() === 'portrait';
+    const home = next ? slots?.top : slots?.side;
+    if (home && (element.parentNode !== home || next !== horizontal)) {
+      const had = element.contains(document.activeElement) || document.activeElement === handle;
+      home.append(handle, element);
+      if (had) (element.hidden ? handle : (element.querySelector('button[tabindex="0"]:not(:disabled)') || tools.marker)).focus({ preventScroll: true });
+    }
+    horizontal = next;
+    element.setAttribute('aria-orientation', horizontal ? 'horizontal' : 'vertical');
+    element.dataset.orientation = horizontal ? 'horizontal' : 'vertical';
+    handle.dataset.orientation = element.dataset.orientation;
+  }
+  const onResize = () => { if (!destroyed) place(); };
+  window.addEventListener('resize', onResize);
+
   render();
+  place();
   // The first state, without animation and without saving (no choice made yet).
   element.hidden = hidden;
   handle.hidden = !hidden;
@@ -782,6 +809,7 @@ export function createMarkTools({ getFrame, course, lesson, settings, announce, 
       stopGesture();
       clearTimeout(hintTimer);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onResize);
       window.removeEventListener('pointerdown', onAnyPress, true);
       window.removeEventListener('keydown', onModDown, true);
       window.removeEventListener('keyup', onModUp, true);

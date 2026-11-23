@@ -439,7 +439,9 @@ test.describe('T063 the bar (D-042 addendum)', () => {
     info('T063-I6 overlap of the handle with "Скрий"', { hide: hideBox, handle: size });
     info('T063 handle size', { width: size.width, height: size.height });
     expect(size.width).toBeGreaterThanOrEqual(44);
-    expect(size.height).toBeGreaterThanOrEqual(56);
+    // T-071 (D-046): in portrait the handle is in the row of the bars at the top: ≥ 44 high there.
+    const vp = page.viewportSize();
+    expect(size.height).toBeGreaterThanOrEqual(vp.height > vp.width && vp.width >= 600 ? 44 : 56);
     // The handle tapped twice quickly: shown (the second tap lands on the bar, not "Скрий").
     const h0 = await handle(page).boundingBox();
     await t.touch('touchStart', [[h0.x + 20, h0.y + 20, 1]]); await t.touch('touchEnd', []);
