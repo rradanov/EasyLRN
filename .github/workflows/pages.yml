@@ -35,7 +35,7 @@ jobs:
         run: |
           mkdir _site
           cp index.html parser.html manifest.webmanifest sw.js _site/
-          cp -r src styles vendor icons _site/
+          cp -r src styles vendor icons prompts _site/
           touch _site/.nojekyll
           find _site -type f | sort
 

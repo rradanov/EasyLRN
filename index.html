@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <!--
-    App shell CSP. connect-src allows the future Claude API client (D-015).
+    App shell CSP. connect-src allows the Claude API client (D-015, src/claude.js).
     frame-src 'self': only the lesson frames at ./c/… (D-029). Lesson files get
     their own CSP from the Service Worker, with `sandbox allow-scripts` (T-045).
     frame-ancestors cannot be set from a meta tag; it is not needed for the shell.

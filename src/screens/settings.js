@@ -37,6 +37,8 @@ export const ORIENTATION_HINTS = Object.freeze({
   refused: 'Устройството не позволи заключването сега. Изборът е запазен; отвори EasyLRN от началния екран.',
 });
 const BUDGET_MAX = 1000;
+/** T-020: the choices of the longest answer (max_tokens); ~0.75 words per token in Bulgarian is less. */
+export const MAX_TOKENS_CHOICES = Object.freeze([500, 1000, 1500, 2500, 4000, 8000]);
 
 function offlineStatus() {
   if (!('serviceWorker' in navigator)) return 'не се поддържа от браузъра';
@@ -211,6 +213,14 @@ export function settingsScreen() {
     autocomplete: 'off', spellcheck: 'false', 'data-field': 'budget', 'aria-describedby': 'settings-budget-hint settings-budget-message',
   });
   const budgetMessage = h('span', { class: 'settings__inline-message', id: 'settings-budget-message', 'data-field': 'budget-message', role: 'status' });
+  // T-020: the longest answer (max_tokens of a teacher's answer).
+  const maxTokensSelect = h('select', { id: 'settings-max-tokens', class: 'settings__input', 'data-field': 'max-tokens' },
+    ...MAX_TOKENS_CHOICES.map((n) => h('option', { value: String(n), text: `${n} токена${n === 1500 ? ' — по подразбиране' : ''}` })));
+  maxTokensSelect.addEventListener('change', async () => {
+    const n = Number(maxTokensSelect.value);
+    if (!MAX_TOKENS_CHOICES.includes(n)) return;
+    settings = await saveSettings({ maxTokensAnswer: n });
+  });
   const spend = h('span', { 'data-field': 'spend', text: '…' });
   const spendWarning = h('p', { class: 'settings__spend-warning', 'data-field': 'spend-warning', hidden: true });
 
@@ -381,7 +391,9 @@ export function settingsScreen() {
         h('span', { class: 'settings__budget' }, h('span', { 'aria-hidden': 'true', text: '$' }), budgetInput, h('span', { class: 'muted', text: ' на месец' })),
         budgetMessage,
         h('p', { class: 'muted settings__hint', id: 'settings-budget-hint', 'data-field': 'budget-hint', text: 'До цент; 0 — без предупреждение за разход.' })),
-      row('Разход този месец', null, spend, spendWarning),
+      row('Най-дълъг отговор', 'settings-max-tokens', maxTokensSelect,
+        h('p', { class: 'muted settings__hint', 'data-field': 'max-tokens-hint', text: 'По-дългите отговори струват повече; учителят пише кратко.' })),
+      row('Разход за месеца', null, spend, spendWarning),
     ),
     h('h2', { class: 'screen__heading', text: 'Четене' }),
     h('div', { class: 'settings__group' },
@@ -416,6 +428,9 @@ export function settingsScreen() {
       }
       modelSelect.value = s.model;
       budgetInput.value = String(s.monthlyBudgetUSD ?? 5);
+      const mt = Number(s.maxTokensAnswer);
+      if (!MAX_TOKENS_CHOICES.includes(mt) && mt > 0) maxTokensSelect.append(h('option', { value: String(mt), text: `${mt} токена` }));
+      maxTokensSelect.value = String(mt > 0 ? mt : 1500);
       showSpend();
       showScale(FONT_SCALES.includes(s.fontScale) ? s.fontScale : 1);
       if (!FONT_SCALES.includes(s.fontScale)) scaleValue.textContent = `${Math.round((s.fontScale || 1) * 100)} %`;
@@ -427,6 +442,11 @@ export function settingsScreen() {
     }
   })();
   showStorage().catch(() => { storageUsed.textContent = '—'; });
+  // T-020: a call of the teacher while this screen is open updates the month's spend.
+  const onUsage = () => {
+    usageTotals(monthStart()).then((t) => { if (!destroyed) { totals = t; showSpend(); } }).catch(() => {});
+  };
+  window.addEventListener('easylrn:usage', onUsage);
 
   return {
     title: 'Настройки',
@@ -434,6 +454,7 @@ export function settingsScreen() {
     body,
     destroy() {
       destroyed = true;
+      window.removeEventListener('easylrn:usage', onUsage);
       keyInput.value = ''; // a typed, unsaved key does not stay in memory of the old screen
     },
   };
