@@ -237,7 +237,11 @@ const portLog = (page) => {
 /** A note exists; it is opened from its 📝 (app side, no message of the lesson needed) and typed into. */
 async function openExistingAndType(page, text) {
   await expect(noteMarks(page)).toHaveCount(1, { timeout: 8000 });
-  await noteMarks(page).first().click();
+  // The 📝; else the list of the notes (☷ → the note).
+  try { await noteMarks(page).first().click({ timeout: 3000 }); } catch {
+    await page.locator('[data-action="notes-list"]').click({ timeout: 5000 });
+    await page.locator('[data-action="open-note"]').first().click({ timeout: 5000 });
+  }
   await expect(panel(page)).toBeVisible();
   if (!(await noteText(page).evaluate((t) => t === document.activeElement))) await noteText(page).click();
   await expect(noteText(page)).toBeFocused();
