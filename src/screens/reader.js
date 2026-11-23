@@ -32,6 +32,7 @@ import { confirmAnnotationPlace } from '../annotations.js';
 import { quizLink } from './quiz-link.js';
 import { normalizeNumber, resolveLessonPath } from '../lesson-id.js';
 import { readerLayout } from './reader-layout.js';
+import { createHandleGutter } from './handle-gutter.js';
 
 /**
  * Find a lesson by id, number (case-insensitive, "R1" = "R01", "3" = "0003")
@@ -71,6 +72,7 @@ export function readerScreen({ params, query }) {
   let frame = null;
   let tools = null;
   let notes = null;
+  let gutter = null;
   let destroyed = false;
   const liveStatus = h('p', { class: 'visually-hidden', role: 'status', 'aria-live': 'polite', 'data-field': 'marks-status' });
   const announce = (text) => { liveStatus.textContent = ''; liveStatus.textContent = text; };
@@ -221,6 +223,7 @@ export function readerScreen({ params, query }) {
       onSelection: (sel) => notes?.onSelection(sel),
       onTap: (annotation) => notes?.onTap(annotation),
       onLayout: (places) => notes?.onLayout(places),
+      onMargins: () => gutter?.queue(),
       onNavigate: (other, otherHash) => {
         const at = otherHash && otherHash.length > 1 ? `?at=${encodeURIComponent(otherHash.slice(1))}` : '';
         location.hash = `${readerLink(courseId, other)}${at}`;
@@ -237,7 +240,7 @@ export function readerScreen({ params, query }) {
       settings,
       announce,
       onChange: (tool) => { doc.dataset.tool = tool || 'none'; notes?.onTool(); },
-      onLayout: (hidden) => { doc.dataset.bar = hidden ? 'hidden' : 'shown'; },
+      onLayout: (hidden) => { doc.dataset.bar = hidden ? 'hidden' : 'shown'; gutter?.queue({ fresh: true }); },
       onErased: () => notes?.reload(),
       slots: { side: toolSlot, top: topTools },
     });
@@ -250,7 +253,7 @@ export function readerScreen({ params, query }) {
       lesson,
       settings,
       announce,
-      onLayout: (hidden) => { doc.dataset.notes = hidden ? 'hidden' : 'shown'; },
+      onLayout: (hidden) => { doc.dataset.notes = hidden ? 'hidden' : 'shown'; gutter?.queue({ fresh: true }); },
       topSlot: topNotes,
       viewInsets,
     });
@@ -259,6 +262,19 @@ export function readerScreen({ params, query }) {
     mount(panelSlot, notes.panel, notes.toast);
     frame.element.append(tools.layer);
     mount(content, frame.element);
+    // D-046 addition: a handle of a hidden bar floats over the lesson's margin
+    // (in the top row only while the row has a bar to show).
+    const floating = (el) => (el && !(topbar.contains(el) && topbar.getBoundingClientRect().height > 1) ? el : null);
+    gutter = createHandleGutter({
+      doc,
+      content,
+      getFrame: () => frame,
+      handles: () => ({
+        left: floating(screen.querySelector('[data-field="mark-tools-handle"]')),
+        right: floating(screen.querySelector('[data-field="notes-strip-handle"]')),
+      }),
+    });
+    gutter.queue({ fresh: true });
   })().catch((err) => {
     console.warn('Cannot open the lesson:', err);
     mount(content, h('p', { class: 'empty', text: 'Урокът не може да се отвори.' }));
@@ -270,6 +286,7 @@ export function readerScreen({ params, query }) {
     destroy() {
       destroyed = true;
       window.removeEventListener('resize', onResize);
+      gutter?.destroy();
       notes?.destroy();
       tools?.destroy();
       frame?.destroy();

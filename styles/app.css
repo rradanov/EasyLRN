@@ -1427,3 +1427,52 @@ ol.activity { list-style: none; }
   .notes-panel__line { background: CanvasText; }
   .notes-panel__grip { border-color: ButtonText; }
 }
+
+/* ---- The addition of 23.11 to D-046: a hidden bar takes no room ---- */
+/* Only its handle "☰" floats over the edge of the lesson, in the lesson's own
+   margin (src/screens/handle-gutter.js makes room only where the margin is too
+   small: --handle-gutter-left / --handle-gutter-right on the lesson's column). */
+.reader__content { padding-left: var(--handle-gutter-left, 0px); padding-right: var(--handle-gutter-right, 0px); }
+/* Landscape: no strip left of the lesson … */
+.screen--reader:not([data-layout="portrait"]) .reader__doc[data-bar="hidden"] { gap: 8px; }
+.screen--reader:not([data-layout="portrait"]) .reader__doc[data-bar="hidden"] .reader__tools { width: 0; margin-right: -8px; }
+.screen--reader:not([data-layout="portrait"]) .reader__tools .mark-tools-handle { position: absolute; left: 0; top: 68px; margin-top: 0; }
+/* … and none right of it (the 📝 column goes with the bar). */
+.screen--reader[data-layout="landscape"] .reader__notes[data-hidden="true"][data-panel-open="false"] { margin-left: -8px; }
+.screen--reader[data-layout="landscape"] .reader__notes[data-hidden="true"] .notes-strip-handle-box { width: 0; }
+.screen--reader[data-layout="landscape"] .reader__notes[data-hidden="true"] .notes-strip-handle { position: absolute; right: 0; top: 0; }
+/* Portrait: no bar left in the top row → no row (no empty line under the
+   title); the handles float in the top corners over the lesson. A handle of
+   one hidden bar stays in the row while the other bar is shown there. */
+.screen--reader[data-layout="portrait"] .reader__topbar:not(:has(.mark-tools:not([hidden]), .notes-strip__bar:not([hidden]))) {
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  margin-bottom: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+.screen--reader[data-layout="portrait"] .reader__topbar:not(:has(.mark-tools:not([hidden]), .notes-strip__bar:not([hidden]))) .mark-tools-handle {
+  position: absolute;
+  left: 0;
+  /* T063-I6: not where "Скрий" of the row was (a double tap lands on nothing). */
+  top: 56px;
+  width: 44px;
+  height: 56px;
+  margin: 0;
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  box-shadow: var(--shadow);
+}
+.screen--reader[data-layout="portrait"] .reader__topbar:not(:has(.mark-tools:not([hidden]), .notes-strip__bar:not([hidden]))) .notes-strip-handle {
+  position: absolute;
+  right: 0;
+  top: 4px;
+  width: 44px;
+  height: 56px;
+  border-right: 0;
+  border-radius: 12px 0 0 12px;
+  box-shadow: var(--shadow);
+}
+/* Portrait: the handle of the notes is in the row (or floats in its corner): no strip for its box. */
+.screen--reader[data-layout="portrait"] .reader__notes .notes-strip-handle-box { width: 0; }

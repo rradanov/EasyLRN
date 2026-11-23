@@ -257,9 +257,12 @@ test.describe('T072-S the port of the guard (lrn:keys-port) vs the lesson', () =
       window.__go = () => {
         const keep = document.body.innerHTML;
         document.open();
-        const html = document.createElement('html'); document.appendChild(html);
-        const body = document.createElement('body'); html.appendChild(body);
-        body.innerHTML = keep;
+        // T-073: document.open() does nothing now (the old document stays): building a second <html> throws.
+        try {
+          const html = document.createElement('html'); document.appendChild(html);
+          const body = document.createElement('body'); html.appendChild(body);
+          body.innerHTML = keep;
+        } catch (e) { console.log('LP:open-refused'); }
         window.__relog();
         addEventListener('message', window.__hook('window'), true);
         document.addEventListener('message', window.__hook('document'), true);
@@ -282,7 +285,7 @@ test.describe('T072-S the port of the guard (lrn:keys-port) vs the lesson', () =
     const seen = await frame.evaluate(() => ({ got: window.__got, keys: window.__keys || '', v: (document.getElementById('v1') || {}).value }));
     info('T072-S1', { got, leaked: leaked.join(''), seen, value });
     console.log('S1', JSON.stringify({ got, leaked: leaked.join(''), seen, value }));
-    test.fail(true, 'T072-S1: document.open() is not locked (only write/writeln are): it erases every listener of the window, the guard\'s message listener and its key listeners too; the lesson then posts lrn:hello itself, the app sends a fresh lrn:keys-port and closes the guard\'s port: the LESSON gets the port, hears { off: true } when the user types a note (the guard never hears it again: focus() / designMode work), takes the focus and gets characters that are missing from the note');
+    // T-073: fixed (document.open / close are locked; one keys port per frame): test.fail removed.
     expect(got.filter((g) => g.startsWith('port') || g.startsWith('off'))).toEqual([]);
     expect(leaked.join('')).toBe('');
     expect(value).toBe('Стара бележкаabcdefghijklmnopqrstuvwxyzТАЙНАбележкадума');
@@ -466,7 +469,7 @@ test.describe('T072-S5 no message of the lesson closes or switches the guarded n
       info('T072-S5', { name, ...res });
       res.saved = (await liveNotes(page)).map((n) => n.body).sort();
       console.log('S5', name, JSON.stringify(res));
-      if (name.startsWith('lrn:link to lesson 0002')) test.fail(true, 'T072-S2: lrn:link from the lesson is obeyed while the note field is guarded — the keys the user types into the note are a user activation of the app (navigator.userActivation.isActive), so a lesson that sends lrn:link to another lesson of its course (it can tell the note is typed: designMode is refused, T072-I1) closes the note and the app goes to that lesson; the user\'s next keys land in the page / the next lesson');
+      // T-073: fixed (lrn:link / lrn:anchor are ignored while the note field is guarded): test.fail removed.
       expect(res.url, 'still in lesson 0001').toBe(true);
       expect(res.open).toBe(true);
       expect(res.quote).toContain('оценява рисковете');
@@ -632,7 +635,7 @@ test.describe('T072-D the kept copies "lrn-note-pending:<place>" and the emptied
     const b = (await liveNotes(page)).map((x) => x.body).sort();
     info('T072-D3', { a, b });
     console.log('D3', JSON.stringify({ a, b }));
-    if (a.includes('старо (0.14.2)') || b.includes('по-старо от А')) test.fail(true, 'T072-D3: flushPendingNote writes the kept copies in the order of the localStorage keys, never by their time (`at`): two copies of ONE place under two keys — the 0.14.2 single key and "n:<id>", or "s:<lesson>:<start>-<end>" of a new note and "n:<id>" of the note made on that same place — the one written last wins, also when it is the older text');
+    // T-073: fixed (the kept copies are written oldest first, by `at`): test.fail removed.
     expect(a).toEqual(['ново']);
     expect(b).toEqual(['ново', 'по-ново от Б'].sort());
   });
@@ -667,7 +670,7 @@ test.describe('T072-D the kept copies "lrn-note-pending:<place>" and the emptied
     await page.waitForTimeout(500);
     const live = (await liveNotes(page)).map((n) => n.body).sort();
     info('T072-D4', { undo1, undo2, live });
-    if (!(undo1 && undo2)) test.fail(true, 'T072-D1: the emptied note for "Върни" is ONE localStorage key (lrn-note-emptied): when two existing notes were emptied as the page went (two tabs, two lessons), both are soft-deleted at the next start but only the last one is offered "Върни"; the other is deleted with no way back in the app (it stays deleted in the database)');
+    // T-073: fixed (one emptied key per note; one "Върни" per lesson brings them all back): test.fail removed.
     expect(undo1 && undo2).toBe(true);
     expect(live).toEqual(['Важно едно', 'Важно две'].sort());
   });

@@ -220,7 +220,15 @@ async function checkHandle(page) {
     const edge = await page.locator('[data-screen="reader"]').evaluate((el) => el.getBoundingClientRect().left);
     expect(hb.x).toBeLessThanOrEqual(edge + 1);
     if (vp.width <= 1200) expect(hb.x).toBeLessThanOrEqual(1);
-    expect(hb.x + hb.width).toBeLessThanOrEqual(fb.x + 0.5);
+    // T-073 (the addition to D-046): the handle floats over the lesson's margin,
+    // never over its text (the reader makes room only where the margin is too small).
+    const textLeft = await (await (await page.locator('iframe.lesson-frame').elementHandle()).contentFrame()).evaluate(() => {
+      let left = Infinity;
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const r = document.createRange();
+      for (let n = w.nextNode(); n; n = w.nextNode()) { if (!/\S/.test(n.data)) continue; r.selectNodeContents(n); const b = r.getBoundingClientRect(); if (b.width > 0) left = Math.min(left, b.left); }
+      return left;
+    });
+    await expect.poll(async () => (await frameBox(page)).x + textLeft, { timeout: 3000 }).toBeGreaterThanOrEqual(hb.x + hb.width);
   }
   expect(hb.y).toBeGreaterThanOrEqual(0);
   expect(hb.y + hb.height).toBeLessThanOrEqual(page.viewportSize().height);

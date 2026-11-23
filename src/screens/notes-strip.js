@@ -76,7 +76,7 @@ import { renderMarkdown } from '../markdown.js';
 import { confirmAnnotationPlace } from '../annotations.js';
 import {
   lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH,
-  keepPendingNote, dropPendingNote, takeEmptiedNote,
+  keepPendingNote, dropPendingNote, takeEmptiedNotes,
 } from '../notes.js';
 import { readerLayout } from './reader-layout.js';
 
@@ -783,26 +783,30 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       announce('Бележката не можа да се изтрие.');
     }
   }
+  /** `entry`: one entry of deleteNote, or several (T072-D1: all come back at once). */
   function offerUndo(entry, text) {
-    undoEntry = entry;
+    undoEntry = Array.isArray(entry) ? entry : [entry];
     undoText.textContent = text;
     toast.hidden = false;
     clearTimeout(undoTimer);
     undoTimer = setTimeout(() => { toast.hidden = true; undoEntry = null; }, UNDO_MS);
-    announce(`${text} „Върни“ я връща.`);
+    announce(`${text} „Върни“ ${undoEntry.length > 1 ? 'ги' : 'я'} връща.`);
   }
   async function runUndo() {
-    const entry = undoEntry;
+    const entries = undoEntry;
     undoEntry = null;
     clearTimeout(undoTimer);
     toast.hidden = true;
-    if (!entry) return;
+    if (!entries?.length) return;
     try {
-      const { annotationRestored } = await restoreNote(lesson, entry);
+      let annotationRestored = false;
+      for (const entry of entries) {
+        if ((await restoreNote(lesson, entry)).annotationRestored) annotationRestored = true;
+      }
       if (annotationRestored) await getFrame()?.reloadAnnotations();
       await reload();
-      announce('Бележката е върната.');
-      openNote(entry.noteId);
+      announce(entries.length > 1 ? 'Бележките са върнати.' : 'Бележката е върната.');
+      openNote(entries[entries.length - 1].noteId);
     } catch (err) {
       console.warn('Cannot restore the note:', err?.message || err);
       announce('Бележката не можа да се върне.');
@@ -1068,8 +1072,12 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   refreshCounts();
   reload();
   // T070-D2: a note emptied when the page went last time was deleted at this start: "Върни".
-  takeEmptiedNote(lesson.id).then((entry) => {
-    if (entry && !destroyed) offerUndo(entry, 'Празната бележка е изтрита (беше изпразнена преди затварянето).');
+  // T072-D1: every such note of this lesson — one "Върни" brings them all back.
+  takeEmptiedNotes(lesson.id).then((entries) => {
+    if (!entries.length || destroyed) return;
+    offerUndo(entries, entries.length === 1
+      ? 'Празната бележка е изтрита (беше изпразнена преди затварянето).'
+      : `${entries.length} празни бележки са изтрити (бяха изпразнени преди затварянето).`);
   }).catch(() => {});
 
   return {

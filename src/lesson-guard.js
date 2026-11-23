@@ -379,6 +379,12 @@
   var noWrite = function () { return function () { try { w.console.warn('EasyLRN: document.write is not available in lessons.'); } catch (e) { /* ignore */ } }; };
   lockMethod(w.Document.prototype, 'write', noWrite);
   lockMethod(w.Document.prototype, 'writeln', noWrite);
+  // T072-S1: document.open() erases every listener of the document and the
+  // window — the guard's own message and key listeners too — and with three
+  // arguments it is window.open(). close() goes with it. Neither does anything.
+  var noOpen = function () { return function () { try { w.console.warn('EasyLRN: document.open is not available in lessons.'); } catch (e) { /* ignore */ } return this; }; };
+  lockMethod(w.Document.prototype, 'open', noOpen);
+  lockMethod(w.Document.prototype, 'close', noOpen);
 
   // --- 2. The bridge's own references ------------------------------------------
   var parentWindow = w.parent;

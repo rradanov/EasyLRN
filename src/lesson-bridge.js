@@ -193,12 +193,43 @@
 
   // --- Height -------------------------------------------------------------------
   let lastHeight = -1;
+  let lastMargins = '';
   let sizeQueued = false;
+  // The free room left and right of the lesson's text (CSS px of the frame,
+  // the addition of 23.11 to D-046): the app puts the floating handles of
+  // hidden bars there and makes room only when there is too little. Numbers
+  // only; a lesson that lies about them only covers its own text.
+  const MARGIN_NODES = 4000;
+  const textMargins = () => {
+    const width = root.clientWidth;
+    let left = Infinity;
+    let right = -Infinity;
+    try {
+      if (!document.body || !width) return null;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      let n = 0;
+      for (let node = walker.nextNode(); node && n < MARGIN_NODES; node = walker.nextNode()) {
+        if (!/\S/.test(node.data)) continue;
+        n++;
+        range.selectNodeContents(node);
+        const r = range.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) continue;
+        if (r.left < left) left = r.left;
+        if (r.right > right) right = r.right;
+      }
+    } catch { return null; }
+    if (!(left < right)) return null;
+    return { left: Math.max(0, Math.floor(left)), right: Math.max(0, Math.floor(width - right)) };
+  };
   const sendSize = (force) => {
     const height = Math.ceil(root.getBoundingClientRect().height);
-    if (!force && height === lastHeight) return;
+    const margins = textMargins();
+    const key = margins ? `${margins.left},${margins.right}` : '';
+    if (!force && height === lastHeight && key === lastMargins) return;
     lastHeight = height;
-    send('lrn:size', { height });
+    lastMargins = key;
+    send('lrn:size', margins ? { height, left: margins.left, right: margins.right } : { height });
   };
   const queueSize = () => {
     if (sizeQueued) return;

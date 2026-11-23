@@ -466,24 +466,42 @@ test.describe('T071-M marking after the layout changed', () => {
     info('T071-M1', (await liveAnn(page)).map((a) => [a.exact, a.color]));
   });
 
-  test('T071-M2 "Скрий" in portrait: each bar folds to a small handle in the top row (≥ 44 px) and comes back; the lesson does not move under the row; the choice holds after a rotation', async ({ page }) => {
+  test('T071-M2 "Скрий" in portrait: each bar folds to a small handle (≥ 44 px) and comes back; T-073 (the addition to D-046): with both bars hidden there is no row — the handles float in the top corners over the lesson\'s margin, never over its text; the choice holds after a rotation', async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 1280 });
     await start(page);
     await openLesson(page);
+    const before = await boxes(page);
     await page.locator('[data-action="hide-tools"]').click();
-    await page.locator('[data-action="hide-notes"]').click();
     await page.waitForTimeout(400);
+    // One bar hidden: its handle stays in the row (the row is there for the other bar).
     let x = await boxes(page);
+    expect(x.toolsHandle.top).toBeGreaterThanOrEqual(x.topbar.top - 1);
+    expect(x.toolsHandle.bottom).toBeLessThanOrEqual(x.topbar.bottom + 1);
+    await page.locator('[data-action="hide-notes"]').click();
+    await page.waitForTimeout(800);
+    x = await boxes(page);
     expect(x.tools).toBeNull();
     expect(x.notesBar).toBeNull();
+    // No row: the lesson moved up into its place.
+    expect(x.topbar === null || x.topbar.height <= 1).toBe(true);
+    expect(x.frame.top).toBeLessThan(before.frame.top - 20);
+    const text = await (await lessonFrame(page)).evaluate(() => {
+      let left = Infinity; let right = -Infinity;
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const r = document.createRange();
+      for (let n = w.nextNode(); n; n = w.nextNode()) { if (!/\S/.test(n.data)) continue; r.selectNodeContents(n); const b = r.getBoundingClientRect(); if (b.width > 0) { left = Math.min(left, b.left); right = Math.max(right, b.right); } }
+      return { left, right };
+    });
     for (const part of ['toolsHandle', 'notesHandle']) {
       expect(x[part], part).not.toBeNull();
       expect(x[part].width).toBeGreaterThanOrEqual(44);
       expect(x[part].height).toBeGreaterThanOrEqual(44);
-      expect(x[part].top).toBeGreaterThanOrEqual(x.topbar.top - 1);
-      expect(x[part].bottom).toBeLessThanOrEqual(x.topbar.bottom + 1);
+      expect(x[part].top).toBeGreaterThanOrEqual(x.appBar.bottom - 1);
     }
-    expect(x.frame.top).toBeGreaterThanOrEqual(x.topbar.bottom - 1);
+    expect(x.toolsHandle.left).toBeLessThanOrEqual(8);
+    expect(x.notesHandle.right).toBeGreaterThanOrEqual(x.vw - 8);
+    // Never over the lesson's text: in its margin (or the room made for it).
+    expect(x.frame.left + text.left).toBeGreaterThanOrEqual(x.toolsHandle.right);
+    expect(x.frame.left + text.right).toBeLessThanOrEqual(x.notesHandle.left);
     expect(await noSideScroll(page)).toBe(true);
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForTimeout(400);

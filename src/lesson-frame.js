@@ -103,7 +103,13 @@ const CHECK = {
   'lrn:violation': (m) => (m.v === PROTOCOL ? {} : null),
   'lrn:ready': (m) => (m.v === PROTOCOL && (m.title === undefined || isStr(m.title, 300))
     && (m.textLength === undefined || isInt(m.textLength, 0, 1e7)) ? { title: m.title ?? '', textLength: m.textLength ?? 0 } : null),
-  'lrn:size': (m) => (isNum(m.height, 0, MAX_COORD) ? { height: Math.ceil(m.height) } : null),
+  'lrn:size': (m) => {
+    if (!isNum(m.height, 0, MAX_COORD)) return null;
+    const out = { height: Math.ceil(m.height) };
+    // The free room beside the text (optional; D-046 addition): both or none.
+    if (isNum(m.left, 0, MAX_COORD) && isNum(m.right, 0, MAX_COORD)) { out.left = Math.floor(m.left); out.right = Math.floor(m.right); }
+    return out;
+  },
   'lrn:selection': (m) => {
     if (m.empty === true) return { empty: true };
     const q = m.quote;
@@ -196,12 +202,13 @@ const warn = (why, detail) => console.warn(`EasyLRN: lesson message ignored (${w
  *   initialScroll?: number, hash?: string, onNavigate: (lesson: object, hash: string) => void,
  *   onScroll?: (y: number) => void, onTap?: (annotation: object|null) => void,
  *   onAnchored?: (annotations: object[]) => void, onSelection?: (selection: object|null) => void,
- *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void }} opts
+ *   onLayout?: (places: Map<string, {top: number, bottom: number}>, height: number) => void, onEscape?: () => void,
+ *   onMargins?: (margins: {left: number, right: number}) => void }} opts
  * @returns {{ element: HTMLElement, readonly frame: HTMLIFrameElement|null, ready: Promise<void>,
  *   readonly selection: object|null, readonly annotations: object[], annotate: (color: string|null) => Promise<object>,
  *   reloadAnnotations: () => Promise<void>, setFontScale: (scale: number) => void, destroy: () => void }}
  */
-export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape, viewInsets = null }) {
+export function createLessonFrame({ course, lesson, lessons, fontScale = 1, initialScroll = 0, hash = '', onNavigate, onScroll, onTap, onAnchored, onSelection, onLayout, onEscape, onMargins, viewInsets = null }) {
   const src = courseFileUrl(course.id, lesson.path);
   const status = h('p', { class: 'muted lesson-frame__status', role: 'status', text: 'Зареждам урока…' });
   const note = h('p', { class: 'muted lesson-frame__note', role: 'status', 'data-field': 'lesson-note', hidden: true });
@@ -254,6 +261,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   let heard = false; // any message from the current document of the frame since its load
   let keysOffNow = false; // T018-D2: told to the guard again when the lesson (re)starts
   let keysPort = null; // T070-S1: the app's end of the port the guard in the lesson listens on
+  let keysPortSent = false; // T072-S1: the port goes once to each frame
+  let margins = null; // the free room beside the lesson's text, from lrn:size (D-046 addition)
   let innerScroll = false; // the lesson is taller than MAX_HEIGHT: it scrolls inside the frame
   let rate = { start: 0, count: 0 };
   let selfNavigations = 0;
@@ -399,8 +408,14 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   // lesson that reloads itself is a new document with a new guard); the guard
   // takes it only from a trusted event of the real parent and hides it from the
   // lesson (src/lesson-guard.js §4). The state is sent at once.
+  // T072-S1: one port per frame. A navigation of the frame is a new frame
+  // (reloadAfterNavigation), so the first lrn:hello / lrn:ready of a frame is
+  // always heard by the guard of its document (its listener is the first one);
+  // a later lrn:hello of the same document never gets another port.
   const sendKeysPort = () => {
     if (!frame?.contentWindow || typeof MessageChannel !== 'function') return;
+    if (keysPortSent) return;
+    keysPortSent = true;
     try { keysPort?.close(); } catch { /* closed */ }
     const channel = new MessageChannel();
     keysPort = channel.port1;
@@ -436,8 +451,13 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     },
     'lrn:hello'() { sendKeysPort(); /* `heard` is set for every message */ },
     'lrn:violation'() { stopForFrames(); },
-    'lrn:size'({ height }) {
+    'lrn:size'({ height, left, right }) {
       if (!frame || element.getAttribute('data-lesson-state') === 'fallback') return;
+      if (left !== undefined) {
+        const was = margins;
+        margins = { left, right };
+        if (!was || was.left !== left || was.right !== right) onMargins?.(margins);
+      }
       if (height > MAX_HEIGHT) {
         if (!innerScroll) {
           innerScroll = true;
@@ -527,10 +547,16 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       else scrollToLessonTop();
     },
     'lrn:anchor'({ top }) {
+      // T072-S2: while the user types a note, the keys give the app a user
+      // activation the lesson did not earn — no jump, no link then.
+      if (keysOffNow) { warn('a note is being typed: lrn:anchor'); return; }
       if (!navigator.userActivation?.isActive) { warn('no user gesture: lrn:anchor'); return; }
       scrollToLessonY(top);
     },
-    'lrn:link'({ href }) { openLink(href); },
+    'lrn:link'({ href }) {
+      if (keysOffNow) { warn('a note is being typed: lrn:link'); return; }
+      openLink(href);
+    },
   };
 
   const rateOk = () => {
@@ -649,6 +675,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     frame?.remove();
     loads = 0;
     heard = false;
+    keysPortSent = false;
+    margins = null;
     innerScroll = false;
     element.removeAttribute('data-lesson-scroll');
     clearTimeout(silentTimer);
@@ -730,6 +758,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
      * T018-D2: the user types a note in the app — the guard in the lesson
      * (src/lesson-guard.js §4) lets go of the focus and stops keys until `false`.
      */
+    /** The free room left / right of the lesson's text in CSS px of the frame, or null (not told yet). */
+    get margins() { return margins; },
     keysOff(off) {
       keysOffNow = off === true;
       try { keysPort?.postMessage({ off: keysOffNow }); } catch { /* closed */ }

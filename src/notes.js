@@ -154,7 +154,9 @@ export async function restoreNote(lesson, { noteId, annotationId, annotationDele
 // never an empty live note, never the old text lost without a way back.
 const PENDING_PREFIX = 'lrn-note-pending:';
 const LEGACY_KEY = 'lrn-note-pending';
-const EMPTIED_KEY = 'lrn-note-emptied';
+const EMPTIED_KEY = 'lrn-note-emptied'; // the single key of 0.14.3–0.15.0: still read
+const EMPTIED_PREFIX = 'lrn-note-emptied:'; // T072-D1: one key per emptied note
+const WEEK_MS = 7 * 864e5;
 
 /** The place a kept copy belongs to: a note, a mark, or a selection of a lesson. */
 function placeOf(lessonId, draft) {
@@ -180,6 +182,11 @@ function keptCopies() {
       out.push({ key, kept: kept && typeof kept === 'object' ? kept : null });
     }
   } catch { /* unavailable */ }
+  // T072-D3: by the time each copy was kept, the oldest first — when two keys
+  // hold one place (the 0.14.2 single key and "n:", or "s:" of a new note and
+  // "n:" of the note made there), the newest text is written last and stays.
+  const at = (c) => (Number.isFinite(Number(c.kept?.at)) ? Number(c.kept.at) : 0);
+  out.sort((a, b) => at(a) - at(b) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   return out;
 }
 const removeKey = (key) => { try { storage()?.removeItem(key); } catch { /* */ } };
@@ -246,7 +253,7 @@ async function writeKept({ getCourse, getLesson }, kept) {
       // T070-D2: emptied, then the page went: as a note closed empty — deleted, with "Върни".
       if (note.deleted) return null;
       const entry = await deleteNote(lesson, note.id);
-      try { storage()?.setItem(EMPTIED_KEY, JSON.stringify({ lessonId: lesson.id, entry, at: Date.now() })); } catch { /* */ }
+      try { storage()?.setItem(EMPTIED_PREFIX + note.id, JSON.stringify({ lessonId: lesson.id, entry, at: Date.now() })); } catch { /* */ }
       return null;
     }
   }
@@ -263,19 +270,33 @@ async function writeKept({ getCourse, getLesson }, kept) {
 }
 
 /**
- * T070-D2: a note emptied when the page went and deleted at this start, for
- * `lessonId` (once): the entry for "Върни" (restoreNote), or null.
+ * T070-D2 / T072-D1: the notes emptied when the page went and deleted at this
+ * start, for `lessonId` (each once): the entries for "Върни" (restoreNote),
+ * oldest first; [] if none. Entries older than a week are dropped.
  */
-export async function takeEmptiedNote(lessonId) {
+export async function takeEmptiedNotes(lessonId) {
   if (flushRun) await flushRun;
   const ls = storage();
-  let kept = null;
-  try { kept = JSON.parse(ls?.getItem(EMPTIED_KEY) || 'null'); } catch { kept = null; }
-  if (!kept || typeof kept !== 'object') return null;
-  if (!(Date.now() - Number(kept.at) < 7 * 864e5)) { removeKey(EMPTIED_KEY); return null; } // a week old: gone
-  if (kept.lessonId !== lessonId || !kept.entry || typeof kept.entry.noteId !== 'string') return null;
-  removeKey(EMPTIED_KEY);
-  return kept.entry;
+  if (!ls) return [];
+  const found = [];
+  try {
+    const names = [];
+    for (let i = 0; i < ls.length; i++) {
+      const key = ls.key(i);
+      if (key === EMPTIED_KEY || key?.startsWith(EMPTIED_PREFIX)) names.push(key);
+    }
+    for (const key of names) {
+      let kept = null;
+      try { kept = JSON.parse(ls.getItem(key) || 'null'); } catch { kept = null; }
+      if (!kept || typeof kept !== 'object' || !(Date.now() - Number(kept.at) < WEEK_MS)) { removeKey(key); continue; }
+      if (kept.lessonId !== lessonId) continue;
+      removeKey(key);
+      if (!kept.entry || typeof kept.entry.noteId !== 'string') continue;
+      if (found.some((f) => f.entry.noteId === kept.entry.noteId)) continue;
+      found.push({ at: Number(kept.at), entry: kept.entry });
+    }
+  } catch { /* unavailable */ }
+  return found.sort((a, b) => a.at - b.at).map((f) => f.entry);
 }
 
 /**
