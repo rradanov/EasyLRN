@@ -413,3 +413,64 @@ test.describe('T072-S the port of the guard: more ways', () => {
     await expect(page.locator('[data-lesson-stopped]')).toHaveCount(0);
   });
 });
+
+test.describe('T072-S5 no message of the lesson closes or switches the guarded note', () => {
+  // Lesson 0002 takes the focus from its first moment (if the app ever goes there while the user types).
+  const SECOND = `${SPY}<script>setInterval(() => { try { document.getElementById('v1').focus(); } catch (e) {} }, 5); console.log('LP:second');</script>`;
+  const two = (script) => ({
+    'INDEX.md': `# ${C}\n\n## Уроци\n| # | Заглавие |\n|---|---|\n| 0001 | Първи |\n| 0002 | Втори |\n`,
+    'lessons/0001-parvi.html': lessonHtml('Първи', `${script}${BODY}${LONG}`),
+    'lessons/0002-vtori.html': lessonHtml('Втори', `${SECOND}<p>Втори урок, само текст.</p>`),
+  });
+  const SENDERS = {
+    'lrn:escape': `() => parent.postMessage({ lrn: 1, type: 'lrn:escape' }, '*')`,
+    "lrn:tap (the other note's place, a mark, null)": `() => { for (const id of window.__ids.concat([null])) parent.postMessage({ lrn: 1, type: 'lrn:tap', annotationId: id }, '*'); }`,
+    "lrn:link to lesson 0002 (the user's keys are a user activation of the app)": `() => parent.postMessage({ lrn: 1, type: 'lrn:link', href: new URL('0002-vtori.html', location.href).href }, '*')`,
+    'lrn:link to the same lesson #p3, lrn:anchor': `() => { parent.postMessage({ lrn: 1, type: 'lrn:link', href: location.href.split('#')[0] + '#p3' }, '*'); parent.postMessage({ lrn: 1, type: 'lrn:anchor', top: 5 }, '*'); }`,
+    'lrn:selection of another place, then empty': `() => { parent.postMessage({ lrn: 1, type: 'lrn:selection', empty: false, quote: { exact: 'Уязвимостите', prefix: '', suffix: '' }, position: { start: 120, end: 132 }, rect: { top: 10, bottom: 30 } }, '*'); parent.postMessage({ lrn: 1, type: 'lrn:selection', empty: true }, '*'); }`,
+    'lrn:hello, lrn:ready, lrn:size, lrn:position, an unknown lrn:close / lrn:note / lrn:undo': `() => { for (const m of [{ type: 'lrn:hello', v: 1 }, { type: 'lrn:ready', v: 1, title: 'x', textLength: 10 }, { type: 'lrn:size', height: 200 }, { type: 'lrn:position', top: 0 }, { type: 'lrn:close' }, { type: 'lrn:note', off: false }, { type: 'lrn:undo' }, { type: 'lrn:keys', off: false }]) parent.postMessage(Object.assign({ lrn: 1 }, m), '*'); }`,
+  };
+  for (const [name, code] of Object.entries(SENDERS)) {
+    test(`T072-S5 ${name} — sent every 40 ms while the guarded note is typed: the same note stays open, the field keeps the focus and every character, nothing reaches any lesson`, async ({ page }) => {
+      allow.push(/EasyLRN|lesson|Урок/i);
+      const leaked = leakedBy(page);
+      const got = portLog(page);
+      const STEAL = `() => {
+        window.__ids = [];
+        addEventListener('message', (e) => { if (e.data && e.data.type === 'lrn:annotations' && Array.isArray(e.data.annotations)) window.__ids = e.data.annotations.map((a) => a.id); });
+        setInterval(() => { if (!window.__armed || !window.__off) return; try { (${code})(); } catch (err) { console.log('LP:err:' + err); } document.getElementById('v1').focus(); }, 40);
+      }`;
+      await start(page);
+      const zip = asFile(`${C}.zip`, makeZip(toBytes(two(thief(STEAL))), { root: C }));
+      expect(await page.evaluate(async ({ name, bytes }) => { const m = await import('./src/course-import.js'); try { return m.describeSummary(await m.importCourse([new File([new Uint8Array(bytes)], name)])); } catch (err) { return `ERROR ${m.errorMessage(err)}`; } }, { name: zip.name, bytes: [...zip.buffer] })).not.toMatch(/^ERROR/);
+      await openLesson(page);
+      // Another note and a mark (targets of a forged tap).
+      await writeNote(page, 'Уязвимостите се докладват', 'Друга');
+      await page.locator('[data-action="note-done"]').click();
+      await expect(panel(page)).toBeHidden();
+      await select(page, 'обикновен текст');
+      await page.locator('[data-field="mark-tools"] [data-color="green"]').click();
+      await expect.poll(async () => (await liveAnn(page)).length).toBe(2);
+      await page.keyboard.press('Escape');
+      await (await lessonFrame(page)).evaluate(() => { window.__armed = true; });
+      await openNewNote(page, 'оценява рисковете');
+      const url = page.url();
+      for (let i = 0; i < 5; i++) { await page.keyboard.type(`ТАЙНА${i}x`, { delay: 45 }); }
+      await page.waitForTimeout(500);
+      const now = await page.evaluate(() => { const ta = document.querySelector('[data-field="note-text"]'); const p = document.querySelector('[data-field="notes-panel"]'); return { open: !!p && !p.hidden && p.getBoundingClientRect().width > 0, quote: document.querySelector('[data-field="note-quote"]')?.textContent ?? null, focused: !!ta && ta === document.activeElement, value: ta ? ta.value : null, active: document.activeElement?.tagName }; });
+      const res = { url: page.url() === url, ...now, leaked: leaked.join(''), second: got.includes('second') };
+      info('T072-S5', { name, ...res });
+      res.saved = (await liveNotes(page)).map((n) => n.body).sort();
+      console.log('S5', name, JSON.stringify(res));
+      if (name.startsWith('lrn:link to lesson 0002')) test.fail(true, 'T072-S2: lrn:link from the lesson is obeyed while the note field is guarded — the keys the user types into the note are a user activation of the app (navigator.userActivation.isActive), so a lesson that sends lrn:link to another lesson of its course (it can tell the note is typed: designMode is refused, T072-I1) closes the note and the app goes to that lesson; the user\'s next keys land in the page / the next lesson');
+      expect(res.url, 'still in lesson 0001').toBe(true);
+      expect(res.open).toBe(true);
+      expect(res.quote).toContain('оценява рисковете');
+      expect(res.focused).toBe(true);
+      expect(res.value).toBe('ТАЙНА0xТАЙНА1xТАЙНА2xТАЙНА3xТАЙНА4x');
+      expect(res.leaked).toBe('');
+      await page.locator('[data-action="note-done"]').click({ timeout: 5000 });
+      await expect.poll(async () => (await liveNotes(page)).map((n) => n.body).sort()).toEqual(['Друга', 'ТАЙНА0xТАЙНА1xТАЙНА2xТАЙНА3xТАЙНА4x']);
+    });
+  }
+});
