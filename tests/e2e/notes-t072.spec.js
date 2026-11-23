@@ -474,3 +474,222 @@ test.describe('T072-S5 no message of the lesson closes or switches the guarded n
     });
   }
 });
+
+// ===========================================================================
+test.describe('T072-D the kept copies "lrn-note-pending:<place>" and the emptied note', () => {
+  const twoLessons = () => ({
+    'INDEX.md': `# ${C}\n\n## Уроци\n| # | Заглавие |\n|---|---|\n| 0001 | Първи |\n| 0002 | Втори |\n`,
+    'lessons/0001-parvi.html': lessonHtml('Първи', `${BODY}${LONG}`),
+    'lessons/0002-vtori.html': lessonHtml('Втори', `<p id="q1">Вторият урок говори за доклади.</p><p id="q2">Сроковете са кратки.</p>${LONG}`),
+  });
+  test.beforeEach(async ({ page }) => {
+    await start(page);
+    const zip = asFile(`${C}.zip`, makeZip(toBytes(twoLessons()), { root: C }));
+    expect(await page.evaluate(async ({ name, bytes }) => { const m = await import('./src/course-import.js'); try { return m.describeSummary(await m.importCourse([new File([new Uint8Array(bytes)], name)])); } catch (err) { return `ERROR ${m.errorMessage(err)}`; } }, { name: zip.name, bytes: [...zip.buffer] })).not.toMatch(/^ERROR/);
+  });
+  const openL = async (page, n) => {
+    await page.evaluate(() => { window.__lrn = []; });
+    const hash = `#/c/${C}/read/${n}`;
+    if (new URL(page.url()).hash === hash) await page.reload(); else await page.goto(`./${hash}`);
+    await waitReady(page);
+    await expect.poll(() => page.evaluate(() => (window.__lrn || []).some((m) => m.type === 'lrn:anchored')), { timeout: 15000 }).toBe(true);
+  };
+  /** The copies the page keeps when it goes (read at once, before the database drops them). */
+  const keepNow = (page) => page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+    return Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending')).map((k) => [k, JSON.parse(localStorage.getItem(k))]));
+  });
+  const keys = (page) => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending')).sort());
+  const putAll = (page, entries) => page.evaluate((e) => { for (const [k, v] of e) localStorage.setItem(k, JSON.stringify(v)); }, entries);
+  const done = async (page) => { await page.locator('[data-action="note-done"]').click(); await expect(panel(page)).toBeHidden(); };
+
+  test('T072-D1 many notes of two "tabs" die at once — an edited note (n:), a new note on a mark (a:), a new note on a selection (s:) in two lessons, plus the old single key of 0.14.2 for a fourth: every text is written at the next start, once, no duplicate, no key left', async ({ page }) => {
+    await openL(page, '0001');
+    await writeNote(page, 'оценява рисковете', 'Първа');
+    await done(page);
+    await writeNote(page, 'Уязвимостите се докладват', 'Четвърта');
+    await done(page);
+    const notes = await liveNotes(page);
+    const first = notes.find((n) => n.body === 'Първа');
+    const fourth = notes.find((n) => n.body === 'Четвърта');
+    // (n:) the first note edited; the page dies before the database has it.
+    await noteMarks(page).first().click();
+    await noteText(page).press('End');
+    await noteText(page).pressSequentially(' + редакция', { delay: 2 });
+    const k1 = Object.entries(await keepNow(page)).find(([k]) => k.startsWith('lrn-note-pending:n:'));
+    expect(k1).toBeTruthy();
+    await done(page);
+    // (a:) a mark, a new note on it.
+    await select(page, 'се прилага за продукти');
+    await page.locator('[data-field="mark-tools"] [data-color="blue"]').click();
+    await expect.poll(async () => (await liveAnn(page)).filter((a) => a.color === 'blue').length).toBe(1);
+    await page.keyboard.press('Escape');
+    const t = await textBox(page, 'се прилага за продукти');
+    await page.mouse.click(t.x + 10, t.y);
+    await page.locator('[data-action="add-note-to-mark"]').click();
+    await noteText(page).pressSequentially('На синята', { delay: 2 });
+    const k2 = Object.entries(await keepNow(page)).find(([k]) => k.startsWith('lrn-note-pending:a:'));
+    expect(k2).toBeTruthy();
+    await done(page);
+    // (s:) a new note on a selection of lesson 0002 ("tab B").
+    await openL(page, '0002');
+    await openNewNote(page, 'Сроковете са кратки');
+    await noteText(page).pressSequentially('Втори урок', { delay: 2 });
+    const k3 = Object.entries(await keepNow(page)).find(([k]) => k.startsWith('lrn-note-pending:s:'));
+    expect(k3).toBeTruthy();
+    await done(page);
+    // The database rolled back to before those writes (the tabs died): remove what they made.
+    await db(page, async (db, ids) => { for (const n of await db.list('notes', { includeDeleted: true })) if (!ids.includes(n.id)) await db.purge('notes', n.id); }, [first.id, fourth.id]);
+    await db(page, (db, id) => db.update('notes', id, { body: 'Първа' }), first.id);
+    const before = (await liveNotes(page)).map((n) => n.body).sort();
+    expect(before).toEqual(['Първа', 'Четвърта']);
+    await putAll(page, [k1, k2, k3, ['lrn-note-pending', { courseId: C, lessonId: L1, draft: { noteId: fourth.id }, body: 'Четвърта + стар ключ', at: Date.now() }]].map(([k, v]) => [k, { ...v, at: v.at || Date.now() }]));
+    await page.reload();
+    await waitReady(page);
+    await expect.poll(() => keys(page), { timeout: 6000 }).toEqual([]);
+    const bodies = (await liveNotes(page)).map((n) => n.body).sort();
+    info('T072-D1', { before, bodies });
+    expect(bodies).toEqual(['Втори урок', 'На синята', 'Първа + редакция', 'Четвърта + стар ключ'].sort());
+  });
+
+  test('T072-D2 two tabs: A dies with copies of two notes, B (alive) saves a third note and edits one of A\'s notes after A kept it: B\'s save drops only the copy of its own place, A\'s other copy survives and wins at the next start; B\'s newer text of the shared note is not overwritten by A\'s older copy', async ({ page, context }) => {
+    await openL(page, '0001');
+    await writeNote(page, 'оценява рисковете', 'X');
+    await done(page);
+    await writeNote(page, 'Уязвимостите се докладват', 'Y');
+    await done(page);
+    const [x, y] = ['X', 'Y'];
+    const notes = await liveNotes(page);
+    const nx = notes.find((n) => n.body === x);
+    const ny = notes.find((n) => n.body === y);
+    const at = Date.now() - 5000; // A kept 5 s ago
+    await putAll(page, [
+      [`lrn-note-pending:n:${nx.id}`, { courseId: C, lessonId: L1, draft: { noteId: nx.id }, body: 'X от А', at }],
+      [`lrn-note-pending:n:${ny.id}`, { courseId: C, lessonId: L1, draft: { noteId: ny.id }, body: 'Y от А', at }],
+    ]);
+    // B (this running page: no start since A died): a third note, then Y edited in B (newer than A's copy).
+    await writeNote(page, 'се прилага за продукти', 'Z от Б');
+    await done(page);
+    const yMark = page.locator('[data-field="notes-marks"] .notes-strip__mark');
+    // Open Y (the last 📝 in the text: p3).
+    const count = await yMark.count();
+    let opened = false;
+    for (let i = 0; i < count && !opened; i++) {
+      if (await panel(page).isVisible()) await done(page);
+      await yMark.nth(i).click();
+      opened = (await noteText(page).inputValue()) === 'Y';
+    }
+    expect(opened).toBe(true);
+    await noteText(page).press('End');
+    await noteText(page).pressSequentially(' от Б', { delay: 2 });
+    await expect(noteStatus(page)).toHaveText('Записано.', { timeout: 6000 });
+    await done(page);
+    const left = await keys(page);
+    const other = await context.newPage();
+    await other.goto(`./#/c/${C}/read/0001`);
+    await waitReady(other);
+    await expect.poll(() => other.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('lrn-note-pending')).length), { timeout: 6000 }).toBe(0);
+    const bodies = (await liveNotes(other)).map((n) => n.body).sort();
+    info('T072-D2', { left, bodies });
+    expect(left).toEqual([`lrn-note-pending:n:${nx.id}`]);
+    expect(bodies).toEqual(['X от А', 'Y от Б', 'Z от Б'].sort());
+    await other.close();
+  });
+
+  test('T072-D3 an older copy never wins: the same place kept twice — the 0.14.2 single key (older) and "n:" (newer) of one note; "s:" (older, a new note on a selection) and "n:" (newer) of the note made on that same selection: the newer text is the one left', async ({ page }) => {
+    await openL(page, '0001');
+    await writeNote(page, 'оценява рисковете', 'Начало');
+    await done(page);
+    const n = (await liveNotes(page))[0];
+    const now = Date.now();
+    await putAll(page, [
+      ['lrn-note-pending', { courseId: C, lessonId: L1, draft: { noteId: n.id }, body: 'старо (0.14.2)', at: now - 60000 }],
+      [`lrn-note-pending:n:${n.id}`, { courseId: C, lessonId: L1, draft: { noteId: n.id }, body: 'ново', at: now - 1000 }],
+    ]);
+    await page.reload();
+    await waitReady(page);
+    await expect.poll(() => keys(page), { timeout: 6000 }).toEqual([]);
+    const a = (await liveNotes(page)).map((x) => x.body);
+    // A new note on a selection kept by tab A ("s:", older), the same place got a note in tab B, kept newer ("n:").
+    await openNewNote(page, 'Уязвимостите се докладват');
+    await noteText(page).pressSequentially('А', { delay: 2 });
+    const sKept = Object.entries(await keepNow(page)).find(([k]) => k.startsWith('lrn-note-pending:s:'));
+    expect(sKept).toBeTruthy();
+    await expect(noteStatus(page)).toHaveText('Записано.', { timeout: 6000 });
+    await done(page);
+    const made = (await liveNotes(page)).find((x) => x.body === 'А');
+    await putAll(page, [
+      [sKept[0], { ...sKept[1], body: 'по-старо от А', at: now - 30000 }],
+      [`lrn-note-pending:n:${made.id}`, { courseId: C, lessonId: L1, draft: { noteId: made.id }, body: 'по-ново от Б', at: now - 500 }],
+    ]);
+    await page.reload();
+    await waitReady(page);
+    await expect.poll(() => keys(page), { timeout: 6000 }).toEqual([]);
+    const b = (await liveNotes(page)).map((x) => x.body).sort();
+    info('T072-D3', { a, b });
+    console.log('D3', JSON.stringify({ a, b }));
+    if (a.includes('старо (0.14.2)') || b.includes('по-старо от А')) test.fail(true, 'T072-D3: flushPendingNote writes the kept copies in the order of the localStorage keys, never by their time (`at`): two copies of ONE place under two keys — the 0.14.2 single key and "n:<id>", or "s:<lesson>:<start>-<end>" of a new note and "n:<id>" of the note made on that same place — the one written last wins, also when it is the older text');
+    expect(a).toEqual(['ново']);
+    expect(b).toEqual(['ново', 'по-ново от Б'].sort());
+  });
+
+  test('T072-D4 two existing notes emptied when the page goes (one in lesson 0001, one in 0002 — two tabs, or one after the other): both are deleted softly at the next start and EACH lesson offers "Върни"; no empty live note; nothing lost without a way back', async ({ page }) => {
+    await openL(page, '0001');
+    await writeNote(page, 'оценява рисковете', 'Важно едно');
+    await done(page);
+    await openL(page, '0002');
+    await writeNote(page, 'Сроковете са кратки', 'Важно две');
+    await done(page);
+    const all = await liveNotes(page);
+    const one = all.find((n) => n.body === 'Важно едно');
+    const two = all.find((n) => n.body === 'Важно две');
+    const L2 = `${C}/lesson:0002`;
+    await putAll(page, [
+      [`lrn-note-pending:n:${one.id}`, { courseId: C, lessonId: L1, draft: { noteId: one.id }, body: '', at: Date.now() - 2000 }],
+      [`lrn-note-pending:n:${two.id}`, { courseId: C, lessonId: L2, draft: { noteId: two.id }, body: '  \n ', at: Date.now() - 1000 }],
+    ]);
+    await page.reload();
+    await waitReady(page);
+    await expect.poll(() => keys(page), { timeout: 6000 }).toEqual([]);
+    const after = await notesOf(page);
+    expect(after.filter((n) => !n.deleted && !n.body.trim())).toEqual([]);
+    expect(after.filter((n) => n.deleted).map((n) => n.body).sort()).toEqual(['Важно едно', 'Важно две'].sort());
+    const undo2 = await page.locator('[data-action="undo-note-delete"]').isVisible({ timeout: 3000 }).catch(() => false);
+    if (undo2) { await page.locator('[data-action="undo-note-delete"]').click(); }
+    await openL(page, '0001');
+    await page.waitForTimeout(800);
+    const undo1 = await page.locator('[data-action="undo-note-delete"]').isVisible();
+    if (undo1) await page.locator('[data-action="undo-note-delete"]').click();
+    await page.waitForTimeout(500);
+    const live = (await liveNotes(page)).map((n) => n.body).sort();
+    info('T072-D4', { undo1, undo2, live });
+    if (!(undo1 && undo2)) test.fail(true, 'T072-D1: the emptied note for "Върни" is ONE localStorage key (lrn-note-emptied): when two existing notes were emptied as the page went (two tabs, two lessons), both are soft-deleted at the next start but only the last one is offered "Върни"; the other is deleted with no way back in the app (it stays deleted in the database)');
+    expect(undo1 && undo2).toBe(true);
+    expect(live).toEqual(['Важно едно', 'Важно две'].sort());
+  });
+
+  test('T072-D5 an emptied note + a fast reload, "Върни" NOT pressed: the note stays deleted (no empty 📝), "Върни" is offered once only (not again after another reload); emptied by spaces only counts as empty; an emptied note whose lesson is opened after a week is no longer offered', async ({ page }) => {
+    await openL(page, '0001');
+    await writeNote(page, 'оценява рисковете', 'Пазен текст');
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('   ');
+    await keepNow(page);
+    await page.reload();
+    await waitReady(page);
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeVisible({ timeout: 5000 });
+    await expect(noteMarks(page)).toHaveCount(0);
+    await page.reload();
+    await waitReady(page);
+    await page.waitForTimeout(800);
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeHidden();
+    const all = await notesOf(page);
+    expect(all.filter((n) => !n.deleted)).toEqual([]);
+    expect(all.map((n) => n.body)).toEqual(['Пазен текст']);
+    // A week-old "emptied" entry is not offered.
+    await page.evaluate(() => localStorage.setItem('lrn-note-emptied', JSON.stringify({ lessonId: 'x', entry: { noteId: 'x' }, at: Date.now() - 8 * 864e5 })));
+    await page.reload();
+    await waitReady(page);
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeHidden();
+  });
+});
