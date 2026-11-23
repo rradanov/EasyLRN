@@ -553,6 +553,41 @@ test.describe('T072-M the marker and the palm after the layout changed', () => {
   });
 });
 
+test.describe('T072-M2 a stroke that leaves the lesson onto the top row (portrait)', () => {
+  test('T072-M2 portrait (800×1280 and 1200×1920): a marker stroke from a line of the lesson up over the buttons of the top row (tools, colours, "Скрий", the notes bar) presses none of them, the bars stay shown (tools-t016 S5 drags out to the left edge in portrait instead)', async ({ page }) => {
+    await start(page);
+    for (const [w, h] of [[800, 1280], [1200, 1920]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await openLesson(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const cdp = await page.context().newCDPSession(page);
+      const touch = touchOf(cdp);
+      await page.locator('[data-field="mark-tools"] [data-tool="marker"]').click();
+      const pressed = () => page.locator('[data-field="mark-tools"] button, .notes-strip__bar button').evaluateAll((els) => els.map((e) => `${e.dataset.tool || e.dataset.color || e.dataset.action}:${e.getAttribute('aria-pressed')}`));
+      const before = await pressed();
+      const x = await boxes(page);
+      const r = await textRect(page, 'Абзац 0 за превъртане');
+      const y = (r.top + r.bottom) / 2;
+      const buttons = await page.evaluate(() => [...document.querySelectorAll('[data-field="mark-tools"] button, .notes-strip__bar button')].filter((b) => b.getClientRects().length).map((b) => { const q = b.getBoundingClientRect(); return [q.left + q.width / 2, q.top + q.height / 2]; }));
+      await touch('touchStart', [[r.left + 4, y]]);
+      for (let i = 1; i <= 6; i++) { await touch('touchMove', [[r.left + 4 + i * 20, y]]); await page.waitForTimeout(10); }
+      for (const [bx, by] of buttons) { await touch('touchMove', [[bx, by]]); await page.waitForTimeout(10); }
+      await touch('touchEnd');
+      await page.waitForTimeout(400);
+      const after = await pressed();
+      const y2 = await boxes(page);
+      info(`T072-M2 ${w}`, { buttons: buttons.length, marks: (await liveAnn(page)).map((a) => a.exact) });
+      expect(after).toEqual(before);
+      expect(y2.tools, `${w}: the tools still shown`).not.toBeNull();
+      expect(y2.notesBar, `${w}: the notes bar still shown`).not.toBeNull();
+      expect(y2.topbar.top).toBe(x.topbar.top);
+      await page.keyboard.press('Escape');
+      await cdp.detach();
+      await clearNotes(page);
+    }
+  });
+});
+
 // ===========================================================================
 test.describe('T072-S the lesson vs the layout', () => {
   test('T072-S1 a lesson cannot move the divider, the bars or the panel: it posts every message it can (lrn:size huge / 0, lrn:layout, lrn:position, lrn:anchor, lrn:selection), scrolls itself into view, takes the focus and gets the user\'s arrow keys / Home / End (the divider is not focused), dispatches synthetic pointer events — the panel size, the divider, the top row and the stored notesSplit stay as they were', async ({ page }) => {
