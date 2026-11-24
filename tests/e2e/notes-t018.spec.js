@@ -319,11 +319,12 @@ test.describe('T018-S security of the notes (the lesson is untrusted)', () => {
     const height = await page.evaluate(() => document.documentElement.scrollHeight);
     const frameH = (await page.locator('iframe.lesson-frame').boundingBox()).height;
     info('T018-S2 page height after a forged place at 9e7 px', { height, frameH });
-    // A tap on its own (known) noted place: only the user's note opens, nothing changes.
+    // A forged tap on its own (known) noted place: since T-076 (T024-S3) a lrn:tap with no
+    // gesture in the lesson opens nothing at all (before: only the user's note opened); nothing changes.
     await frame.evaluate((id) => parent.postMessage({ lrn: 1, type: 'lrn:tap', annotationId: id }, '*'), ids[0]);
-    await expect(panel(page)).toBeVisible();
-    await expect(noteText(page)).toHaveValue('Оригинал');
-    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+    await expect(panel(page)).toBeHidden();
+    expect(await notesOf(page)).toEqual(before.n);
     // "orphan" for everything: a state only (the lesson's own text says where), the body and quote stay.
     await frame.evaluate((ids) => parent.postMessage({ lrn: 1, type: 'lrn:anchored', results: ids.map((id) => ({ id, state: 'orphan' })) }, '*'), ids);
     await page.waitForTimeout(1500);
