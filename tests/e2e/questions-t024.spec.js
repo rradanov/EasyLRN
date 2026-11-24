@@ -1127,6 +1127,9 @@ test.describe('T024-G the threads in the lesson', () => {
     fail = false;
     await field(page).focus();
     await page.keyboard.press('Tab');
+    // T-041: the 🎤 of the field comes right after it (when the browser has speech recognition).
+    const mic = panel(page).locator('[data-field="question-composer"] [data-action="voice"]');
+    if (await mic.isVisible()) { await expect(mic).toBeFocused(); await page.keyboard.press('Tab'); }
     await expect(sendButton(page)).toBeFocused();
     await page.keyboard.press('Tab');
     const toggle = page.locator('[data-action="question-prompt"]');

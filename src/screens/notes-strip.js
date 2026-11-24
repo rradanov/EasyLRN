@@ -79,6 +79,7 @@ import { h, mount } from '../dom.js';
 import { saveSettings, getSettings, getApiKey, COLORS } from '../db.js';
 import { link } from '../router.js';
 import { askTeacher, previewTeacher, lessonText } from '../teacher.js';
+import { createVoiceInput } from '../voice.js';
 import { monthState, budgetWarning, formatUSD } from '../usage.js';
 import {
   lessonThreads, threadMessages, quoteContext, startThread, sentText, addExchange, restartAnswer, finishAnswer,
@@ -676,6 +677,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     editing = null;
     if (asking) { clearTimeout(asking.previewTimer); asking.closed = true; }
     asking = null; // T-023: an answer still coming in goes on and is kept (src/questions.js)
+    dropVoices(); // T-041: the 🎤 of the panel stops (no audio is kept)
     const done = was ? finishEditing(was) : Promise.resolve();
     // T018-D12: whether the focus was in the panel is known only before it is emptied.
     const hadFocus = panel.contains(document.activeElement);
@@ -697,6 +699,18 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     if (s === 'orphan') return h('span', { class: 'notes-badge notes-badge--orphan', 'data-state': 'orphan', text: 'неприкачена' });
     return null;
   };
+
+  // T-041 (D-025): the 🎤 of the fields of the panel.
+  const voices = new Set();
+  const voiceFor = (field, label) => {
+    const v = createVoiceInput({ field, label });
+    voices.add(v);
+    return v;
+  };
+  function dropVoices() {
+    for (const v of voices) v.destroy();
+    voices.clear();
+  }
 
   let focusTimer = 0;
   /** Scroll the lesson to an annotation and frame it for a while. */
@@ -769,8 +783,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       annotation ? stateBadge(annotation) : null,
       hintText ? h('p', { class: 'notes-panel__hint', text: hintText }) : null,
       tooLong ? h('p', { class: 'notes-panel__hint', 'data-field': 'note-too-long', text: `Бележката е по-дълга от ${MAX_NOTE_LENGTH.toLocaleString('bg-BG')} знака (напр. от резервно копие). Показано е началото; ако я промениш, ще се запази само то.` }) : null,
-      // T-041: the 🎤 comes next to this field (dictation of the keyboard works already).
-      textarea,
+      // T-041: 🎤 next to the field (hidden without the API / offline: the keyboard's dictation stays).
+      h('div', { class: 'voice-field' }, textarea, voiceFor(textarea, 'Гласово въвеждане на бележката').element),
       status,
       h('div', { class: 'notes-panel__actions' }, doneButton, showButton, confirmButton, deleteButton));
     if (focusText) textarea.focus({ preventScroll: true });
@@ -1091,8 +1105,9 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     state.budget = budget;
     // T-025: "Развий ми го" comes here (data-slot="expand").
     const expandSlot = h('span', { class: 'thread__slot', 'data-slot': 'expand', hidden: true });
+    state.voice = voiceFor(textarea, 'Гласово въвеждане на въпроса');
     return h('div', { class: 'thread__composer', 'data-field': 'question-composer' },
-      textarea, status, keyNote, budget,
+      h('div', { class: 'voice-field' }, textarea, state.voice.element), status, keyNote, budget,
       h('div', { class: 'notes-panel__actions' }, send, cancel, promptToggle, expandSlot),
       promptBox);
   }
@@ -1247,6 +1262,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   /** "Изпрати": the question goes to the teacher (only from the app's own button / Ctrl+Enter). */
   async function sendQuestion(state) {
     if (state.sending || state.closed) return;
+    state.voice?.cancel(); // T-041: what is in the field is what goes
     const question = state.textarea.value.trim().slice(0, MAX_QUESTION_LENGTH);
     if (!question) { state.status.textContent = 'Напиши въпроса си.'; state.textarea.focus({ preventScroll: true }); return; }
     if (state.messages?.some((m) => running.has(m.id))) return;
@@ -1679,6 +1695,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       const ed = editing;
       if (ed) save(ed); // the last text is written (the save does not need this screen)
       destroyed = true;
+      dropVoices();
       clearTimeout(selectionTimer);
       clearTimeout(undoTimer);
       clearTimeout(focusTimer);

@@ -1257,6 +1257,20 @@ ol.activity { list-style: none; }
   resize: vertical;
 }
 .notes-panel__text:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+/* T-041 (D-025): 🎤 next to the field of a note / a question; interim text in grey. */
+.voice-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; }
+.voice-field > .notes-panel__text { grid-column: 1; }
+.voice { display: contents; }
+.voice[hidden] { display: none; }
+.voice__button { grid-column: 2; grid-row: 1; width: 44px; min-width: 44px; height: 44px; padding: 0; font-size: 1.2rem; justify-content: center; }
+.voice__button--on { background: #b3261e; border-color: #b3261e; color: #fff; animation: voice-pulse 1.2s ease-in-out infinite; }
+@keyframes voice-pulse { 50% { box-shadow: 0 0 0 6px rgba(179, 38, 30, 0.25); } }
+@media (prefers-reduced-motion: reduce) { .voice__button--on { animation: none; } }
+.voice__status, .voice__interim { grid-column: 1 / -1; margin: 2px 0 0; font-size: 0.85rem; }
+.voice__status { color: var(--ink-muted); }
+.voice__status:empty { display: none; }
+.voice__interim { color: var(--ink-muted); font-style: italic; }
+.voice__interim[hidden] { display: none; }
 .notes-panel__status { min-height: 1.4em; margin: 4px 0 8px; color: var(--ink-muted); font-size: 0.85rem; }
 .notes-panel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .notes-panel__actions .button { min-height: 40px; padding-top: 0; padding-bottom: 0; font-size: 0.9rem; }
