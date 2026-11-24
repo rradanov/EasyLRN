@@ -256,6 +256,8 @@ for (const kind of ['demo', 'real']) {
         await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
         await page.waitForTimeout(500);
         // A click from a script (an evaluate() is a user activation): a Playwright click would first scroll the link into view.
+        // T-075 (T074-S1): a link needs a gesture IN the lesson — a real tap focuses the frame first; here the frame gets the focus without a scroll.
+        await page.locator('iframe.lesson-frame').evaluate((f) => f.focus({ preventScroll: true }));
         await frameOf(page, c.id).evaluate(() => document.querySelector('a[href^="https://claude.ai/artifact/"]').click());
         await expect(page).toHaveURL(new RegExp(`#/c/${c.id}/read/R\\d+$`));
         if (delay) await page.waitForTimeout(delay);

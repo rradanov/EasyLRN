@@ -15,7 +15,7 @@
 // TEXT_VERSION); the result is kept per file hash (`sha256`) for the session.
 // Nothing of a question or an answer is ever sent to the lesson.
 // `showPrompt()` gives the whole prompt as text ("Покажи промпта", D-047).
-// The UI of the questions is T-023.
+// The UI of the questions is T-023 (src/questions.js, src/screens/notes-strip.js).
 import { getFile } from './db.js';
 import { streamMessage, DEFAULT_MODEL, DEFAULT_MAX_TOKENS, answerMaxTokens } from './claude.js';
 import { recordCall } from './usage.js';
@@ -25,7 +25,7 @@ export const RULES_URL = './prompts/teacher-system.md';
 export const TEXT_VERSION = 1;
 /** A lesson longer than this (characters, ~15 000 tokens) is sent as its headings + the section asked about. */
 export const LONG_LESSON_CHARS = 60000;
-export const LIMITS = Object.freeze({ quote: 2000, paragraph: 4000, question: 4000, pathItem: 200, pathItems: 12, courseFile: 40000, answer: 20000, history: 40 });
+export const LIMITS = Object.freeze({ quote: 2000, paragraph: 4000, question: 4000, pathItem: 200, pathItems: 12, courseFile: 40000, answer: 20000, history: 40, userTurn: 16000 });
 const CACHE_1H = Object.freeze({ type: 'ephemeral', ttl: '1h' });
 
 /**
@@ -245,12 +245,14 @@ export function lessonBlock(lesson, text) {
 }
 
 /** The user's message: the quote, its paragraph, the path of headings, the question. */
-export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null }) {
+export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null, followUp = false }) {
   const q = neutralizeTags(clean(clip(quote, LIMITS.quote)).trim());
   const p = neutralizeTags(clean(clip(paragraph, LIMITS.paragraph)).trim());
   const where = (Array.isArray(path) ? path : []).slice(0, LIMITS.pathItems)
     .map((s) => neutralizeTags(clean(clip(String(s ?? ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim())).filter(Boolean);
   const ask = clean(clip(question, LIMITS.question)).trim();
+  // T-023: a next question of a thread: only the question (the quote is in the first one).
+  if (followUp) return `Въпрос: ${ask}`;
   const lines = [];
   if (q) {
     lines.push(`Избран текст: «${q}»`);
@@ -271,7 +273,7 @@ export function questionText({ quote = '', paragraph = '', path = [], question =
  *   model?: string, maxTokens?: number }} opts
  * @returns {{ model, maxTokens, system: object[], messages: object[], cacheControl: object|null, meta }}
  */
-export function buildRequest({ rules, course, lesson, text, quote = '', paragraph = '', path = [], question, history = [], model = DEFAULT_MODEL, maxTokens = DEFAULT_MAX_TOKENS }) {
+export function buildRequest({ rules, course, lesson, text, quote = '', paragraph = '', path = [], question, history = [], followUp = false, model = DEFAULT_MODEL, maxTokens = DEFAULT_MAX_TOKENS }) {
   if (!rules?.text) throw new Error('teacher rules missing');
   if (typeof question !== 'string' || !question.trim()) throw new Error('empty question');
   const lessonPart = shortenLesson(text.text, quote);
@@ -284,7 +286,7 @@ export function buildRequest({ rules, course, lesson, text, quote = '', paragrap
   const turns = [];
   for (const t of (Array.isArray(history) ? history : []).slice(-LIMITS.history)) {
     const role = t?.role === 'assistant' ? 'assistant' : t?.role === 'user' ? 'user' : null;
-    const body = clean(clip(t?.text, role === 'assistant' ? LIMITS.answer : LIMITS.question + LIMITS.quote + LIMITS.paragraph)).trim();
+    const body = clean(clip(t?.text, role === 'assistant' ? LIMITS.answer : LIMITS.userTurn)).trim();
     if (!role || !body) continue;
     if (turns.length && turns[turns.length - 1].role === role) turns[turns.length - 1].content += `\n\n${body}`;
     else turns.push({ role, content: body });
@@ -293,7 +295,7 @@ export function buildRequest({ rules, course, lesson, text, quote = '', paragrap
   if (turns.length && turns[turns.length - 1].role === 'user') turns.pop(); // an unanswered question is replaced
   const messages = [
     ...turns.map((t) => ({ role: t.role, content: [{ type: 'text', text: t.content }] })),
-    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson }) }] },
+    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson, followUp }) }] },
   ];
   return {
     model,
@@ -327,10 +329,10 @@ export function showPrompt(request) {
  *   quote?: string, paragraph?: string, path?: string[], question: string,
  *   history?: object[], signal?: AbortSignal, onText?: Function, fetchOptions?: object }} opts
  */
-export async function askTeacher({ apiKey, settings = {}, course, lesson, quote, paragraph, path, question, history, signal, onText, retryWaits, idleTimeoutMs }) {
+export async function askTeacher({ apiKey, settings = {}, course, lesson, quote, paragraph, path, question, history, followUp, signal, onText, retryWaits, idleTimeoutMs }) {
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
-    rules, course, lesson, text, quote, paragraph, path, question, history,
+    rules, course, lesson, text, quote, paragraph, path, question, history, followUp,
     model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   const result = await streamMessage({
@@ -344,14 +346,14 @@ export async function askTeacher({ apiKey, settings = {}, course, lesson, quote,
   } catch (err) {
     console.warn('Cannot keep the cost of the answer:', err?.name || 'error');
   }
-  return { text: result.text, usage: result.usage, costUSD: result.costUSD, stopReason: result.stopReason, month, request };
+  return { text: result.text, usage: result.usage, costUSD: result.costUSD, stopReason: result.stopReason, model: result.model, month, request };
 }
 
 /** For "Покажи промпта" before sending: the request without sending it. */
-export async function previewTeacher({ settings = {}, course, lesson, quote, paragraph, path, question, history }) {
+export async function previewTeacher({ settings = {}, course, lesson, quote, paragraph, path, question, history, followUp }) {
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
-    rules, course, lesson, text, quote, paragraph, path, question, history,
+    rules, course, lesson, text, quote, paragraph, path, question, history, followUp,
     model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   return { request, text: showPrompt(request) };

@@ -1476,3 +1476,40 @@ ol.activity { list-style: none; }
 }
 /* Portrait: the handle of the notes is in the row (or floats in its corner): no strip for its box. */
 .screen--reader[data-layout="portrait"] .reader__notes .notes-strip-handle-box { width: 0; }
+
+/* T-023 (D-047): questions to the teacher — in the panel of the notes. */
+.notes-strip-quick--ask { top: 116px; }
+.reader__notes[data-panel-open="true"] .notes-strip-quick--ask { top: 60px; }
+.notes-strip-phone-ask { top: 172px; }
+.notes-strip__mark--thread { border-style: solid; border-color: var(--accent); }
+.notes-strip__questions[aria-expanded="true"] { border-color: var(--accent); }
+.thread__log { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 12px; }
+.thread__who { display: block; font-family: var(--font-sans); font-size: 0.75rem; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.thread__q { align-self: flex-end; max-width: 92%; padding: 6px 10px; border-radius: 10px; background: var(--paper-2); }
+.thread__q-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thread__a { padding: 6px 2px; border-top: 1px solid var(--rule); }
+.thread__a-body { overflow-wrap: anywhere; }
+.thread__a[data-status="streaming"] .thread__a-body:empty { min-height: 1.2em; }
+.thread__state, .thread__cost { margin: 4px 0 0; color: var(--ink-muted); font-size: 0.8rem; font-family: var(--font-sans); }
+.thread__error { margin: 4px 0; color: #a3260f; font-size: 0.85rem; }
+.thread__notice { margin: 4px 0 8px; padding: 6px 10px; border-left: 3px solid #b85200; background: var(--paper-2); font-size: 0.85rem; }
+.thread__notice[hidden], .thread__slot[hidden] { display: none; }
+.thread__field { min-height: 4.5em; }
+.thread__composer { border-top: 1px solid var(--rule); padding-top: 8px; }
+.thread__prompt {
+  margin: 8px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  font-family: ui-monospace, "Roboto Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thread__prompt[hidden] { display: none; }
+.thread__actions { margin-top: 12px; }
+.thread__list { margin-top: 16px; }
