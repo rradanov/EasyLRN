@@ -645,3 +645,110 @@ test.describe('T024-S the lesson and the questions', () => {
     info('T024-I3', { shownQuoteLength: shownQuote.length, sentQuoteLength: (/«([\s\S]*?)»\n/.exec(sent) || ['', ''])[1].length });
   });
 });
+
+// ===========================================================================
+// B2. The answer from the API (mocked) is inert Markdown
+// ===========================================================================
+test.describe('T024-M the answer is Markdown through DOMPurify', () => {
+  test('M1 HTML, scripts, javascript: / data: / vbscript: / protocol-relative / relative links, images, SVG, iframes, styles, forms, <meta refresh>, <base>, autolinks: nothing runs, nothing loads, the app does not move; links only https://, new tab, noopener noreferrer, no referrer', async ({ page }, ti) => {
+    const EVIL = [
+      'Начало **дебело** и *курсив*.',
+      '<script>window.top.__pwn = 1</script>', '<img src="https://evil.invalid/a.png" onerror="window.__pwn=2">', '![картинка](https://evil.invalid/b.png)',
+      '<svg onload="window.__pwn=3"><circle r=5 /></svg>', '<iframe src="https://evil.invalid/f"></iframe>', '<style>body{display:none}</style>',
+      '<form action="https://evil.invalid/f"><input name="k" value="x"><button>Изпрати</button></form>', '<meta http-equiv="refresh" content="0;url=https://evil.invalid/m">',
+      '<base href="https://evil.invalid/">', '<link rel="stylesheet" href="https://evil.invalid/s.css">', '<a href="https://evil.invalid/html-a" onclick="window.__pwn=4">html a</a>',
+      '[js](javascript:window.__pwn=5) [JS](JaVaScRiPt:alert(1)) [ent](jav&#x61;script:alert(1)) [tab](java\tscript:alert(1))',
+      '[data](data:text/html,<script>alert(1)</script>) [vb](vbscript:msgbox) [proto](//evil.invalid/p) [file](file:///etc/passwd)',
+      '[rel](#/settings) [rel2](../#/c/LRN-T24/read/0002) [rel3](0002-vtori.html) [mail](mailto:a@example.invalid)',
+      '[ok](https://example.invalid/ok "заглавие") <https://autolink.invalid/x> www.gfm-autolink.invalid',
+      '- [ ] задача', '- [x] готова', '<details open><summary>s</summary>d</details>', '&lt;b&gt;ентити&lt;/b&gt;',
+      '| a | b |\n|---|---|\n| <img src=x onerror=window.__pwn=6> | [x](javascript:1) |',
+      '```html\n<script>window.__pwn=7</script>\n```',
+    ].join('\n\n');
+    await start(page);
+    await mockApi(page, () => ({ sse: answerSse(EVIL, { step: 13 }) }));
+    const frame = await openLesson(page);
+    const before = page.url();
+    const metas0 = await page.evaluate(() => document.querySelectorAll('meta[http-equiv]').length);
+    await ask(page, 'оценява рисковете', 'Покажи ми HTML');
+    await lastDone(page);
+    await page.waitForTimeout(800);
+    const a = answers(page).first().locator('[data-field="answer-text"]');
+    const r = await a.evaluate((el) => ({
+      tags: [...new Set([...el.querySelectorAll('*')].map((x) => x.localName))].sort(),
+      on: [...el.querySelectorAll('*')].some((x) => [...x.attributes].some((at) => /^on/i.test(at.name) || /^(style|src|srcset|action|formaction|xlink:href)$/i.test(at.name))),
+      links: [...el.querySelectorAll('a')].map((x) => ({ href: x.getAttribute('href'), target: x.target, rel: x.rel, rp: x.getAttribute('referrerpolicy'), title: x.getAttribute('title') })),
+      inputs: [...el.querySelectorAll('input')].map((x) => ({ type: x.type, disabled: x.disabled })),
+      pwn: window.__pwn, top: window.top.__pwn, hidden: getComputedStyle(document.body).display,
+      base: document.querySelectorAll('base').length, metas: [...document.querySelectorAll('meta[http-equiv]')].length,
+    }));
+    info('T024-M1', r);
+    expect(r.tags.filter((t) => !['p', 'strong', 'em', 'ul', 'ol', 'li', 'a', 'span', 'input', 'code', 'pre', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'h5', 'h6', 'br', 'del'].includes(t))).toEqual([]);
+    expect(r.on).toBe(false);
+    expect(r.pwn).toBeUndefined();
+    expect(r.top).toBeUndefined();
+    expect(r.hidden).not.toBe('none');
+    expect(r.base).toBe(0);
+    expect(r.metas).toBe(metas0);
+    for (const l of r.links) {
+      expect(l.href).toMatch(/^https:\/\//);
+      expect(l.target).toBe('_blank');
+      expect(l.rel).toBe('noopener noreferrer');
+      expect(l.rp).toBe('no-referrer');
+      expect(l.title).toBeNull();
+    }
+    expect(r.links.map((l) => l.href)).toEqual(expect.arrayContaining(['https://example.invalid/ok']));
+    expect(r.links.some((l) => /evil\.invalid\/(a|b|f|m|s)/.test(l.href))).toBe(false);
+    for (const i of r.inputs) { expect(i.type).toBe('checkbox'); expect(i.disabled).toBe(true); }
+    // Nothing went out but the API (afterEach) and the app did not move.
+    expect(page.url()).toBe(before);
+    // Clicks on every dead link do nothing.
+    for (const d of await a.locator('.md__dead-link').all()) await d.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(300);
+    expect(page.url()).toBe(before);
+    expect(await page.evaluate(() => window.__pwn)).toBeUndefined();
+    // The https link opens a new tab without an opener (it is aborted by the test's router).
+    const [popup] = await Promise.all([page.waitForEvent('popup'), a.locator('a[href="https://example.invalid/ok"]').click()]);
+    expect(await popup.evaluate(() => window.opener).catch(() => null)).toBeNull();
+    await popup.close();
+    external.splice(0, external.length, ...external.filter((u) => u !== 'https://example.invalid/ok'));
+    // The lesson heard none of it.
+    expect(await frame.evaluate(() => window.__heardDom())).not.toContain('evil.invalid');
+  });
+
+  test('M2 a huge answer: 200 000 characters in 40 000 deltas with deep lists, a 1500-row table and 2000 nested quotes — the panel keeps drawing (no frame longer than 2 s, "Отказ" answers), the answer is complete at the end', async ({ page }, ti) => {
+    landscapeOnly(ti);
+    const parts = [];
+    for (let i = 0; i < 60; i++) parts.push(`${'  '.repeat(i)}- ниво ${i}`);
+    parts.push('', '| a | b | c |', '|---|---|---|');
+    for (let i = 0; i < 1500; i++) parts.push(`| ${i} | **б${i}** | [в](https://example.invalid/${i}) |`);
+    parts.push('', '>'.repeat(2000) + ' дълбок цитат', '');
+    let text = parts.join('\n');
+    while (text.length < 200000) text += `\n\nАбзац ${text.length} с *курсив* и \`код\` и още текст за дължина.`;
+    text = text.slice(0, 200000) + '\n\nКРАЙ-НА-ОТГОВОРА';
+    const step = Math.ceil(text.length / 40000);
+    await start(page);
+    await mockApi(page, () => ({ sse: answerSse(text, { step }) }));
+    await openLesson(page);
+    await page.evaluate(() => {
+      window.__longest = 0;
+      let last = performance.now();
+      const tick = () => { const now = performance.now(); window.__longest = Math.max(window.__longest, now - last); last = now; window.__raf = requestAnimationFrame(tick); };
+      window.__raf = requestAnimationFrame(tick);
+    });
+    const t0 = Date.now();
+    await ask(page, 'оценява рисковете', 'Дълъг отговор?');
+    await lastDone(page).catch(() => {});
+    await expect(answers(page).first()).toHaveAttribute('data-status', 'done', { timeout: 60000 });
+    const took = Date.now() - t0;
+    const longest = await page.evaluate(() => { cancelAnimationFrame(window.__raf); return window.__longest; });
+    const a = answers(page).first().locator('[data-field="answer-text"]');
+    await expect(a).toContainText('КРАЙ-НА-ОТГОВОРА');
+    const rows = await a.locator('tr').count();
+    info('T024-M2', { took, longest, rows, chars: text.length });
+    expect(rows).toBeGreaterThan(1000);
+    expect(longest).toBeLessThan(2000);
+    const [m] = (await messagesOf(page)).filter((x) => x.role === 'assistant');
+    expect(m.content.endsWith('КРАЙ-НА-ОТГОВОРА')).toBe(true);
+  });
+});
