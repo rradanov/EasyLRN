@@ -17,7 +17,7 @@
 // `showPrompt()` gives the whole prompt as text ("Покажи промпта", D-047).
 // The UI of the questions is T-023.
 import { getFile } from './db.js';
-import { streamMessage, DEFAULT_MODEL, DEFAULT_MAX_TOKENS } from './claude.js';
+import { streamMessage, DEFAULT_MODEL, DEFAULT_MAX_TOKENS, answerMaxTokens } from './claude.js';
 import { recordCall } from './usage.js';
 
 export const RULES_URL = './prompts/teacher-system.md';
@@ -28,10 +28,46 @@ export const LONG_LESSON_CHARS = 60000;
 export const LIMITS = Object.freeze({ quote: 2000, paragraph: 4000, question: 4000, pathItem: 200, pathItems: 12, courseFile: 40000, answer: 20000, history: 40 });
 const CACHE_1H = Object.freeze({ type: 'ephemeral', ttl: '1h' });
 
-const clip = (s, n) => {
+/**
+ * Is `i` inside one character of `s` (a grapheme), i.e. not a place to cut?
+ * Fixed rules (no Intl.Segmenter: its data changes with the browser and the
+ * prompt must stay the same, D-017): the second half of a surrogate pair, a
+ * combining mark, a variation selector, a skin tone, a tag character, or
+ * either side of a zero-width joiner (T074-D4).
+ */
+const JOINS = /^(?:\p{M}|[\u200D\uFE00-\uFE0F\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}])/u;
+function inCharacter(s, i) {
+  if (i <= 0 || i >= s.length) return false;
+  const c = s.charCodeAt(i);
+  if (c >= 0xDC00 && c <= 0xDFFF && (s.charCodeAt(i - 1) & 0xFC00) === 0xD800) return true;
+  if (s.charCodeAt(i - 1) === 0x200D) return true;
+  return JOINS.test(s.slice(i, i + 2));
+}
+/** `s` cut to at most `n` UTF-16 units, at a character boundary (an ellipsis when cut). */
+export function clipText(s, n) {
   const t = typeof s === 'string' ? s : '';
-  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
-};
+  if (t.length <= n) return t;
+  let end = Math.max(0, n - 1);
+  const floor = Math.max(0, end - 64); // a cluster is never that long; stop anyway
+  while (end > floor && inCharacter(t, end)) end--;
+  return `${t.slice(0, end)}…`;
+}
+const clip = clipText;
+
+/**
+ * T074-S2: the material (course files, the lesson, its title, the quote) can
+ * never close or open a block of the prompt. Deterministic and the same for
+ * every text: every closing tag "</x" becomes "<\/x", and an opening tag of a
+ * name the prompt uses (or might use: SYSTEM, RULES…) becomes "<\x" — in any
+ * letter case. The model still reads the text; only the app writes real tags.
+ */
+export const PROMPT_TAGS = Object.freeze(['LESSON', 'MISSION', 'NOTES', 'RESOURCES', 'GLOSSARY', 'QUOTE', 'PARAGRAPH',
+  'QUESTION', 'ANSWER', 'COURSE', 'REFERENCE', 'SYSTEM', 'RULES', 'MATERIAL', 'INSTRUCTIONS', 'THREAD', 'HISTORY', 'USER', 'ASSISTANT', 'HUMAN']);
+const OPEN_TAG = new RegExp(`<(?=\\s*(?:${PROMPT_TAGS.join('|')})(?![A-Za-z0-9_-]))`, 'gi');
+export function neutralizeTags(s) {
+  return String(s ?? '').replace(/<(?=\s*\/)\s*\//g, '<\\/').replace(OPEN_TAG, '<\\');
+}
+
 /** Line ends, NFC, no control characters: the same text from the same input. */
 const clean = (s) => String(s ?? '').normalize('NFC').replace(/\r\n?/g, '\n')
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
@@ -178,7 +214,7 @@ export function shortenLesson(text, quote = '') {
   let end = lineAt + 1;
   while (end < lines.length && !(/^(#{1,6}) /.test(lines[end]) && /^(#{1,6}) /.exec(lines[end])[1].length <= level)) end++;
   let section = lines.slice(start, end).join('\n');
-  if (section.length > LONG_LESSON_CHARS) section = `${section.slice(0, LONG_LESSON_CHARS - 1)}…`;
+  if (section.length > LONG_LESSON_CHARS) section = clip(section, LONG_LESSON_CHARS);
   const outline = headingsOf(text).join('\n');
   return {
     text: `[Урокът е дълъг: тук са заглавията му и разделът, за който е въпросът.]\n\nЗаглавия:\n${outline}\n\nРазделът:\n${section}`,
@@ -191,9 +227,9 @@ export function shortenLesson(text, quote = '') {
 /** Block {2}: the course (deterministic: the same course record → the same text). */
 export function courseBlock(course) {
   const meta = course?.meta || {};
-  const part = (name, value) => (typeof value === 'string' && value.trim() ? `<${name}>\n${clip(clean(value).trim(), LIMITS.courseFile)}\n</${name}>` : '');
+  const part = (name, value) => (typeof value === 'string' && value.trim() ? `<${name}>\n${neutralizeTags(clip(clean(value).trim(), LIMITS.courseFile))}\n</${name}>` : '');
   return [
-    `Курс: ${clean(course?.title || course?.id || '').trim()}`,
+    `Курс: ${neutralizeTags(clean(course?.title || course?.id || '').trim())}`,
     part('MISSION', meta.mission),
     part('NOTES', meta.notes),
     part('RESOURCES', meta.resources),
@@ -205,15 +241,15 @@ export function courseBlock(course) {
 export function lessonBlock(lesson, text) {
   const name = lesson?.kind === 'reference' ? 'Справочник' : 'Урок';
   const head = `${name} ${lesson?.number || ''}: ${clean(text.title || lesson?.title || '').trim()}`.replace(/\s+:/, ':');
-  return `<LESSON>\n${head}\n\n${text.text}\n</LESSON>`;
+  return `<LESSON>\n${neutralizeTags(head)}\n\n${neutralizeTags(text.text)}\n</LESSON>`;
 }
 
 /** The user's message: the quote, its paragraph, the path of headings, the question. */
 export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null }) {
-  const q = clean(clip(quote, LIMITS.quote)).trim();
-  const p = clean(clip(paragraph, LIMITS.paragraph)).trim();
+  const q = neutralizeTags(clean(clip(quote, LIMITS.quote)).trim());
+  const p = neutralizeTags(clean(clip(paragraph, LIMITS.paragraph)).trim());
   const where = (Array.isArray(path) ? path : []).slice(0, LIMITS.pathItems)
-    .map((s) => clean(clip(String(s ?? ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim()).filter(Boolean);
+    .map((s) => neutralizeTags(clean(clip(String(s ?? ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim())).filter(Boolean);
   const ask = clean(clip(question, LIMITS.question)).trim();
   const lines = [];
   if (q) {
@@ -295,7 +331,7 @@ export async function askTeacher({ apiKey, settings = {}, course, lesson, quote,
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
     rules, course, lesson, text, quote, paragraph, path, question, history,
-    model: settings.model || DEFAULT_MODEL, maxTokens: settings.maxTokensAnswer || DEFAULT_MAX_TOKENS,
+    model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   const result = await streamMessage({
     apiKey, model: request.model, maxTokens: request.maxTokens, system: request.system, messages: request.messages,
@@ -316,7 +352,7 @@ export async function previewTeacher({ settings = {}, course, lesson, quote, par
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
     rules, course, lesson, text, quote, paragraph, path, question, history,
-    model: settings.model || DEFAULT_MODEL, maxTokens: settings.maxTokensAnswer || DEFAULT_MAX_TOKENS,
+    model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   return { request, text: showPrompt(request) };
 }

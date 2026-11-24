@@ -231,7 +231,7 @@ test.describe('T074-S the port of the guard once per frame (T072-S1 fix)', () =>
     await frame.evaluate(() => { window.__armed = false; }).catch(() => {});
     info('T074-S1', { during, after });
     const moved = !after.includes('/read/0001');
-    test.fail(moved, 'T074-S1: lrn:link / lrn:anchor need only navigator.userActivation of the APP; a click on the app\'s own buttons ("Готово", ✕, ▲▼, a tool) right after the note field is left is such an activation, so a lesson that keeps sending lrn:link (it knows when the note is typed: T072-I1) takes the app to another lesson of the course the moment the user closes the note — the gesture should be one in the lesson (e.g. the last pointerdown was on the frame)');
+    // T074-S1: fixed in 0.16.1 (T-075) — strict now.
     expect(moved).toBe(false);
   });
 });

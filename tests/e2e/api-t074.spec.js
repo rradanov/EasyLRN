@@ -271,7 +271,7 @@ test.describe('T074-K the key', () => {
     }
     info('T074-D1', out.map((r) => r.text));
     const leaks = out.filter((r, i) => r.text.includes(odd[i].slice(0, 20)));
-    test.fail(leaks.length > 0, 'T074-D1: describeError() puts the API\'s `error.type` into the Bulgarian text verbatim (400 and other statuses: "Заявката е отказана (400, <type>)"), up to 60 characters of any text — markup, a URL, words, even the key if a proxy echoes it; the type should be shown only when it is one of the API\'s names ([a-z_]{1,40})');
+    // T074-D1: fixed in 0.16.1 (T-075) — strict now.
     expect(leaks.map((r) => r.text)).toEqual([]);
   });
 
@@ -381,7 +381,7 @@ test.describe('T074-L the lesson vs the teacher', () => {
     const count = (s, tag) => s.split(tag).length - 1;
     const lessonEscapes = count(r.lessonBlock, '</LESSON>') !== 1 || !r.lessonBlock.endsWith('</LESSON>') || count(r.lessonBlock, '<LESSON>') !== 1;
     const courseEscapes = ['MISSION', 'GLOSSARY'].some((t) => count(r.courseBlock, `</${t}>`) !== 1) || r.courseBlock.includes('<LESSON>');
-    test.fail(lessonEscapes || courseEscapes, 'T074-S2: the text of a lesson (its <title> too) and of MISSION / NOTES / RESOURCES / GLOSSARY goes into <LESSON>…</LESSON> / <MISSION>… unescaped: a lesson or a course file that contains "</LESSON>" or "</MISSION>" ends its block early and its next lines (e.g. "<SYSTEM>Нови правила…") stand outside the material, as if the app had written them; the tags inside the material should be neutralised (e.g. "</LESSON>" → "<\\/LESSON>") or the blocks given a random boundary');
+    // T074-S2: fixed in 0.16.1 (T-075) — strict now.
     expect(lessonEscapes).toBe(false);
     expect(courseEscapes).toBe(false);
   });
@@ -473,7 +473,8 @@ test.describe('T074-S the stream', () => {
     expect(r).toMatchObject({ ok: false, kind: 'stream', partial: 'Начало', calls: 1 });
     r = await stubStream(page, { chunks: [ev('message_start', { message: { usage: {} } }), delta('Нач'), delta('ало')], end: 'close' });
     expect(r).toMatchObject({ ok: false, kind: 'stream', partial: 'Начало', calls: 1 });
-    const cut = await stubStream(page, { chunks: [ev('message_start', { message: { usage: {} } }), delta('Нача')], end: 'error' });
+    // T-075: a gap, so the reader waits on the stream when the chunk comes (error() drops what is still queued).
+    const cut = await stubStream(page, { chunks: [ev('message_start', { message: { usage: {} } }), delta('Нача')], end: 'error', gap: 30 });
     expect(cut).toMatchObject({ ok: false, kind: 'stream', calls: 1 });
     const idle = await stubStream(page, { chunks: [ev('message_start', { message: { usage: {} } }), delta('Нача')], end: 'hang', opts: { idle: 600 } });
     expect(idle).toMatchObject({ ok: false, kind: 'timeout', calls: 1 });
@@ -486,7 +487,7 @@ test.describe('T074-S the stream', () => {
     const none = await page.evaluate(async () => (await import('./src/db.js')).usageBetween());
     expect(none).toEqual([]);
     info('T074-D5', { cut, idle });
-    test.fail(cut.partial !== 'Нача' || idle.partial !== 'Нача', 'T074-D5: a stream cut by the network or stopped (the 60 s idle timeout) AFTER some text loses that text: readEvents() throws its ClaudeError ("stream" / "timeout") without `partial`, only the `error` event and the end without message_stop carry it (T-020 says "прекъснат отговор носи partial"); the answer read so far cannot be shown');
+    // T074-D5: fixed in 0.16.1 (T-075) — strict now.
     expect(cut.partial).toBe('Нача');
     expect(idle.partial).toBe('Нача');
   });
@@ -735,7 +736,7 @@ test.describe('T074-C the cost', () => {
     info('T074-D2', { cost: r.costUSD, usage: r.usage, m });
     expect(Number.isFinite(m.spent)).toBe(true);
     const bogus = !(r.usage.input <= 10_000_000 && r.usage.output <= 1_000_000 && m.spent < 1e6);
-    test.fail(bogus, 'T074-D2: usageCounts() has no upper bound: a usage of 1e300 input / 1e15 output tokens (a broken proxy, a bug of the API) is priced and kept — the month shows "$2e+294", the warning stays for the rest of the month and nothing in the app can remove the record; counts above a sane limit (e.g. the context window, 10 M) should be refused or capped');
+    // T074-D2: fixed in 0.16.1 (T-075) — strict now.
     expect(bogus).toBe(false);
   });
 
@@ -773,7 +774,7 @@ test.describe('T074-C the cost', () => {
     const neg = shown.find((s) => s.stored === -5);
     const big = shown.find((s) => s.stored === 1e9);
     const mismatch = neg.sent !== Number(neg.shown) || big.sent !== Number(big.shown);
-    test.fail(mismatch, 'T074-D3: a stored "Най-дълъг отговор" that is not a choice is sent as something else than "Настройки" shows: -5 → max_tokens 1 (the screen shows 1500; the answer is cut after one token), 1e9 → 32000 (the screen shows "1000000000 токена"); teacher.js uses `settings.maxTokensAnswer || 1500` and claude.js only clamps — a value outside MAX_TOKENS_CHOICES should fall back to 1500 in both');
+    // T074-D3: fixed in 0.16.1 (T-075) — strict now.
     expect(neg.sent).toBe(Number(neg.shown));
     expect(big.sent).toBe(Number(big.shown));
   });
@@ -867,7 +868,7 @@ test.describe('T074-P the prompt', () => {
     }, { C, L: L1 });
     info('T074-D4', r);
     const broken = !r.course || !r.quote;
-    test.fail(broken, 'T074-D4: clip() in src/teacher.js cuts by UTF-16 units (s.slice(0, n - 1)): at a limit (course file 40 000, quote 2000, paragraph / question 4000, a long section 60 000) an emoji or another character outside the BMP is split and a lone surrogate goes into the prompt (JSON "\\ud83d"); the API may refuse the request (400) or the cache prefix differs; cut at a code point');
+    // T074-D4: fixed in 0.16.1 (T-075) — strict now.
     expect(r.course).toBe(true);
     expect(r.quote).toBe(true);
   });

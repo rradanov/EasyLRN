@@ -91,21 +91,42 @@ export const FETCH_OPTIONS = Object.freeze({
   mode: 'cors',
 });
 
-/** The API's error type from a response body ('' if none). Its message text is not kept. */
+/**
+ * The API's error types (docs: errors) in Bulgarian. Only these are ever
+ * shown; any other `type` (a proxy, a broken answer) is dropped, never put into
+ * a text as it came (T074-D1).
+ */
+export const ERROR_TYPES = Object.freeze({
+  invalid_request_error: 'невалидна заявка',
+  authentication_error: 'невалиден ключ',
+  billing_error: 'проблем с плащането',
+  permission_error: 'няма право',
+  not_found_error: 'не е намерено',
+  request_too_large: 'заявката е твърде голяма',
+  rate_limit_error: 'лимит на заявките',
+  api_error: 'грешка в API',
+  timeout_error: 'изтекло време',
+  overloaded_error: 'претоварен',
+});
+/** The API's error type from a response body: one of ERROR_TYPES, else ''. Its message text is not kept. */
 async function errorType(response) {
   try {
     const data = await response.json();
-    return typeof data?.error?.type === 'string' ? data.error.type.slice(0, 60) : '';
+    const type = data?.error?.type;
+    return typeof type === 'string' && Object.hasOwn(ERROR_TYPES, type) ? type : '';
   } catch {
     return '';
   }
 }
 
 /**
- * Bulgarian text for a failed call (ARCHITECTURE §6.1).
+ * Bulgarian text for a failed call (ARCHITECTURE §6.1). `type` is shown only
+ * as the Bulgarian name of a known API error type (T074-D1).
  * @returns {{ kind: string, text: string }}
  */
 export function describeError(status, type = '', model = '') {
+  if (typeof type !== 'string' || !Object.hasOwn(ERROR_TYPES, type)) type = '';
+  const said = type ? `: ${ERROR_TYPES[type]}` : '';
   if (status === 401 || type === 'authentication_error') {
     return { kind: 'auth', text: 'Ключът е невалиден (401). Провери го в Claude Console или въведи нов.' };
   }
@@ -121,11 +142,17 @@ export function describeError(status, type = '', model = '') {
   if (status === 529 || type === 'overloaded_error') {
     return { kind: 'busy', text: 'Claude API е претоварен в момента (529). Опитай пак след малко.' };
   }
+  if (status === 413 || type === 'request_too_large') {
+    return { kind: 'request', text: 'Заявката е твърде голяма (413). Съкрати въпроса или избраното.' };
+  }
+  if (type === 'billing_error') {
+    return { kind: 'request', text: `Заявката е отказана (${status || 400}${said}). Провери баланса и плащането в Claude Console.` };
+  }
   if (status === 400) {
-    return { kind: 'request', text: `Заявката е отказана (400${type ? `, ${type}` : ''}). Провери модела и баланса в Claude Console.` };
+    return { kind: 'request', text: `Заявката е отказана (400${said}). Провери модела и баланса в Claude Console.` };
   }
   if (status >= 500) return { kind: 'server', text: `Грешка в Claude API (${status}). Опитай пак след малко.` };
-  return { kind: 'request', text: `Заявката е отказана (${status}${type ? `, ${type}` : ''}).` };
+  return { kind: 'request', text: `Заявката е отказана (${status}${said}).` };
 }
 
 /**
@@ -190,7 +217,20 @@ export const PRICES = Object.freeze({
   }),
 });
 
-const count = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+/**
+ * T074-D2: a count over this is not a real one (a broken proxy, a bug): it is
+ * dropped (0), with a warning in the console. The largest prompt is far below
+ * it (the context window), the largest answer below the output limit.
+ */
+export const USAGE_LIMITS = Object.freeze({ input: 10_000_000, output: 1_000_000 });
+/** A call that would cost more than this (USD) is not a real one: its cost is dropped (T074-D2). */
+export const MAX_CALL_COST_USD = 100;
+const count = (v, max = USAGE_LIMITS.input) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n > max) { console.warn('EasyLRN: a usage count from the API is out of bounds and is ignored.'); return 0; }
+  return Math.floor(n);
+};
 
 /**
  * The token counts of an API `usage` object, in the app's names:
@@ -204,7 +244,7 @@ export function usageCounts(usage = {}) {
   let write5m = split ? count(split.ephemeral_5m_input_tokens) : 0;
   let write1h = split ? count(split.ephemeral_1h_input_tokens) : cacheWrite;
   if (split && write5m + write1h < cacheWrite) write1h += cacheWrite - write5m - write1h;
-  return { input: count(u.input_tokens), output: count(u.output_tokens), cacheRead: count(u.cache_read_input_tokens), cacheWrite: Math.max(cacheWrite, write5m + write1h), write5m, write1h };
+  return { input: count(u.input_tokens), output: count(u.output_tokens, USAGE_LIMITS.output), cacheRead: count(u.cache_read_input_tokens), cacheWrite: Math.max(cacheWrite, write5m + write1h), write5m, write1h };
 }
 
 /** Cost in USD of one call (`usage` of the API or usageCounts()). */
@@ -213,7 +253,8 @@ export function costOf(model, usage) {
   let p = PRICES[model] || PRICES[DEFAULT_MODEL];
   const prompt = c.input + c.cacheRead + c.cacheWrite;
   if (p.long && prompt > p.long.over) p = p.long;
-  return (c.input * p.input + c.output * p.output + c.write5m * p.write5m + c.write1h * p.write1h + c.cacheRead * p.read) / 1e6;
+  const cost = (c.input * p.input + c.output * p.output + c.write5m * p.write5m + c.write1h * p.write1h + c.cacheRead * p.read) / 1e6;
+  return Number.isFinite(cost) && cost >= 0 && cost <= MAX_CALL_COST_USD ? cost : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,13 +263,23 @@ export function costOf(model, usage) {
 
 export const DEFAULT_MAX_TOKENS = 1500;
 export const MAX_TOKENS_LIMIT = 32000;
+/**
+ * "Най-дълъг отговор" as it is sent and shown (T074-D3): a stored value that is
+ * not a positive number → DEFAULT_MAX_TOKENS; a larger one than the API takes →
+ * MAX_TOKENS_LIMIT. "Настройки" shows this same number.
+ */
+export function answerMaxTokens(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_TOKENS;
+  return Math.min(MAX_TOKENS_LIMIT, n);
+}
 /** No byte from the API for this long → the call is given up (a timeout). */
 export const IDLE_TIMEOUT_MS = 60000;
 /** An overloaded / rate-limited API is asked again after these waits (ms), before any text came. */
 export const RETRY_WAITS_MS = Object.freeze([2000, 6000]);
 const RETRY_AFTER_MAX_MS = 30000;
 
-/** An error of a call: `kind` (auth, permission, model, busy, request, server, network, timeout, aborted, stream, no-key, bad-key), Bulgarian `text`. Never the key, never the API's own message text. */
+/** An error of a call (`partial`: the text that came before it; `interrupted`: some did): `kind` (auth, permission, model, busy, request, server, network, timeout, aborted, stream, no-key, bad-key), Bulgarian `text`. Never the key, never the API's own message text. */
 export class ClaudeError extends Error {
   constructor(kind, text, status = 0) {
     super(text);
@@ -347,7 +398,7 @@ export async function streamMessage({
   const valid = validateKey(apiKey);
   if (valid.error) throw new ClaudeError('bad-key', valid.error);
   const id = typeof model === 'string' && /^[a-z0-9.-]{3,80}$/.test(model) ? model : DEFAULT_MODEL;
-  const max = Math.min(MAX_TOKENS_LIMIT, Math.max(1, Math.floor(Number(maxTokens) || DEFAULT_MAX_TOKENS)));
+  const max = answerMaxTokens(maxTokens);
   const body = { model: id, max_tokens: max, stream: true, messages };
   if (system !== undefined && system !== null && system !== '') body.system = system;
   if (cacheControl) body.cache_control = cacheControl; // automatic caching of the thread (D-017)
@@ -387,7 +438,7 @@ export async function streamMessage({
       let stopReason = null;
       let failure = null;
       let stopped = false;
-      await readEvents(response.body, (type, data) => {
+      const read = readEvents(response.body, (type, data) => {
         const kind = data?.type || type;
         if (kind === 'message_start') {
           usage = { ...(data.message?.usage || {}) };
@@ -408,17 +459,30 @@ export async function streamMessage({
         }
         return true;
       }, { idleMs: idleTimeoutMs, signal });
+      try {
+        await read;
+      } catch (err) {
+        // T074-D5: a stream cut by the network, stopped (timeout) or cancelled
+        // keeps the text that came: `partial`, and `interrupted` when there is some.
+        if (err instanceof ClaudeError) {
+          err.partial = text;
+          if (text) err.interrupted = true;
+        }
+        throw err;
+      }
       if (failure) {
         if (failure.kind === 'busy' && !text && attempt < retryWaits.length) {
           await sleep(retryWaits[attempt], signal);
           continue;
         }
         failure.partial = text;
+        if (text) failure.interrupted = true;
         throw failure;
       }
       if (!stopped) {
         const err = new ClaudeError('stream', 'Отговорът прекъсна, преди да завърши. Опитай пак.');
         err.partial = text;
+        if (text) err.interrupted = true;
         throw err;
       }
       const counts = usageCounts(usage);

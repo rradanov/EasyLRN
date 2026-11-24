@@ -5,6 +5,10 @@
 // (local time); over the threshold of "Настройки" (`monthlyBudgetUSD`, 0 = no
 // warning) the app warns. `easylrn:usage` tells open screens (no key, no text).
 import { logUsage, usageTotals, monthStart, getSettings } from './db.js';
+import { USAGE_LIMITS, MAX_CALL_COST_USD } from './claude.js';
+
+/** A count / a cost as kept: a sane non-negative number, else 0 (T074-D2). */
+const bounded = (v, max) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? n : 0; };
 
 /**
  * Keep one call: { model, kind: 'answer'|'subtopic'|'test', usage: usageCounts(), costUSD }.
@@ -15,11 +19,11 @@ export async function recordCall({ model, kind = 'answer', usage, costUSD }) {
   await logUsage({
     model: String(model || ''),
     kind,
-    input: u.input || 0,
-    output: u.output || 0,
-    cacheRead: u.cacheRead || 0,
-    cacheWrite: u.cacheWrite || 0,
-    estCostUSD: Number(costUSD) || 0,
+    input: bounded(u.input, USAGE_LIMITS.input),
+    output: bounded(u.output, USAGE_LIMITS.output),
+    cacheRead: bounded(u.cacheRead, USAGE_LIMITS.input),
+    cacheWrite: bounded(u.cacheWrite, USAGE_LIMITS.input),
+    estCostUSD: bounded(costUSD, MAX_CALL_COST_USD),
   });
   const state = await monthState();
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('easylrn:usage', { detail: { spentUSD: state.spentUSD, over: state.over } }));

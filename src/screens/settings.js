@@ -22,7 +22,7 @@ import {
   getSettings, saveSettings, getApiKey, saveApiKey, deleteApiKey,
   usageTotals, monthStart, storageEstimate, requestPersistence,
 } from '../db.js';
-import { MODELS, DEFAULT_MODEL, validateKey, maskKey, checkKey, trimBlank } from '../claude.js';
+import { MODELS, DEFAULT_MODEL, validateKey, maskKey, checkKey, trimBlank, answerMaxTokens } from '../claude.js';
 import { THEMES } from '../theme.js';
 import { ORIENTATIONS, checkOrientation, orientationSupport, applyOrientation } from '../orientation.js';
 import { confirmBox } from './confirm.js';
@@ -428,9 +428,10 @@ export function settingsScreen() {
       }
       modelSelect.value = s.model;
       budgetInput.value = String(s.monthlyBudgetUSD ?? 5);
-      const mt = Number(s.maxTokensAnswer);
-      if (!MAX_TOKENS_CHOICES.includes(mt) && mt > 0) maxTokensSelect.append(h('option', { value: String(mt), text: `${mt} токена` }));
-      maxTokensSelect.value = String(mt > 0 ? mt : 1500);
+      // T074-D3: the number that is sent (answerMaxTokens), even for a stored value that is not a choice.
+      const mt = answerMaxTokens(s.maxTokensAnswer);
+      if (!MAX_TOKENS_CHOICES.includes(mt)) maxTokensSelect.append(h('option', { value: String(mt), text: `${mt} токена` }));
+      maxTokensSelect.value = String(mt);
       showSpend();
       showScale(FONT_SCALES.includes(s.fontScale) ? s.fontScale : 1);
       if (!FONT_SCALES.includes(s.fontScale)) scaleValue.textContent = `${Math.round((s.fontScale || 1) * 100)} %`;

@@ -364,11 +364,27 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     startRecording();
   };
 
+  // --- Where the last gesture was (T074-S1) ---------------------------------------------
+  // navigator.userActivation is one for the whole page: a tap on a button of
+  // the app ("Готово", ✕, a tool) is an activation the lesson did not earn. A
+  // link or a jump of the lesson needs a gesture IN the lesson: the focus went
+  // from the app into the frame (the window's blur with the frame as the
+  // active element — a tap or a key in the lesson) and no pointer / key went
+  // to the app since then.
+  let gestureInLesson = false;
+  const onAppGesture = () => { gestureInLesson = false; };
+  const onWindowBlur = () => {
+    setTimeout(() => { if (!destroyed && frame && document.activeElement === frame) gestureInLesson = true; }, 0);
+  };
+  for (const type of ['pointerdown', 'mousedown', 'touchstart', 'keydown']) window.addEventListener(type, onAppGesture, { capture: true, passive: true });
+  window.addEventListener('blur', onWindowBlur);
+  const lessonGesture = () => gestureInLesson && document.activeElement === frame && navigator.userActivation?.isActive === true;
+
   // --- Links (§4.3) ------------------------------------------------------------------
   const openLink = (href) => {
     let url;
     try { url = new URL(href); } catch { warn('bad URL', href); return; }
-    if (!navigator.userActivation?.isActive) { warn('no user gesture', url.href); return; }
+    if (!lessonGesture()) { warn('no user gesture in the lesson', url.href); return; }
 
     const target = parseCourseUrl(url.href);
     if (target) {
@@ -550,7 +566,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       // T072-S2: while the user types a note, the keys give the app a user
       // activation the lesson did not earn — no jump, no link then.
       if (keysOffNow) { warn('a note is being typed: lrn:anchor'); return; }
-      if (!navigator.userActivation?.isActive) { warn('no user gesture: lrn:anchor'); return; }
+      if (!lessonGesture()) { warn('no user gesture in the lesson: lrn:anchor'); return; }
       scrollToLessonY(top);
     },
     'lrn:link'({ href }) {
@@ -861,6 +877,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       window.removeEventListener('hashchange', stopRecording, true);
       window.removeEventListener('message', onMessage);
       window.removeEventListener('easylrn:settings', onSettings);
+      for (const type of ['pointerdown', 'mousedown', 'touchstart', 'keydown']) window.removeEventListener(type, onAppGesture, { capture: true });
+      window.removeEventListener('blur', onWindowBlur);
       if (describing) { clearTimeout(describing.timer); describing.resolve(null); describing = null; }
       stroking = null;
       for (const w of answers.values()) { clearTimeout(w.timer); w.resolve(null); }
