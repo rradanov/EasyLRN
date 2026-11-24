@@ -953,3 +953,199 @@ test.describe('T024-F the questions — stream, errors, cost (landscape)', () =>
     await b.close();
   });
 });
+
+test.describe('T024-G the threads in the lesson', () => {
+  test('G1 the list: threads in the order of the text, then those about the whole lesson; the count on 💬; ▲ / ▼ in the panel go along the text', async ({ page }) => {
+    await start(page);
+    await mockApi(page, (_r, n) => ({ sse: answerSse(`Отговор ${n}.`) }));
+    await openLesson(page);
+    await ask(page, 'Уязвимостите се докладват', 'Трети абзац?');
+    await lastDone(page);
+    await closePanel(page);
+    await ask(page, 'се прилага за продукти', 'Първи абзац?');
+    await lastDone(page);
+    await closePanel(page);
+    await page.locator('[data-action="questions"]').click();
+    await field(page).fill('Целият урок?');
+    await sendButton(page).click();
+    await lastDone(page);
+    await expect(page.locator('[data-field="questions-count"]')).toHaveText('3');
+    await page.locator('[data-action="questions-back-to-list"]').click();
+    const rows = page.locator('[data-field="threads-list"] [data-thread]');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText('се прилага за продукти');
+    await expect(rows.nth(1)).toContainText('Уязвимостите се докладват');
+    await expect(rows.nth(2)).toContainText('За урока като цяло');
+    await rows.nth(0).locator('[data-action="open-thread"]').click();
+    await expect(page.locator('[data-field="question-quote"]')).toContainText('се прилага за продукти');
+    await page.locator('[data-action="panel-next-note"]').click();
+    await expect(page.locator('[data-field="question-quote"]')).toContainText('Уязвимостите се докладват');
+    await page.locator('[data-action="panel-prev-note"]').click();
+    await expect(page.locator('[data-field="question-quote"]')).toContainText('се прилага за продукти');
+    await closePanel(page);
+    await expect(threadMarks(page)).toHaveCount(2);
+  });
+
+  test('G2 delete: "Върни" is offered for 8 s; after a reload the thread stays deleted (no 💬, not in the list, its annotation without a colour gone); the eraser over a question without a colour deletes nothing', async ({ page }, ti) => {
+    landscapeOnly(ti);
+    await start(page);
+    await mockApi(page, () => ({ sse: answerSse('Отговор.') }));
+    const frame = await openLesson(page);
+    await ask(page, 'оценява рисковете', 'Ще го изтрия?');
+    await lastDone(page);
+    await ask(page, 'Уязвимостите се докладват', 'Този остава?').catch(async () => { await closePanel(page); await ask(page, 'Уязвимостите се докладват', 'Този остава?'); });
+    await lastDone(page);
+    await closePanel(page);
+    await threadMarks(page).first().click();
+    await expect(page.locator('[data-field="question-quote"]')).toContainText('оценява рисковете');
+    await page.locator('[data-action="delete-thread"]').click();
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeVisible();
+    await page.waitForTimeout(8600);
+    await expect(page.locator('[data-action="undo-note-delete"]')).toBeHidden();
+    await openLesson(page);
+    await expect(threadMarks(page)).toHaveCount(1);
+    const live = await liveThreads(page);
+    expect(live.map((t) => t.quote)).toEqual(['Уязвимостите се докладват']);
+    const anns = (await db(page, 'list', 'annotations')).filter((a) => !a.deleted);
+    expect(anns).toHaveLength(1);
+    // The eraser over the remaining question (an annotation without a colour).
+    await page.locator('[data-field="mark-tools"] [data-tool="eraser"]').click();
+    const f = await lessonFrame(page);
+    const box = await page.locator('iframe.lesson-frame').boundingBox();
+    const r = await f.evaluate(() => { const p = document.getElementById('p3'); p.scrollIntoView({ block: 'center' }); const g = document.createRange(); g.selectNodeContents(p.firstChild); const b = g.getClientRects()[0]; return { x: b.left + 2, y: b.top + b.height / 2, w: b.width }; });
+    await page.mouse.move(box.x + r.x, box.y + r.y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + r.x + r.w - 4, box.y + r.y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(800);
+    await page.locator('[data-field="mark-tools"] [data-tool="eraser"]').click();
+    expect((await liveThreads(page)).length).toBe(1);
+    expect((await db(page, 'list', 'annotations')).filter((a) => !a.deleted)).toHaveLength(1);
+    await expect(threadMarks(page)).toHaveCount(1);
+    void frame;
+  });
+
+  test('G3 the lesson changes (a re-import): a thread whose text is still there stays "ok", one whose text went is "неприкачена" — listed under the orphans, it opens with its quote and takes a next question (with its quote); a retired lesson keeps its threads and can be asked', async ({ page }, ti) => {
+    landscapeOnly(ti);
+    await start(page);
+    const seen = await mockApi(page, (_r, n) => ({ sse: answerSse(`Отговор ${n}.`) }));
+    await openLesson(page);
+    await ask(page, 'оценява рисковете', 'Остава ли?');
+    await lastDone(page);
+    await closePanel(page);
+    await ask(page, 'Уязвимостите се докладват', 'Изчезва ли?');
+    await lastDone(page);
+    await closePanel(page);
+    const changed = BODY.replace('Производителят оценява', 'Производителят внимателно оценява').replace('<p id="p3">Уязвимостите се докладват бързо.</p>', '<p id="p3">Слабостите се съобщават навреме.</p>');
+    await importCourse(page, baseFiles({ 'lessons/0001-parvi.html': lessonHtml('Първи урок', changed + SPY) }));
+    await openLesson(page);
+    await expect.poll(async () => (await db(page, 'list', 'annotations')).filter((a) => !a.deleted).map((a) => a.anchorState).sort().join(','), { timeout: 10000 }).toMatch(/orphan/);
+    await page.locator('[data-action="questions"]').click();
+    await expect(page.locator('[data-field="threads-list"], [data-field="threads-orphans"]').first()).toBeVisible();
+    const panelText = await panel(page).textContent();
+    expect(panelText).toContain('Неприкачени');
+    const orphan = panel(page).locator('[data-thread][data-state="orphan"]');
+    await expect(orphan).toHaveCount(1);
+    await orphan.locator('[data-action="open-thread"]').click();
+    await expect(page.locator('[data-field="question-quote"]')).toHaveText('«Уязвимостите се докладват»');
+    await expect(panel(page)).toContainText('неприкачен');
+    await field(page).fill('Още за изчезналия текст?');
+    await sendButton(page).click();
+    await expect(answers(page)).toHaveCount(2);
+    await lastDone(page, 1);
+    expect(seen.at(-1).body.messages[0].content[0].text).toContain('«Уязвимостите се докладват»');
+    // The lesson leaves the course (a full import without it): it is "retired", its threads stay.
+    const files = baseFiles({ 'lessons/0001-parvi.html': undefined });
+    delete files['lessons/0001-parvi.html'];
+    files['INDEX.md'] = `# ${C}\n\n## Уроци\n| # | Заглавие |\n|---|---|\n| 0002 | Втори урок |\n`;
+    await importCourse(page, files);
+    expect((await db(page, 'get', 'lessons', L1)).retired).toBeTruthy();
+    await openLesson(page);
+    await expect(threadMarks(page)).toHaveCount(1);
+    expect((await liveThreads(page)).length).toBe(2);
+    await threadMarks(page).first().click();
+    await field(page).fill('А сега?');
+    await sendButton(page).click();
+    await lastDone(page, 1);
+  });
+
+  test('G4 the window turns while an answer comes (landscape ↔ portrait): the panel moves (side ↔ bottom), the answer goes on to the end; 160 % text and the dark theme: no horizontal scroll, the field and "Изпрати" are on the screen, the answer\'s text has a contrast ≥ 4.5', async ({ page }, ti) => {
+    landscapeOnly(ti);
+    await stubFetch(page);
+    await start(page);
+    await page.evaluate(async () => { const D = await import('./src/db.js'); await D.saveSettings({ theme: 'dark' }); });
+    await openLesson(page);
+    await page.evaluate((chunks) => { window.__stub = { chunks, gap: 50, end: 'close' }; }, answerEvents('Дълъг отговор, който идва бавно, докато таблетът се върти от пейзаж към портрет и обратно.', { step: 4 }).map((e) => sse([e])));
+    await ask(page, 'оценява рисковете', 'Въртене?');
+    await expect(panel(page)).toHaveAttribute('data-layout', 'side');
+    await page.setViewportSize({ width: 1200, height: 1920 });
+    await expect(panel(page)).toHaveAttribute('data-layout', 'bottom');
+    await page.setViewportSize({ width: 1920, height: 1200 });
+    await expect(panel(page)).toHaveAttribute('data-layout', 'side');
+    await lastDone(page);
+    await expect(answers(page).first()).toContainText('и обратно.');
+    for (const vp of [{ width: 1920, height: 1200 }, { width: 1200, height: 1920 }, { width: 360, height: 800 }]) {
+      await page.setViewportSize(vp);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '160%'; });
+      await page.waitForTimeout(400);
+      await field(page).scrollIntoViewIfNeeded();
+      const r = await page.evaluate(() => {
+        const inView = (el) => { const b = el.getBoundingClientRect(); return b.width > 0 && b.left >= -1 && b.right <= innerWidth + 1; };
+        const lum = (c) => { const m = c.match(/[\d.]+/g).map(Number); const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(m[0]) + 0.7152 * f(m[1]) + 0.0722 * f(m[2]); };
+        const bgOf = (el) => { for (let e = el; e; e = e.parentElement) { const c = getComputedStyle(e).backgroundColor; if (!/rgba\(0, 0, 0, 0\)|transparent/.test(c)) return c; } return 'rgb(255, 255, 255)'; };
+        const t = document.querySelector('[data-field="answer-text"] p');
+        const L1 = lum(getComputedStyle(t).color); const L2 = lum(bgOf(t));
+        return {
+          scroll: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+          field: inView(document.querySelector('[data-field="question-text"]')),
+          send: inView(document.querySelector('[data-action="question-send"]')),
+          contrast: (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05),
+          theme: document.documentElement.dataset.theme,
+        };
+      });
+      info(`T024-G4 ${vp.width}x${vp.height}`, r);
+      expect(r.scroll).toBe(true);
+      expect(r.field).toBe(true);
+      expect(r.send).toBe(true);
+      expect(r.contrast).toBeGreaterThanOrEqual(4.5);
+      expect(r.theme).toBe('dark');
+    }
+  });
+
+  test('G5 keyboard and aria: the panel is a dialog with a title; the thread is aria-live; the field has a label; Tab goes field → "Изпрати" → "Покажи промпта" (aria-expanded); Ctrl+Enter sends; an error is role=alert; Esc in the field closes the panel and gives the focus back to the strip', async ({ page }, ti) => {
+    await start(page);
+    let fail = true;
+    await mockApi(page, () => (fail ? { status: 500, json: {} } : { sse: answerSse('Отговор.') }));
+    await openLesson(page);
+    const q = page.locator('[data-action="questions"]').locator('visible=true');
+    await q.click();
+    await expect(field(page)).toBeFocused();
+    await expect(panel(page)).toHaveAttribute('role', 'dialog');
+    const title = await panel(page).getAttribute('aria-labelledby');
+    await expect(page.locator(`#${title}`)).not.toHaveText('');
+    await expect(field(page)).toHaveAttribute('aria-label', /Въпрос/);
+    await page.keyboard.type('С клавиатура?');
+    await page.keyboard.press('Control+Enter');
+    await expect(panel(page)).toHaveAttribute('data-mode', 'thread');
+    await expect(page.locator('[data-field="thread-log"]')).toHaveAttribute('aria-live', 'polite');
+    await expect(page.locator('[data-field="answer-error"]')).toHaveAttribute('role', 'alert', { timeout: 15000 });
+    fail = false;
+    await field(page).focus();
+    await page.keyboard.press('Tab');
+    await expect(sendButton(page)).toBeFocused();
+    await page.keyboard.press('Tab');
+    const toggle = page.locator('[data-action="question-prompt"]');
+    if (await page.locator('[data-action="question-cancel"]').isVisible()) await page.keyboard.press('Tab');
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('[data-field="question-prompt"]')).toBeVisible();
+    await field(page).focus();
+    await page.keyboard.press('Escape');
+    await expect(panel(page)).toBeHidden();
+    // The focus goes back into the strip (☷ / 💬 — homeButton()), never to the body or the lesson.
+    await expect.poll(() => page.evaluate(() => document.activeElement?.dataset?.action || document.activeElement?.localName)).toMatch(/^(questions|notes-list)$/);
+    void q;
+  });
+});
