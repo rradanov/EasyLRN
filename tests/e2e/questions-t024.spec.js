@@ -752,3 +752,204 @@ test.describe('T024-M the answer is Markdown through DOMPurify', () => {
     expect(m.content.endsWith('КРАЙ-НА-ОТГОВОРА')).toBe(true);
   });
 });
+
+// ===========================================================================
+// B3. The functions of the questions
+// ===========================================================================
+test.describe('T024-F the questions — stream, errors, cost (landscape)', () => {
+  test.beforeEach(({}, ti) => landscapeOnly(ti));
+
+  test('F1 (T074-D5 in the panel) the network breaks after some text: the text so far is kept and shown ("Показано е полученото дотук"), "Опитай пак" asks again with the same request; no cost for the broken call', async ({ page }) => {
+    await stubFetch(page);
+    await start(page);
+    await page.evaluate((chunks) => { window.__stub = { chunks, gap: 40, end: 'error' }; }, answerEvents('Частичен отговор, който се къса', { stop: false }).map((e) => sse([e])));
+    await openLesson(page);
+    await page.evaluate((chunks) => { window.__stub = { chunks, gap: 40, end: 'error' }; }, answerEvents('Частичен отговор, който се къса', { stop: false }).map((e) => sse([e])));
+    await ask(page, 'оценява рисковете', 'Ще се скъса ли?');
+    await expect(answers(page).first()).toHaveAttribute('data-status', 'error', { timeout: 15000 });
+    await expect(answers(page).first().locator('[data-field="answer-text"]')).toHaveText('Частичен отговор, който се къса');
+    await expect(page.locator('[data-field="answer-error"]')).toContainText('Показано е полученото дотук');
+    const [m] = (await messagesOf(page)).filter((x) => x.role === 'assistant');
+    expect(m).toMatchObject({ status: 'error', interrupted: true, content: 'Частичен отговор, който се къса' });
+    expect(await db(page, 'usageBetween')).toEqual([]);
+    await page.evaluate((s) => { window.__stub = { chunks: [s], end: 'close' }; }, answerSse('Цял отговор.'));
+    await page.locator('[data-action="question-retry"]').click();
+    await lastDone(page);
+    await expect(answers(page)).toHaveCount(1);
+    const bodies = await page.evaluate(() => window.__stubBodies);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(await db(page, 'usageBetween')).toHaveLength(1);
+  });
+
+  test('F2 "Отказ" while the text comes: the text so far stays with "Отказано"; Ctrl+Enter / "Изпрати" are blocked while it comes; no cost; the panel closed and opened again shows the same', async ({ page }) => {
+    await stubFetch(page);
+    await start(page);
+    await openLesson(page);
+    await page.evaluate((chunks) => { window.__stub = { chunks, gap: 60, end: 'hang' }; }, answerEvents('Бавен отговор, който ще бъде спрян.', { stop: false, step: 3 }).map((e) => sse([e])));
+    await ask(page, 'оценява рисковете', 'Бавно?');
+    await expect(answers(page).first().locator('[data-field="answer-text"]')).toContainText('Бавен', { timeout: 10000 });
+    await expect(sendButton(page)).toBeDisabled();
+    await field(page).fill('Още един?');
+    await field(page).press('Control+Enter');
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => window.__stubCalls)).toBe(1);
+    await page.locator('[data-action="question-cancel"]').click();
+    await expect(answers(page).first()).toHaveAttribute('data-status', 'error', { timeout: 5000 });
+    await expect(page.locator('[data-field="answer-error"]')).toContainText('Отказано');
+    const partial = await answers(page).first().locator('[data-field="answer-text"]').textContent();
+    expect(partial.length).toBeGreaterThan(4);
+    expect(await db(page, 'usageBetween')).toEqual([]);
+    await closePanel(page);
+    await threadMarks(page).first().click();
+    await expect(answers(page).first()).toHaveAttribute('data-status', 'error');
+    await expect(answers(page).first().locator('[data-field="answer-text"]')).toHaveText(partial);
+    await expect(page.locator('[data-action="question-retry"]')).toBeVisible();
+  });
+
+  test('F3 errors in Bulgarian (400, 403, 404, 413, 500, a refused connection): never the API\'s own message; "Опитай пак" only on the last answer; the old error stays on its answer', async ({ page }) => {
+    await start(page);
+    const plan = [
+      { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'MOCK-MSG <b>x</b>' } }, want: /Заявката е отказана \(400: невалидна заявка\)/ },
+      { status: 403, json: { type: 'error', error: { type: 'permission_error', message: 'MOCK-MSG' } }, want: /няма право/ },
+      { status: 404, json: { type: 'error', error: { type: 'not_found_error', message: 'MOCK-MSG' } }, want: /не е намерен/ },
+      { status: 413, json: { type: 'error', error: { type: 'request_too_large', message: 'MOCK-MSG' } }, want: /твърде голяма \(413\)/ },
+      { status: 500, json: { type: 'error', error: { type: 'api_error', message: 'MOCK-MSG' } }, want: /Грешка в Claude API \(500\)/ },
+      { abort: true, want: /./ },
+    ];
+    let i = 0;
+    await page.route(API, (route) => { const p = plan[Math.min(i++, plan.length - 1)]; return p.abort ? route.abort('connectionrefused') : route.fulfill({ status: p.status, headers: { ...CORS, 'content-type': 'application/json' }, body: JSON.stringify(p.json) }); });
+    await openLesson(page);
+    await askAbout(page, 'оценява рисковете');
+    const texts = [];
+    for (let k = 0; k < plan.length; k++) {
+      await field(page).fill(`Въпрос ${k}?`);
+      await sendButton(page).click();
+      await expect(answers(page).nth(k)).toHaveAttribute('data-status', 'error', { timeout: 15000 });
+      const t = await answers(page).nth(k).locator('[data-field="answer-error"]').textContent();
+      texts.push(t);
+      expect(t).toMatch(plan[k].want);
+      expect(t).not.toContain('MOCK-MSG');
+      await expect(page.locator('[data-action="question-retry"]')).toHaveCount(1);
+      await expect(answers(page).nth(k).locator('[data-action="question-retry"]')).toHaveCount(1);
+    }
+    info('T024-F3', texts);
+    expect(await page.locator('[data-field="thread-log"] [data-role="assistant"] .md__external').count()).toBe(0);
+    expect(await db(page, 'usageBetween')).toEqual([]);
+  });
+
+  test('F4 the cost under the answer equals costOf(usage) as "$…"; the month sum; the threshold 0 never warns, 0.01 warns before and after; with no key "Настройки" leads to the settings', async ({ page }) => {
+    await start(page);
+    await page.evaluate(async () => { const D = await import('./src/db.js'); await D.saveSettings({ monthlyBudgetUSD: 0 }); });
+    const usage = { input_tokens: 2000, output_tokens: 500, cache_creation_input_tokens: 10000, cache_read_input_tokens: 0 };
+    await mockApi(page, () => ({ sse: answerSse('Отговор с цена.', { usage }) }));
+    await openLesson(page);
+    await askAbout(page, 'оценява рисковете');
+    await expect(page.locator('[data-field="question-budget"]')).toBeHidden();
+    await field(page).fill('Колко струва?');
+    await sendButton(page).click();
+    await lastDone(page);
+    const want = await page.evaluate(async (u) => { const c = await import('./src/claude.js'); const us = await import('./src/usage.js'); return us.formatUSD(c.costOf('claude-sonnet-5-5', u)); }, { ...usage, output_tokens: 500 });
+    await expect(answers(page).first().locator('[data-field="answer-cost"]')).toHaveText(`Цена на отговора: ${want}`);
+    await expect(page.locator('[data-field="question-budget"]')).toBeHidden();
+    const [u] = await db(page, 'usageBetween');
+    expect(u.estCostUSD).toBeGreaterThan(0);
+    await page.evaluate(async () => { const D = await import('./src/db.js'); await D.saveSettings({ monthlyBudgetUSD: 0.01 }); });
+    await closePanel(page);
+    await threadMarks(page).first().click();
+    await expect(page.locator('[data-field="question-budget"]')).toContainText('$0.01');
+    // No key: the link goes to the settings.
+    await page.evaluate(async () => { const D = await import('./src/db.js'); await (D.deleteApiKey ? D.deleteApiKey() : D.saveApiKey('')); });
+    await field(page).fill('Без ключ?');
+    await sendButton(page).click();
+    await expect(page.locator('[data-field="question-no-key"]')).toBeVisible();
+    await page.locator('[data-field="question-no-key"] a').click();
+    await expect(page).toHaveURL(/#\/settings$/);
+  });
+
+  test('F5 a long thread (25 earlier pairs = 50 turns): the request keeps the last ≤ 40 turns, starts with the user, alternates, and its first part is the same byte for byte at the next question (the cache prefix moves only when the window slides)', async ({ page }) => {
+    await start(page);
+    const seen = await mockApi(page, (_r, n) => ({ sse: answerSse(`Отговор ${n}.`) }));
+    await openLesson(page);
+    await ask(page, 'оценява рисковете', 'Въпрос 0?');
+    await lastDone(page);
+    // 25 more pairs straight into the database (as if asked before).
+    await page.evaluate(async ({ L }) => {
+      const D = await import('./src/db.js');
+      const Q = await import('./src/questions.js');
+      const lesson = await D.get('lessons', L);
+      const [t] = (await D.list('threads')).filter((x) => !x.deleted);
+      for (let i = 1; i <= 25; i++) {
+        const sent = Q.sentText(t, lesson, `Въпрос ${i}?`, true);
+        const { assistant } = await Q.addExchange(lesson, t.id, { question: `Въпрос ${i}?`, sent });
+        await Q.finishAnswer(assistant.id, { content: `Стар отговор ${i}.`, status: 'done' });
+      }
+    }, { L: L1 });
+    await closePanel(page);
+    await threadMarks(page).first().click();
+    await expect(answers(page)).toHaveCount(26);
+    for (const [k, q] of [[26, 'Още едно?'], [27, 'И още?']]) {
+      await field(page).fill(q);
+      await sendButton(page).click();
+      await expect(answers(page)).toHaveCount(k + 1);
+      await expect(answers(page).nth(k)).toHaveAttribute('data-status', 'done', { timeout: 15000 });
+    }
+    const [, a, b] = seen;
+    const roles = (x) => x.body.messages.map((m) => m.role);
+    for (const x of [a, b]) {
+      expect(x.body.messages.length).toBeLessThanOrEqual(41);
+      expect(roles(x)[0]).toBe('user');
+      expect(roles(x).every((r, i) => r === (i % 2 ? 'assistant' : 'user'))).toBe(true);
+      expect(userText(x)).toMatch(/^Въпрос: /);
+      expect(JSON.stringify(x.body.system)).toBe(JSON.stringify(seen[0].body.system));
+    }
+    const firstOf = (x) => x.body.messages[0].content[0].text;
+    const lostQuote = !firstOf(b).includes('Избран текст: «оценява рисковете»');
+    info('T024-D2', { a: a.body.messages.length, b: b.body.messages.length, firstA: a.body.messages[0].content[0].text.slice(0, 60), firstB: b.body.messages[0].content[0].text.slice(0, 60) });
+    test.fail(lostQuote, 'T024-D2: a thread longer than LIMITS.history (40 turns = 20 questions) drops its oldest turns, and the first one is the only one with the quote ("Избран текст: «…»", its paragraph and place) — a next question is only "Въпрос: …", so from the 21st question on the teacher no longer knows which text the thread is about; the window also slides by one pair at every question, so the prefix of the thread is never the same twice and its automatic cache is never hit (D-017); the first turn (with the quote) could be kept and the window cut after it, in steps');
+    expect(lostQuote).toBe(false);
+  });
+
+  test('F6 a reload in the middle of a stream: the answer is "Отговорът прекъсна (страницата беше затворена)." with "Опитай пак", which completes it', async ({ page }) => {
+    await start(page);
+    let hang = true;
+    await mockApi(page, () => (hang ? 'hang' : { sse: answerSse('Отговор след презареждане.') }));
+    await openLesson(page);
+    await ask(page, 'оценява рисковете', 'Ще презаредя?');
+    await expect(page.locator('[data-action="question-cancel"]')).toBeVisible();
+    hang = false;
+    await openLesson(page);
+    await threadMarks(page).first().click();
+    await expect(answers(page).first()).toHaveAttribute('data-status', 'error');
+    await expect(page.locator('[data-field="answer-error"]')).toContainText('Отговорът прекъсна (страницата беше затворена).');
+    await page.locator('[data-action="question-retry"]').click();
+    await lastDone(page);
+    await expect(answers(page).first()).toContainText('Отговор след презареждане.');
+  });
+
+  test('F7 two tabs: an answer still coming in tab A looks "прекъснат" in tab B; "Опитай пак" in B gets an answer — then "Отказ" in A must not overwrite the answer B got', async ({ page, context }) => {
+    await start(page);
+    await mockApi(page, () => 'hang');
+    await openLesson(page);
+    await ask(page, 'оценява рисковете', 'Два раздела?');
+    await expect(page.locator('[data-action="question-cancel"]')).toBeVisible();
+    const b = await context.newPage();
+    b.on('pageerror', (e) => problems.push(`B pageerror: ${e}`));
+    await b.route(API, (route) => route.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'text/event-stream' }, body: answerSse('Отговорът от раздел Б.') }));
+    await b.goto(`./#/c/${C}/read/0001`);
+    await expect(b.locator('[data-lesson-state="ready"]')).toBeVisible({ timeout: 20000 });
+    await b.locator('[data-field="notes-marks"] .notes-strip__mark--thread').first().click();
+    await expect(b.locator('[data-field="answer-error"]')).toContainText('прекъсна');
+    await b.locator('[data-action="question-retry"]').click();
+    await expect(b.locator('[data-field="thread-log"] [data-role="assistant"]').first()).toHaveAttribute('data-status', 'done', { timeout: 15000 });
+    // Tab A: "Отказ" of its own (older) request.
+    await page.locator('[data-action="question-cancel"]').click();
+    await page.waitForTimeout(800);
+    const [m] = (await messagesOf(page)).filter((x) => x.role === 'assistant');
+    info('T024-D1', { status: m.status, content: m.content, errorKind: m.errorKind });
+    const lost = m.status !== 'done' || m.content !== 'Отговорът от раздел Б.';
+    test.fail(lost, 'T024-D1: two tabs on one thread: tab B sees the answer still coming in tab A as "прекъснат" and its "Опитай пак" restarts the same message (restartAnswer) and completes it; when tab A\'s own request then ends ("Отказ", an error or its own answer), finishAnswer() overwrites that message — the answer B got (and paid for) is replaced by "Отказано" / A\'s text; finishAnswer could write only when the message is still the streaming one this tab started (e.g. a run id / startedAt check)');
+    expect(lost).toBe(false);
+    await b.close();
+  });
+});
