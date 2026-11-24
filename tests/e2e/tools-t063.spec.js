@@ -570,7 +570,16 @@ test.describe('T063 the handle on a small phone', () => {
     const check = async () => {
       const hb = await handle(page).boundingBox();
       const fb = await page.locator('iframe.lesson-frame').boundingBox();
-      expect(hb.x + hb.width).toBeLessThanOrEqual(fb.x + 0.5);
+      // T-074: since T-073 (the addition to D-046) the handle floats over the lesson's
+      // margin and the reader makes room only where the text would come under it: the
+      // handle must not be over the TEXT (as tools-t062 checkHandle), the frame may reach under it.
+      const textLeft = await (await (await page.locator('iframe.lesson-frame').elementHandle()).contentFrame()).evaluate(() => {
+        let left = Infinity;
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const r = document.createRange();
+        for (let n = w.nextNode(); n; n = w.nextNode()) { if (!/\S/.test(n.data)) continue; r.selectNodeContents(n); for (const b of r.getClientRects()) if (b.width > 0) left = Math.min(left, b.left); }
+        return left;
+      });
+      expect(fb.x + textLeft).toBeGreaterThanOrEqual(hb.x + hb.width);
       expect(hb.y).toBeGreaterThanOrEqual(0);
       expect(hb.y + hb.height).toBeLessThanOrEqual(640);
       return { hb, fb };
