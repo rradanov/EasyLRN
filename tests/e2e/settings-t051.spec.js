@@ -410,8 +410,8 @@ test.describe('T-051 "Провери"', () => {
 
   const ODD = {
     'an HTML error page (502)': [{ status: 502, contentType: 'text/html', body: '<html><body><h1 id="evil">Bad gateway</h1><script>window.__x=1</script></body></html>' }, /^Грешка в Claude API \(502\)/],
-    'an error type with HTML in it (418)': [{ status: 418, body: { type: 'error', error: { type: '<img src=x onerror="window.__x=1">', message: 'x' } } }, /^Заявката е отказана \(418, <img src=x onerror=/],
-    'a 5 MB error body (400)': [{ status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'x'.repeat(5_000_000) } } }, /^Заявката е отказана \(400, invalid_request_error\)/],
+    'an error type with HTML in it (418)': [{ status: 418, body: { type: 'error', error: { type: '<img src=x onerror="window.__x=1">', message: 'x' } } }, /^Заявката е отказана \(418\)\.$/], // T-075 (T074-D1): an unknown type is not shown at all (T-024)
+    'a 5 MB error body (400)': [{ status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'x'.repeat(5_000_000) } } }, /^Заявката е отказана \(400: невалидна заявка\)/], // T-075 (T074-D1): the type in Bulgarian (T-024)
     'a 200 that is not JSON': [{ status: 200, contentType: 'text/plain', body: 'not json' }, /^Ключът работи/],
     'no CORS header': [{ status: 200, body: {}, headers: { 'access-control-allow-origin': 'https://other.example' } }, /^Няма (интернет )?връзка/],
     'a redirect to another host': [{ status: 307, body: '', headers: { location: 'https://evil.example/steal' } }, /^Няма (интернет )?връзка/],
