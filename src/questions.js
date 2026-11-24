@@ -161,24 +161,38 @@ export function sentText(thread, lesson, question, followUp) {
   });
 }
 
+/** A new id of one run of an answer (T024-D1: two tabs on one thread). */
+const newRun = () => (globalThis.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+
 /** A question and its answer to come: { user, assistant } (the answer "streaming"). */
 export async function addExchange(lesson, threadId, { question, sent }) {
   const thread = await ownThread(lesson, threadId);
   const text = String(question ?? '').slice(0, MAX_QUESTION_LENGTH);
   const user = await createMessage({ threadId: thread.id, role: 'user', content: text, sent: String(sent ?? text), status: 'done' });
-  const assistant = await createMessage({ threadId: thread.id, role: 'assistant', content: '', status: 'streaming', replyTo: user.id, startedAt: Date.now() });
+  const assistant = await createMessage({ threadId: thread.id, role: 'assistant', content: '', status: 'streaming', replyTo: user.id, startedAt: Date.now(), run: newRun() });
   if (!thread.title) await update(STORES.threads, thread.id, { title: text.replace(/\s+/g, ' ').trim().slice(0, 200) });
   return { user, assistant };
 }
 
-/** The answer again ("Опитай пак"): the same message, streaming from the start. */
+/** The answer again ("Опитай пак"): the same message, streaming from the start, a new run. */
 export function restartAnswer(assistantId) {
-  return update(STORES.messages, assistantId, { content: '', status: 'streaming', interrupted: false, errorKind: null, errorText: null, startedAt: Date.now() });
+  return update(STORES.messages, assistantId, { content: '', status: 'streaming', interrupted: false, errorKind: null, errorText: null, startedAt: Date.now(), run: newRun() });
 }
 
-/** The end of an answer: { content, status: 'done' | 'error', … }. */
-export function finishAnswer(assistantId, patch) {
-  return update(STORES.messages, assistantId, patch);
+/**
+ * The end of an answer: { content, status: 'done' | 'error', … }. With `run`
+ * (the run this page started) it is written only while the message is still
+ * that run streaming (T024-D1): another tab's "Опитай пак" started a new run,
+ * and its answer is never overwritten by the old request ending here.
+ * Resolves the record, or null when it was left as it is.
+ */
+export async function finishAnswer(assistantId, patch, run) {
+  let skipped = false;
+  const record = await update(STORES.messages, assistantId, (m) => {
+    if (run !== undefined && (m.run !== run || m.status !== 'streaming')) { skipped = true; return null; }
+    return patch;
+  });
+  return skipped ? null : record;
 }
 
 /** An answer "streaming" with no request of this page behind it (the page was closed meanwhile). */

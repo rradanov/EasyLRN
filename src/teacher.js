@@ -63,9 +63,24 @@ const clip = clipText;
  */
 export const PROMPT_TAGS = Object.freeze(['LESSON', 'MISSION', 'NOTES', 'RESOURCES', 'GLOSSARY', 'QUOTE', 'PARAGRAPH',
   'QUESTION', 'ANSWER', 'COURSE', 'REFERENCE', 'SYSTEM', 'RULES', 'MATERIAL', 'INSTRUCTIONS', 'THREAD', 'HISTORY', 'USER', 'ASSISTANT', 'HUMAN']);
-const OPEN_TAG = new RegExp(`<(?=\\s*(?:${PROMPT_TAGS.join('|')})(?![A-Za-z0-9_-]))`, 'gi');
+// T024-S2: what may stand between "<", "/" and the name without the model
+// seeing it: white space and the invisible format characters (soft hyphen,
+// Mongolian vowel separator, zero-width space / joiners / marks, word joiner…,
+// BOM). A fixed list, not \p{Cf}: the prompt must not change with the browser.
+const GAP = '[\\s\\u00AD\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB]';
+const INVISIBLE = /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]/g;
+// "<" and its NFKC look-alikes (fullwidth ＜, small ﹤), "/" and fullwidth ／.
+const TAG_START = new RegExp(`[<\\uFF1C\\uFE64](${GAP}*)([/\\uFF0F]?)`, 'g');
+const TAG_NAME = new RegExp(`^\\s*(?:${PROMPT_TAGS.join('|')})(?![A-Za-z0-9_-])`, 'i');
 export function neutralizeTags(s) {
-  return String(s ?? '').replace(/<(?=\s*\/)\s*\//g, '<\\/').replace(OPEN_TAG, '<\\');
+  const t = String(s ?? '');
+  return t.replace(TAG_START, (all, gap, slash, at) => {
+    if (slash) return '<\\/';
+    // An opening tag of the prompt: its name read as the model would (no
+    // invisible characters, NFKC: fullwidth letters are letters).
+    const name = t.slice(at + all.length, at + all.length + 64).replace(INVISIBLE, '').normalize('NFKC');
+    return TAG_NAME.test(name) ? `<\\${gap}` : all;
+  });
 }
 
 /** Line ends, NFC, no control characters: the same text from the same input. */
@@ -244,15 +259,12 @@ export function lessonBlock(lesson, text) {
   return `<LESSON>\n${neutralizeTags(head)}\n\n${neutralizeTags(text.text)}\n</LESSON>`;
 }
 
-/** The user's message: the quote, its paragraph, the path of headings, the question. */
-export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null, followUp = false }) {
+/** The place of a thread: the quote, its paragraph and the path of headings (or "the lesson as a whole"). */
+export function placeText({ quote = '', paragraph = '', path = [], lesson = null }) {
   const q = neutralizeTags(clean(clip(quote, LIMITS.quote)).trim());
   const p = neutralizeTags(clean(clip(paragraph, LIMITS.paragraph)).trim());
   const where = (Array.isArray(path) ? path : []).slice(0, LIMITS.pathItems)
     .map((s) => neutralizeTags(clean(clip(String(s ?? ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim())).filter(Boolean);
-  const ask = clean(clip(question, LIMITS.question)).trim();
-  // T-023: a next question of a thread: only the question (the quote is in the first one).
-  if (followUp) return `Въпрос: ${ask}`;
   const lines = [];
   if (q) {
     lines.push(`Избран текст: «${q}»`);
@@ -261,8 +273,45 @@ export function questionText({ quote = '', paragraph = '', path = [], question =
   } else {
     lines.push(`Въпрос за ${lesson?.kind === 'reference' ? 'справочника' : 'урока'} като цяло.`);
   }
-  lines.push('', `Въпрос: ${ask}`);
   return lines.join('\n');
+}
+
+/** The user's message: the quote, its paragraph, the path of headings, the question. */
+export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null, followUp = false }) {
+  const ask = clean(clip(question, LIMITS.question)).trim();
+  // T-023: a next question of a thread: only the question (the place is in the first turn).
+  if (followUp) return `Въпрос: ${ask}`;
+  return `${placeText({ quote, paragraph, path, lesson })}\n\nВъпрос: ${ask}`;
+}
+
+/** Pairs dropped at once when a thread outgrows LIMITS.history (T024-D2). */
+export const HISTORY_STEP = 10;
+/**
+ * The thread so far as alternating turns (user first, an answer last), at
+ * most LIMITS.history of them (T024-D2):
+ * - the first pair (the quote, its paragraph and place) is always kept — a
+ *   next question is only "Въпрос: …";
+ * - older pairs after it are dropped HISTORY_STEP at a time, so the start of
+ *   the thread stays the same byte for byte for HISTORY_STEP questions and its
+ *   automatic cache is hit (D-017).
+ */
+export function historyWindow(history) {
+  const turns = [];
+  for (const t of (Array.isArray(history) ? history : [])) {
+    const role = t?.role === 'assistant' ? 'assistant' : t?.role === 'user' ? 'user' : null;
+    const body = clean(clip(t?.text, role === 'assistant' ? LIMITS.answer : LIMITS.userTurn)).trim();
+    if (!role || !body) continue;
+    if (turns.length && turns[turns.length - 1].role === role) turns[turns.length - 1].content += `\n\n${body}`;
+    else turns.push({ role, content: body });
+  }
+  while (turns.length && turns[0].role !== 'user') turns.shift();
+  if (turns.length && turns[turns.length - 1].role === 'user') turns.pop(); // an unanswered question is replaced
+  const max = Math.max(2, LIMITS.history - (LIMITS.history % 2));
+  if (turns.length <= max) return turns;
+  const rest = (turns.length - 2) / 2; // pairs after the first
+  const room = (max - 2) / 2;
+  const drop = Math.ceil((rest - room) / HISTORY_STEP) * HISTORY_STEP;
+  return [...turns.slice(0, 2), ...turns.slice(2 + 2 * Math.min(drop, rest))];
 }
 
 /**
@@ -282,20 +331,15 @@ export function buildRequest({ rules, course, lesson, text, quote = '', paragrap
     { type: 'text', text: courseBlock(course), cache_control: { ...CACHE_1H } },
     { type: 'text', text: lessonBlock(lesson, { title: text.title, text: lessonPart.text }), cache_control: { ...CACHE_1H } },
   ];
-  // The thread so far: alternating turns, the last LIMITS.history.
-  const turns = [];
-  for (const t of (Array.isArray(history) ? history : []).slice(-LIMITS.history)) {
-    const role = t?.role === 'assistant' ? 'assistant' : t?.role === 'user' ? 'user' : null;
-    const body = clean(clip(t?.text, role === 'assistant' ? LIMITS.answer : LIMITS.userTurn)).trim();
-    if (!role || !body) continue;
-    if (turns.length && turns[turns.length - 1].role === role) turns[turns.length - 1].content += `\n\n${body}`;
-    else turns.push({ role, content: body });
-  }
-  while (turns.length && turns[0].role !== 'user') turns.shift();
-  if (turns.length && turns[turns.length - 1].role === 'user') turns.pop(); // an unanswered question is replaced
+  const turns = historyWindow(history);
+  // T024-D2: the place of the thread is always in its first turn — also when the
+  // first answer failed (the first kept turn is then a next question) or no
+  // earlier answer is kept at all. Deterministic: the same prefix every time.
+  const place = placeText({ quote, paragraph, path, lesson });
+  if (turns.length && !turns[0].content.startsWith(`${place}\n\n`)) turns[0].content = `${place}\n\n${turns[0].content}`;
   const messages = [
     ...turns.map((t) => ({ role: t.role, content: [{ type: 'text', text: t.content }] })),
-    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson, followUp }) }] },
+    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson, followUp: followUp && turns.length > 0 }) }] },
   ];
   return {
     model,

@@ -592,7 +592,7 @@ export async function byIndex(store, index, query, opts) {
 
 /**
  * Change fields of an existing record (read and write in one transaction).
- * `patch` may be an object or a function `(record) => patch`.
+ * `patch` may be an object or a function `(record) => patch` (null: no change).
  * @returns {Promise<object>} the updated record
  */
 export async function update(store, key, patch) {
@@ -606,6 +606,7 @@ export async function update(store, key, patch) {
     throw new Error(`${store}: record not found: ${key}`);
   }
   const changes = typeof patch === 'function' ? patch(record) : patch;
+  if (changes === null) { await tx.done; return record; } // the function chose not to change it
   const next = { ...record, ...changes, id: record.id, createdAt: record.createdAt, updatedAt: now() };
   if (store === STORES.files) { next.key = record.key; delete next.id; }
   await tx.store.put(next);

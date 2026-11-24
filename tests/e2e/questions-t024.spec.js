@@ -320,7 +320,6 @@ test.describe('T024-A2 the tags of the material (T074-S2 fix) — variants', () 
     const courseClosers = course.match(CLOSERS) || [];
     info('T024-S2', { lessonClosers, courseClosers, sample: lesson.slice(0, 400) });
     const leak = lessonClosers.length !== 1 || courseClosers.length !== 4;
-    test.fail(leak, 'T024-S2: neutralizeTags() treats only \\s between "<" and "/" as part of a tag: an invisible format character (U+200B zero-width space, U+2060 word joiner, U+00AD soft hyphen, U+200C ZWNJ) in the lesson or a course file gives "<\\u200B/LESSON>", which is left as it is — to the model (it does not see the character) it is the end of the material block; the same for "<\\u200BSYSTEM>"; \\p{Cf} should be dropped (or counted as space) before the rule');
     expect(lessonClosers).toHaveLength(1);
     expect(courseClosers).toHaveLength(4);
   });
@@ -425,7 +424,6 @@ test.describe('T024-A1 lrn:link / lrn:anchor only after a gesture in the lesson 
     info('T024-S1', { idle, after });
     expect(idle).toContain('/read/0001');
     const moved = !after.includes('/read/0001');
-    test.fail(moved, 'T024-S1: the residual risk of the T074-S1 fix is real: a lesson that calls focus() on its own element right after a click in the app (it polls document.hasFocus() every 40 ms) makes the window blur with the frame active → gestureInLesson = true, while navigator.userActivation of the app\'s click is still live (~5 s): its lrn:link takes the app to another lesson (or opens an allowed https link) though the user only pressed an app button; the flag could be refused when an app gesture came less than the activation\'s lifetime (5 s) before the blur');
     expect(moved).toBe(false);
   });
 
@@ -610,7 +608,6 @@ test.describe('T024-S the lesson and the questions', () => {
     await page.waitForTimeout(900);
     const closedByLesson = await panel(page).isHidden();
     info('T024-S3', { openedByLesson, closedByLesson });
-    test.fail(openedByLesson || closedByLesson, 'T024-S3: lrn:tap and lrn:escape need no gesture in the lesson: a lesson that knows the ids of its annotations (they come in lrn:annotations) opens the panel of a question (or a note) whenever it likes with a forged lrn:tap, and closes an open panel while the answer is read with a forged lrn:escape (the guard only covers the time the field is focused); it can keep the panel open / shut by sending them every 50 ms; nothing is read or sent (it cannot see the panel), so the harm is a nuisance — the same check as for lrn:link (lessonGesture()) would close it');
     expect(openedByLesson).toBe(false);
     expect(closedByLesson).toBe(false);
   });
@@ -906,7 +903,6 @@ test.describe('T024-F the questions — stream, errors, cost (landscape)', () =>
     const firstOf = (x) => x.body.messages[0].content[0].text;
     const lostQuote = !firstOf(b).includes('Избран текст: «оценява рисковете»');
     info('T024-D2', { a: a.body.messages.length, b: b.body.messages.length, firstA: a.body.messages[0].content[0].text.slice(0, 60), firstB: b.body.messages[0].content[0].text.slice(0, 60) });
-    test.fail(lostQuote, 'T024-D2: a thread longer than LIMITS.history (40 turns = 20 questions) drops its oldest turns, and the first one is the only one with the quote ("Избран текст: «…»", its paragraph and place) — a next question is only "Въпрос: …", so from the 21st question on the teacher no longer knows which text the thread is about; the window also slides by one pair at every question, so the prefix of the thread is never the same twice and its automatic cache is never hit (D-017); the first turn (with the quote) could be kept and the window cut after it, in steps');
     expect(lostQuote).toBe(false);
   });
 
@@ -948,7 +944,6 @@ test.describe('T024-F the questions — stream, errors, cost (landscape)', () =>
     const [m] = (await messagesOf(page)).filter((x) => x.role === 'assistant');
     info('T024-D1', { status: m.status, content: m.content, errorKind: m.errorKind });
     const lost = m.status !== 'done' || m.content !== 'Отговорът от раздел Б.';
-    test.fail(lost, 'T024-D1: two tabs on one thread: tab B sees the answer still coming in tab A as "прекъснат" and its "Опитай пак" restarts the same message (restartAnswer) and completes it; when tab A\'s own request then ends ("Отказ", an error or its own answer), finishAnswer() overwrites that message — the answer B got (and paid for) is replaced by "Отказано" / A\'s text; finishAnswer could write only when the message is still the streaming one this tab started (e.g. a run id / startedAt check)');
     expect(lost).toBe(false);
     await b.close();
   });

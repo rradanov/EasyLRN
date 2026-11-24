@@ -1307,7 +1307,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       });
       await finishAnswer(assistant.id, {
         content: r.text, status: 'done', interrupted: false, costUSD: r.costUSD, usage: r.usage, model: r.model, stopReason: r.stopReason || null,
-      });
+      }, assistant.run);
       announce('Учителят отговори.');
       if (r.month?.over) announce(budgetWarning(r.month));
     } catch (err) {
@@ -1316,7 +1316,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       await finishAnswer(assistant.id, {
         content: typeof err?.partial === 'string' ? err.partial : live.text, status: 'error', interrupted: Boolean(err?.interrupted || (kind === 'aborted' && live.text)),
         errorKind: kind, errorText: kind === 'aborted' ? 'Отказано: отговорът е спрян.' : text,
-      }).catch(() => {});
+      }, assistant.run).catch(() => {});
       announce(kind === 'aborted' ? 'Отговорът е спрян.' : text);
     } finally {
       clearTimeout(live.paintTimer);

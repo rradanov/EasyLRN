@@ -40,6 +40,7 @@
 //   annotations (id, colour, style, selector), the focus id and
 //   `lrn:describe` for one of its own ids.
 import { h } from './dom.js';
+import { confirmBox } from './screens/confirm.js';
 import { ensureRendered } from './lesson-render.js';
 import { resolveLessonPath } from './lesson-id.js';
 import { lessonAnnotations, bridgeItems, checkAnchored, anchorSaver, annotateSelection } from './annotations.js';
@@ -371,20 +372,71 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
   // from the app into the frame (the window's blur with the frame as the
   // active element — a tap or a key in the lesson) and no pointer / key went
   // to the app since then.
+  //
+  // T024-S1: a lesson can take the focus itself right after a tap on a button
+  // of the app (it polls document.hasFocus()); the window's blur then looks the
+  // same as a tap in the lesson, and the app's activation is still live. So the
+  // blur counts as a clean gesture in the lesson only when no pointer / key
+  // went to the app for the lifetime of an activation (5 s) before it; else it
+  // is "unsure": a link to another lesson or out of the app asks first
+  // („Отвори урок …?“) in the app, a jump inside the lesson still goes.
+  const ACTIVATION_MS = 5000;
   let gestureInLesson = false;
-  const onAppGesture = () => { gestureInLesson = false; };
+  let gestureClean = false;
+  let lastAppGesture = -Infinity;
+  const onAppGesture = () => { gestureInLesson = false; gestureClean = false; lastAppGesture = performance.now(); };
+  // A tap in the lesson gives the page an activation: at once with a mouse (its
+  // mousedown comes before the focus moves), within a moment with a finger (at
+  // its pointerup). A blur with no activation within TAP_MS is the lesson's own
+  // focus() — "unsure" at best, whatever activation comes later.
+  const TAP_MS = 1000;
+  let tapWatch = 0;
   const onWindowBlur = () => {
-    setTimeout(() => { if (!destroyed && frame && document.activeElement === frame) gestureInLesson = true; }, 0);
+    const at = performance.now();
+    setTimeout(() => {
+      if (destroyed || !frame || document.activeElement !== frame) return;
+      gestureInLesson = true;
+      gestureClean = at - lastAppGesture > ACTIVATION_MS;
+      clearInterval(tapWatch);
+      if (!gestureClean || navigator.userActivation?.isActive) return;
+      gestureClean = false;
+      tapWatch = setInterval(() => {
+        const late = performance.now() - at > TAP_MS;
+        if (!late && gestureInLesson && navigator.userActivation?.isActive && lastAppGesture < at) gestureClean = true;
+        if (late || gestureClean || !gestureInLesson) clearInterval(tapWatch);
+      }, 25);
+    }, 0);
   };
   for (const type of ['pointerdown', 'mousedown', 'touchstart', 'keydown']) window.addEventListener(type, onAppGesture, { capture: true, passive: true });
   window.addEventListener('blur', onWindowBlur);
-  const lessonGesture = () => gestureInLesson && document.activeElement === frame && navigator.userActivation?.isActive === true;
+  /** false | 'clean' | 'unsure' */
+  const lessonGesture = () => (gestureInLesson && document.activeElement === frame && navigator.userActivation?.isActive === true
+    ? (gestureClean ? 'clean' : 'unsure') : false);
+
+  // The question of an unsure link: one at a time, in the app (never in the lesson).
+  let asking = null;
+  const askFirst = (text, go) => {
+    if (asking || destroyed) return;
+    const done = () => { asking?.remove(); asking = null; };
+    const box = confirmBox({
+      text, yes: 'Отвори', label: 'Отваряне на връзка от урока', danger: false,
+      onYes: () => { done(); go(); },
+      onNo: () => { done(); frame?.focus({ preventScroll: true }); },
+    });
+    asking = h('div', { class: 'lesson-frame__ask', 'data-field': 'link-confirm' }, box);
+    document.body.append(asking);
+    box.focusCancel();
+  };
+  const lessonName = (l) => `${l.kind === 'reference' ? 'справочник' : 'урок'} ${l.number || ''}${l.title ? `: ${l.title}` : ''}`.replace(/\s+:/, ':');
 
   // --- Links (§4.3) ------------------------------------------------------------------
   const openLink = (href) => {
     let url;
     try { url = new URL(href); } catch { warn('bad URL', href); return; }
-    if (!lessonGesture()) { warn('no user gesture in the lesson', url.href); return; }
+    const gesture = lessonGesture();
+    if (!gesture) { warn('no user gesture in the lesson', url.href); return; }
+    // A clean gesture goes at once; an unsure one asks first (T024-S1).
+    const go = (text, fn) => (gesture === 'clean' ? fn() : askFirst(text, fn));
 
     const target = parseCourseUrl(url.href);
     if (target) {
@@ -395,7 +447,7 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
         else scrollToLessonTop();
         return;
       }
-      if (other) onNavigate(other, target.hash);
+      if (other) go(`Отвори ${lessonName(other)}?`, () => onNavigate(other, target.hash));
       else warn('not a lesson of the course', url.href);
       return;
     }
@@ -405,12 +457,12 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       const local = path && lessonAt(path);
       if (local) {
         if (local.id === lesson.id) scrollToLessonTop();
-        else onNavigate(local, '');
+        else go(`Отвори ${lessonName(local)}?`, () => onNavigate(local, ''));
         return;
       }
     }
     if ((url.protocol === 'https:' || url.protocol === 'http:') && url.origin !== location.origin && links.has(url.href)) {
-      window.open(url.href, '_blank', 'noopener,noreferrer');
+      go(`Отвори връзката ${url.host} в нов раздел?`, () => window.open(url.href, '_blank', 'noopener,noreferrer'));
       return;
     }
     warn('not in the links of the lesson', url.href);
@@ -491,7 +543,13 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       selection = m.empty ? null : m;
       onSelection?.(selection);
     },
-    'lrn:escape'() { onEscape?.(); },
+    'lrn:escape'() {
+      // T024-S3: only an Escape the user pressed in the lesson (the same rule as a link;
+      // an "unsure" gesture counts too: closing a panel / a tool is no harm, and a
+      // real Escape soon after a tap in the app must still work).
+      if (!lessonGesture()) { warn('no user gesture in the lesson: lrn:escape'); return; }
+      onEscape?.();
+    },
     'lrn:stroked'(m) {
       // Only the answer to a stroke the user has just finished in the app.
       const wait = answers.get(m.seq);
@@ -510,6 +568,8 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     'lrn:tap'({ annotationId }) {
       // Only a known id of this lesson opens anything (T-015: the card).
       if (annotationId !== null && !known.has(annotationId)) { warn('unknown annotation: lrn:tap'); return; }
+      // T024-S3: only a tap of the user in the lesson opens a note / a question.
+      if (annotationId !== null && !lessonGesture()) { warn('no user gesture in the lesson: lrn:tap'); return; }
       onTap?.(annotationId === null ? null : known.get(annotationId));
     },
     'lrn:anchored'({ results, textLength: reported }) {
@@ -879,6 +939,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       window.removeEventListener('easylrn:settings', onSettings);
       for (const type of ['pointerdown', 'mousedown', 'touchstart', 'keydown']) window.removeEventListener(type, onAppGesture, { capture: true });
       window.removeEventListener('blur', onWindowBlur);
+      clearInterval(tapWatch);
+      asking?.remove();
+      asking = null;
       if (describing) { clearTimeout(describing.timer); describing.resolve(null); describing = null; }
       stroking = null;
       for (const w of answers.values()) { clearTimeout(w.timer); w.resolve(null); }
