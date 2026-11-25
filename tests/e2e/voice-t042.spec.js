@@ -424,7 +424,6 @@ test.describe('T042-E errors and availability', () => {
     info('T042-D1', { status: st });
     expect(st).not.toMatch(/грешка|error|aborted/i);
     await expect(noteText(page)).toHaveValue('преди отказа');
-    test.fail(st.includes('Слуша'), D1_TEXT);
     expect(st).not.toContain('Слуша');
   });
 
@@ -441,7 +440,6 @@ test.describe('T042-E errors and availability', () => {
     await expect(mic(page)).toHaveAttribute('aria-pressed', 'false');
     const st = await voiceStatus(page).textContent();
     info('T042-D1-send', { status: st });
-    test.fail(st.includes('Слуша'), D1_TEXT);
     expect(st).not.toContain('Слуша');
   });
 
@@ -687,7 +685,6 @@ test.describe('T042-G the guard of the field and the lesson during dictation', (
     await page.waitForTimeout(1600);
     const closed = await panel(page).isHidden();
     info('T042-S1-voice', { closed, recs: await recs(page) });
-    test.fail(closed, 'T042-S1 (also here): with the focus on 🎤 after a keyboard press (the field\'s guard does not hold the focus then) a lesson that takes the focus gets an "unsure" gesture and its forged lrn:escape closes the note being dictated (the recognizer stops; the text so far is saved)');
     expect(closed).toBe(false);
   });
 

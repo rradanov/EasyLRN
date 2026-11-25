@@ -424,6 +424,8 @@ test.describe('T023-B errors, "Отказ", "Опитай пак", the key (land
     const frame = await lessonFrame(page);
     const rel = await frame.evaluate(() => { const p = document.getElementById('p2'); const r = document.createRange(); r.selectNodeContents(p.firstChild); const b = r.getClientRects()[0]; return { x: b.left + 120, y: b.top + b.height / 2 }; });
     const box = await page.locator('iframe.lesson-frame').boundingBox();
+    // T-077 (T042-S1): a tap in the lesson opens a card only after a clean gesture (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     await page.mouse.click(box.x + rel.x, box.y + rel.y);
     await expect(panel(page)).toHaveAttribute('data-mode', 'mark');
     await page.locator('[data-action="ask-about-mark"]').click();

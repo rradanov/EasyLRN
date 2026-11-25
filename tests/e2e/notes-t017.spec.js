@@ -222,6 +222,8 @@ test.describe('T-017 notes on the tablet', () => {
     await expect(noteText(page)).toHaveValue('Моя бележка **важно**');
     await page.keyboard.press('Escape');
     await expect(panel(page)).toBeHidden();
+    // T-077 (T042-S1): lrn:tap / lrn:escape act only after a clean gesture in the lesson (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     const t = await textBox(page, 'оценява рисковете');
     await page.mouse.click(t.x + 10, t.y);
     await expect(panel(page)).toBeVisible();
@@ -251,6 +253,8 @@ test.describe('T-017 notes on the tablet', () => {
     await mark(page, 'Уязвимостите се докладват', 'green');
     const [m] = (await annotations(page)).filter((a) => !a.deleted);
     const t = await textBox(page, 'Уязвимостите се докладват');
+    // T-077 (T042-S1): lrn:tap / lrn:escape act only after a clean gesture in the lesson (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     await page.mouse.click(t.x + 20, t.y);
     await expect(panel(page)).toHaveAttribute('data-mode', 'mark');
     await page.locator('[data-action="add-note-to-mark"]').click();
@@ -441,6 +445,8 @@ test.describe('T-017 notes on the tablet', () => {
     await noteMarks(page).first().click();
     await expect(panel(page)).toBeVisible();
     const frame = await lessonFrame(page);
+    // T-077 (T042-S1): lrn:tap / lrn:escape act only after a clean gesture in the lesson (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     await frame.locator('#p1').click();
     await page.keyboard.press('Escape');
     await expect(panel(page)).toBeHidden();
@@ -523,6 +529,8 @@ test.describe('T-017 notes on a phone (360×800 portrait / 800×360 landscape), 
     await expect(panel(page)).toBeHidden();
     await scrollTo(page, 'Уязвимостите се докладват');
     const t = await textBox(page, 'Уязвимостите се докладват');
+    // T-077 (T042-S1): lrn:tap / lrn:escape act only after a clean gesture in the lesson (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     await page.touchscreen.tap(t.x + 10, t.y);
     await expect(noteText(page)).toHaveValue('Докосване', { timeout: 3000 });
     expect(await noHorizontalScroll(page)).toBe(true);

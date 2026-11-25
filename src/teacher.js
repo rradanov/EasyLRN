@@ -63,22 +63,30 @@ const clip = clipText;
  */
 export const PROMPT_TAGS = Object.freeze(['LESSON', 'MISSION', 'NOTES', 'RESOURCES', 'GLOSSARY', 'QUOTE', 'PARAGRAPH',
   'QUESTION', 'ANSWER', 'COURSE', 'REFERENCE', 'SYSTEM', 'RULES', 'MATERIAL', 'INSTRUCTIONS', 'THREAD', 'HISTORY', 'USER', 'ASSISTANT', 'HUMAN']);
-// T024-S2: what may stand between "<", "/" and the name without the model
-// seeing it: white space and the invisible format characters (soft hyphen,
-// Mongolian vowel separator, zero-width space / joiners / marks, word joiner…,
-// BOM). A fixed list, not \p{Cf}: the prompt must not change with the browser.
-const GAP = '[\\s\\u00AD\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB]';
-const INVISIBLE = /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]/g;
-// "<" and its NFKC look-alikes (fullwidth ＜, small ﹤), "/" and fullwidth ／.
-const TAG_START = new RegExp(`[<\\uFF1C\\uFE64](${GAP}*)([/\\uFF0F]?)`, 'g');
-const TAG_NAME = new RegExp(`^\\s*(?:${PROMPT_TAGS.join('|')})(?![A-Za-z0-9_-])`, 'i');
+// T042-S3 (replaces the fixed list of T024-S2): a model reads "<", any run of
+// characters that are not letters or digits, then "/" as a closing tag — so
+// every such run is neutralised, whatever the characters are (white space,
+// format / control characters, variation selectors, punctuation…). The fillers
+// that Unicode counts as letters but nobody sees (Hangul fillers) are a gap too.
+// No list of invisible characters to keep up to date: a gap is "not a letter or
+// a digit" (and not "<" / ">"). The result depends only on the text (the same
+// text → the same bytes: the cache of D-017 is kept).
+const FILLERS = '\\u115F\\u1160\\u3164\\uFFA0';
+const GAP = `(?:[^\\p{L}\\p{N}<>/\\uFF1C\\uFF1E\\uFE64\\uFE65\\uFF0F\\u02C2]|[${FILLERS}])`;
+// What is dropped from a name before it is compared (SYS<ZWSP>TEM, S<VS16>YSTEM…):
+// marks, controls / format characters, the fillers, the braille blank.
+const INVISIBLE = new RegExp(`[\\p{M}\\p{C}${FILLERS}\\u2800]`, 'gu');
+// "<" and its look-alikes (fullwidth ＜, small ﹤, modifier ˂); "/" and fullwidth ／.
+const TAG_START = new RegExp(`[<\\uFF1C\\uFE64\\u02C2](${GAP}*)([/\\uFF0F]?)`, 'gu');
+const TAG_NAME = new RegExp(`^(?:${PROMPT_TAGS.join('|')})(?![A-Za-z0-9_-])`, 'i');
 export function neutralizeTags(s) {
   const t = String(s ?? '');
   return t.replace(TAG_START, (all, gap, slash, at) => {
     if (slash) return '<\\/';
     // An opening tag of the prompt: its name read as the model would (no
     // invisible characters, NFKC: fullwidth letters are letters).
-    const name = t.slice(at + all.length, at + all.length + 64).replace(INVISIBLE, '').normalize('NFKC');
+    // The gap is read too: symbols that NFKC makes letters (circled Ⓢ…) start the name.
+    const name = t.slice(at + 1, at + all.length + 64).normalize('NFKC').replace(INVISIBLE, '').replace(/^[^\p{L}\p{N}]+/u, '');
     return TAG_NAME.test(name) ? `<\\${gap}` : all;
   });
 }

@@ -379,16 +379,32 @@ test.describe('T042-A-S1 links of a lesson: the 5 s rule and „Отвори у�
     await expect(confirmBox(page)).toHaveCount(0);
     await page.waitForTimeout(300);
     expect(page.url()).toMatch(/\/read\/0001$/);
+    // T-077 (T042-S2): after "Отказ" the lesson asks nothing more until a clean gesture —
+    // an unsure link soon after is dropped (no question, no navigation).
     await frame.locator('#l2').click();
-    await expect(confirmBox(page)).toBeVisible();
-    await confirmBox(page).locator('[data-field="confirm-no"]').click();
+    await page.waitForTimeout(600);
     await expect(confirmBox(page)).toHaveCount(0);
     expect(page.url()).toMatch(/\/read\/0001$/);
+    // A new press in the app, then the link: still dropped (the refusal holds).
+    await page.locator('[data-action="notes-list"]').click();
+    await closePanel(page);
     await frame.locator('#l2').click();
+    await page.waitForTimeout(600);
+    await expect(confirmBox(page)).toHaveCount(0);
+    expect(page.url()).toMatch(/\/read\/0001$/);
+    // A clean tap (5 s after the last press in the app) opens at once.
+    await page.waitForTimeout(5600);
+    await frame.locator('#l2').click();
+    await expect(page).toHaveURL(/\/read\/0002$/, { timeout: 5000 });
+    await expect(confirmBox(page)).toHaveCount(0);
+    // In a new lesson the question comes again; "Отвори" opens.
+    const again = await openLesson(page, '0001');
+    await page.locator('[data-action="notes-list"]').click();
+    await closePanel(page);
+    await again.locator('#l2').click();
     await expect(confirmBox(page)).toBeVisible();
     await confirmBox(page).locator('[data-field="confirm-yes"]').click();
     await expect(page).toHaveURL(/\/read\/0002$/, { timeout: 5000 });
-    await expect(confirmBox(page)).toHaveCount(0);
   });
 
   test('S1d soon after a tap in the app: an outside https link of the lesson asks „Отвори връзката example.invalid в нов раздел?“; "Отвори" opens a new tab without opener; a jump inside the lesson (#far) goes without a question', async ({ page, context }, ti) => {
@@ -441,7 +457,6 @@ test.describe('T042-A-S1 links of a lesson: the 5 s rule and „Отвори у�
     }
     expect(page.url()).toMatch(/\/read\/0001$/);
     info('T042-S2', { asked, back });
-    test.fail(back > 0, 'T042-S2: after „Отказ“ on „Отвори урок …?“ the app gives the focus back to the frame (onNo → frame.focus()): the window blurs with the frame active right after a press in the app — an "unsure" gesture again, the click\'s activation is live, and the lesson\'s next lrn:link (it sends one every 40 ms) asks the very same question again at once; a lesson can keep the question on the screen for as long as it likes (the user only gets rid of it with "Отвори" or by leaving the lesson) — a nuisance that pushes the user to press "Отвори" (only lessons of the course / allowed links); the question could be refused for a while after "Отказ" (or onNo could leave the focus in the app)');
     expect(back).toBe(0);
   });
 
@@ -530,7 +545,6 @@ test.describe('T042-A-S3 lrn:tap / lrn:escape only after a gesture in the lesson
     await thread(page, (p) => threadMarks(p).first());
     const closedByLesson = await panel(page).isHidden();
     info('T042-S1-escape', { closedByLesson, log: consoleAll.filter((l) => /LF:|lrn:escape|lrn:tap/.test(l)).slice(-6) });
-    test.fail(closedByLesson, S1_TEXT);
     expect(closedByLesson).toBe(false);
   });
 
@@ -540,7 +554,6 @@ test.describe('T042-A-S3 lrn:tap / lrn:escape only after a gesture in the lesson
     const mode = (await panel(page).isVisible()) ? await panel(page).getAttribute('data-mode') : null;
     const openedByLesson = mode === 'thread';
     info('T042-S1-tap', { mode, log: consoleAll.filter((l) => /LF:|lrn:escape|lrn:tap/.test(l)).slice(-6) });
-    test.fail(openedByLesson, S1_TEXT);
     expect(openedByLesson).toBe(false);
   });
 });
@@ -578,7 +591,6 @@ test.describe('T042-A-S2 invisible / fullwidth / NFKC variants in the tags of th
     const [, course, lesson] = (await preview(page)).system;
     const leak = variants.filter(([, v]) => lesson.includes(v) || course.includes(v)).map(([k]) => k);
     info('T042-S3', { leak });
-    test.fail(leak.length > 0, 'T042-S3: neutralizeTags() takes as a gap only white space and a fixed list of format characters; other characters a model does not see either are left between "<" and "/" (or before the name): variation selectors U+FE00–U+FE0F, the combining grapheme joiner U+034F, the tag characters U+E0001 / U+E0020–U+E007F (Cf, not in the list), U+1D173–U+1D17A and U+1BCA0–U+1BCA3 (Cf), the C1 controls U+0080–U+009F (clean() removes only C0), and the blank letters U+3164 / U+115F / U+1160 / U+FFA0 / U+2800 — "<\\uFE0F/LESSON>" and "<\\u{E0020}SYSTEM>" stay in the lesson and the course files; the list could take \\p{Cf} as of a fixed Unicode version (a table in the code), \\p{Mn} variation selectors / CGJ, C1 and the fillers');
     expect(leak).toEqual([]);
   });
 

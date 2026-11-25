@@ -414,14 +414,22 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     ? (gestureClean ? 'clean' : 'unsure') : false);
 
   // The question of an unsure link: one at a time, in the app (never in the lesson).
+  // T042-S2: after "Отказ" the lesson asks nothing more until a clean gesture in
+  // it (a real tap in the lesson, 5 s after the last press in the app): its
+  // unsure links are only dropped — a lesson cannot bring the question straight
+  // back (it sends lrn:link again and again, and the press on "Отказ" is still a
+  // live activation). The focus stays in the app: giving it back to the frame
+  // was what made the next blur an "unsure" gesture at once.
   let asking = null;
+  let refused = false;
+  let lastDrop = -Infinity;
   const askFirst = (text, go) => {
     if (asking || destroyed) return;
     const done = () => { asking?.remove(); asking = null; };
     const box = confirmBox({
       text, yes: 'Отвори', label: 'Отваряне на връзка от урока', danger: false,
       onYes: () => { done(); go(); },
-      onNo: () => { done(); frame?.focus({ preventScroll: true }); },
+      onNo: () => { done(); refused = true; },
     });
     asking = h('div', { class: 'lesson-frame__ask', 'data-field': 'link-confirm' }, box);
     document.body.append(asking);
@@ -435,8 +443,21 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     try { url = new URL(href); } catch { warn('bad URL', href); return; }
     const gesture = lessonGesture();
     if (!gesture) { warn('no user gesture in the lesson', url.href); return; }
-    // A clean gesture goes at once; an unsure one asks first (T024-S1).
-    const go = (text, fn) => (gesture === 'clean' ? fn() : askFirst(text, fn));
+    // A clean gesture goes at once; an unsure one asks first (T024-S1) — but not
+    // again after "Отказ" until a clean gesture (T042-S2).
+    if (gesture === 'clean') refused = false;
+    const go = (text, fn) => {
+      if (gesture === 'clean') { fn(); return; }
+      if (refused) {
+        warn('refused before, unsure gesture: lrn:link', url.href);
+        // The focus back to the app (at most twice a second), so that the next
+        // real tap in the lesson is a new blur — clean once 5 s have passed.
+        const now = performance.now();
+        if (document.activeElement === frame && now - lastDrop > 500) { lastDrop = now; gestureInLesson = false; frame.blur(); }
+        return;
+      }
+      askFirst(text, fn);
+    };
 
     const target = parseCourseUrl(url.href);
     if (target) {
@@ -544,10 +565,11 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
       onSelection?.(selection);
     },
     'lrn:escape'() {
-      // T024-S3: only an Escape the user pressed in the lesson (the same rule as a link;
-      // an "unsure" gesture counts too: closing a panel / a tool is no harm, and a
-      // real Escape soon after a tap in the app must still work).
-      if (!lessonGesture()) { warn('no user gesture in the lesson: lrn:escape'); return; }
+      // T024-S3 / T042-S1: only an Escape the user pressed in the lesson, after a
+      // clean gesture: a lesson that takes the focus itself right after a press in
+      // the app ("unsure") must not close what the user has just opened. Escape
+      // with the focus in the app is the app's own key and always works.
+      if (lessonGesture() !== 'clean') { warn('no clean user gesture in the lesson: lrn:escape'); return; }
       onEscape?.();
     },
     'lrn:stroked'(m) {
@@ -568,8 +590,9 @@ export function createLessonFrame({ course, lesson, lessons, fontScale = 1, init
     'lrn:tap'({ annotationId }) {
       // Only a known id of this lesson opens anything (T-015: the card).
       if (annotationId !== null && !known.has(annotationId)) { warn('unknown annotation: lrn:tap'); return; }
-      // T024-S3: only a tap of the user in the lesson opens a note / a question.
-      if (annotationId !== null && !lessonGesture()) { warn('no user gesture in the lesson: lrn:tap'); return; }
+      // T024-S3 / T042-S1: only a tap of the user in the lesson (a clean gesture)
+      // opens a note / a question; with an "unsure" one it is only dropped.
+      if (annotationId !== null && lessonGesture() !== 'clean') { warn('no clean user gesture in the lesson: lrn:tap'); return; }
       onTap?.(annotationId === null ? null : known.get(annotationId));
     },
     'lrn:anchored'({ results, textLength: reported }) {

@@ -456,6 +456,8 @@ test.describe('T-016 functions of the tools (D-042)', () => {
     const a = await textBox(page, 'Регламентът');
     await t.drag([a.x1 + 2, a.y1], [a.x2 - 2, a.y1]);
     await waitMarks(page, 1);
+    // T-077 (T042-S1): lrn:tap / lrn:escape act only after a clean gesture in the lesson (5 s after a press in the app).
+    await page.waitForTimeout(5600);
     await frame.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
     await frame.locator('body').press('Escape');
     await expect(tool(page, 'marker')).toHaveAttribute('aria-pressed', 'false');

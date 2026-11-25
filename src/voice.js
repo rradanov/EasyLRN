@@ -77,6 +77,7 @@ export function createVoiceInput({ field, label = 'Гласово въвежда
   let at = null; // [start, end] where the next final text goes
   let gotText = false;
   let failed = null;
+  let cancelled = false; // cancel(): the text was sent / dropped — say nothing after it
 
   const show = () => {
     const ok = !destroyed && voiceAvailable() && !element.dataset.unsupported;
@@ -132,6 +133,7 @@ export function createVoiceInput({ field, label = 'Гласово въвежда
     if (!Rec || listening || destroyed) return;
     stopAllVoice(); // one at a time
     failed = null;
+    cancelled = false;
     gotText = false;
     at = [field.selectionStart ?? field.value.length, field.selectionEnd ?? field.value.length];
     try {
@@ -142,8 +144,11 @@ export function createVoiceInput({ field, label = 'Гласово въвежда
       rec.maxAlternatives = 1;
       rec.onresult = onResult;
       rec.onerror = (e) => {
-        failed = e?.error || 'error';
-        const msg = voiceError(failed);
+        const code = e?.error || 'error';
+        const msg = voiceError(code);
+        // T042-D1: "aborted" (abort(), or the system took the microphone) is an
+        // end, not a failure: onend then clears "Слуша…" (or says "Готово…").
+        failed = msg ? code : null;
         if (msg) status.textContent = msg.text;
         if (msg?.hide) { element.dataset.unsupported = failed; show(); }
       };
@@ -154,7 +159,8 @@ export function createVoiceInput({ field, label = 'Гласово въвежда
         interim.hidden = true;
         live.delete(api);
         paint();
-        if (!failed) status.textContent = gotText ? 'Готово: провери текста преди запис.' : '';
+        if (cancelled) status.textContent = '';
+        else if (!failed) status.textContent = gotText ? 'Готово: провери текста преди запис.' : '';
       };
       rec.start();
     } catch (err) {
@@ -175,6 +181,8 @@ export function createVoiceInput({ field, label = 'Гласово въвежда
   /** Stop now and drop what was not final yet (the field is sent / emptied). */
   function cancel() {
     if (!rec) return;
+    cancelled = true;
+    status.textContent = '';
     rec.onresult = null;
     try { rec.abort(); } catch { /* already stopped */ }
   }
