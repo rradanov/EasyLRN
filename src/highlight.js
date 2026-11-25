@@ -61,6 +61,7 @@ function repaint() {
   const all = new Map(HIGHLIGHT_COLORS.map((c) => [c, []]));
   const fuzzy = [];
   const focus = [];
+  for (const c of HIGHLIGHT_COLORS) all.set(`ul-${c}`, []); // T-025: the pencil (underline)
   for (const entry of registry.values()) {
     for (const [c, ranges] of entry.byColor) all.get(c).push(...ranges);
     fuzzy.push(...entry.fuzzy);
@@ -88,11 +89,11 @@ export function createDocHighlighter(root, { exclude = ANCHOR_BASE_EXCLUDE } = {
   const textModel = () => (model && model.root === root ? model : (model = anchorTextModel(root, { exclude })));
 
   const update = () => {
-    entry.byColor = new Map(HIGHLIGHT_COLORS.map((c) => [c, []]));
+    entry.byColor = new Map([...HIGHLIGHT_COLORS.map((c) => [c, []]), ...HIGHLIGHT_COLORS.map((c) => [`ul-${c}`, []])]);
     entry.fuzzy = [];
     for (const m of marks) {
       if (!m.range || !m.color) continue;
-      entry.byColor.get(m.color).push(m.range);
+      entry.byColor.get(m.style === 'underline' ? `ul-${m.color}` : m.color).push(m.range);
       if (m.state === 'fuzzy') entry.fuzzy.push(m.range);
     }
     const f = marks.find((m) => m.id === self.focused);
@@ -120,18 +121,22 @@ export function createDocHighlighter(root, { exclude = ANCHOR_BASE_EXCLUDE } = {
       marks = (Array.isArray(annotations) ? annotations : []).map((a) => {
         const found = anchorFind(m, a.selector, { sameVersion: a.sameVersion === true });
         const range = found.state !== 'orphan' ? anchorRange(m, found.start, found.end) : null;
-        return { id: a.id, color: HIGHLIGHT_COLORS.includes(a.color) ? a.color : null, state: range ? found.state : 'orphan', start: found.start, end: found.end, range };
+        return { id: a.id, color: HIGHLIGHT_COLORS.includes(a.color) ? a.color : null, style: a.style === 'underline' ? 'underline' : 'highlight', state: range ? found.state : 'orphan', start: found.start, end: found.end, range };
       });
       update();
       return marks.map(({ id, state, start, end }) => (state === 'orphan' ? { id, state } : { id, state, start, end }));
     },
+    /** The live Range of a painted annotation (T-025: the icons next to its line), or null. */
+    rangeOf(id) { return marks.find((m) => m.id === id)?.range || null; },
+    /** The text model of the document (T-025: a stroke of a tool → selectors). */
+    model: () => textModel(),
     /** The id of the innermost mark at a point of the viewport, or null. */
-    hitTest(x, y) {
+    hitTest(x, y, { colored = false } = {}) {
       const pos = document.caretPositionFromPoint?.(x, y);
       if (!pos) return null;
       let hit = null;
       for (const m of marks) {
-        if (!m.range) continue;
+        if (!m.range || (colored && !m.color)) continue;
         let inside = false;
         try { inside = m.range.isPointInRange(pos.offsetNode, pos.offset); } catch { inside = false; }
         if (inside && (!hit || m.end - m.start < hit.end - hit.start)) hit = m;

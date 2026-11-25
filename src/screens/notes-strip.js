@@ -76,16 +76,23 @@
 //   text of a note is shown only here (textContent / src/markdown.js) and is
 //   never posted to the lesson.
 import { h, mount } from '../dom.js';
-import { saveSettings, getSettings, getApiKey, COLORS } from '../db.js';
+import { saveSettings, getSettings, getApiKey, COLORS, STORES, list, annotationsFor, updateAnnotation, createNote, update, remove, restore, getAnnotation } from '../db.js';
 import { link } from '../router.js';
-import { askTeacher, previewTeacher, lessonText } from '../teacher.js';
+import { askTeacher, previewTeacher, lessonText, askTopic, previewTopic } from '../teacher.js';
+import {
+  lessonTopics, topicTrail, startTopic, restartTopic, finishTopic, isStaleTopic, deleteTopic, restoreTopic, topicAtSelection,
+  annotateDocument, topicRef, MAX_TOPIC_DEPTH,
+} from '../topics.js';
+import { createAppDoc, rangeContext } from './app-doc.js';
+import { anchorTextModel, anchorDescribeRange } from '../anchor.js';
+import { annotationDependents } from '../annotations.js';
 import { createVoiceInput } from '../voice.js';
 import { monthState, budgetWarning, formatUSD } from '../usage.js';
 import {
   lessonThreads, threadMessages, quoteContext, startThread, sentText, addExchange, restartAnswer, finishAnswer,
   isStale, threadHistory, deleteThread, restoreThread, threadAtSelection, MAX_QUESTION_LENGTH,
 } from '../questions.js';
-import { renderMarkdown } from '../markdown.js';
+import { renderMarkdown, withoutTitle } from '../markdown.js';
 import { confirmAnnotationPlace } from '../annotations.js';
 import {
   lessonNotes, saveNote, deleteNote, restoreNote, noteAtSelection, markAtSelection, MAX_NOTE_LENGTH,
@@ -120,7 +127,7 @@ const PROMPT_PREVIEW_MS = 400; // "Покажи промпта" follows the type
 export const SELECTION_ACTIONS = Object.freeze([
   { id: 'note', label: 'Бележка', icon: '📝', ready: true },
   { id: 'question', label: 'Въпрос', icon: '💬', ready: true }, // T-023 (D-047)
-  { id: 'expand', label: 'Развий ми го', icon: '✨', ready: false }, // T-025
+  { id: 'expand', label: 'Развий ми го', icon: '🌱', ready: true }, // T-025 (D-048)
 ]);
 
 const short = (text, max = QUOTE_MAX) => {
@@ -146,7 +153,7 @@ export function stripChoice(settings) {
  * @param {{ getFrame: () => object|null, getTool: () => string|null, course: object, lesson: object,
  *   settings: object, announce: (text: string) => void, onLayout?: (hidden: boolean) => void }} opts
  */
-export function createNotesStrip({ getFrame, getTool = () => null, course, lesson, settings, announce, onLayout, topSlot = null, viewInsets = null }) {
+export function createNotesStrip({ getFrame, getTool = () => null, getToolColor = () => 'yellow', course, lesson, settings, announce, onLayout, topSlot = null, viewInsets = null }) {
   let hidden = stripChoice(settings).hidden ?? false; // a tablet strip hidden by the user
   // T018-D14 / T-069 / D-046: the layout follows the window live (rotation,
   // split screen on Android): 'phone' | 'portrait' | 'landscape'.
@@ -155,7 +162,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   const split = splitChoice(settings); // D-046: the divider per orientation
   let destroyed = false;
   let notes = []; // [{ note, annotation }] of this lesson (live ones)
-  let threads = []; // T-023: [{ thread, annotation|null, messages }] of this lesson (live ones)
+  let threads = []; // T-023: [{ thread, annotation|null, messages }] of this lesson (live ones; also those of its topics)
+  let topics = []; // T-025: [{ topic, annotation|null }] of this lesson (the whole tree, live ones)
   let places = new Map(); // annotation id → { top, bottom } (frame coordinates, lrn:layout)
   let selection = null; // the last selection of the lesson (checked), for "Бележка"
   let selectionTimer = 0;
@@ -181,7 +189,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   // document still has the focus: a child frame has it) while the note field is
   // guarded and the user did not press anything since: taken back at once.
   const onWindowBlur = () => {
-    const ed = editing || asking; // T-023: the question field is guarded the same way
+    const ed = editing || asking || topicField; // T-023 / T-025: the question field and a topic's note are guarded the same way
     if (!ed || !guarded || destroyed) return;
     if (lastUserMove > (ed.focusedAt ?? 0) && performance.now() - lastUserMove < USER_MOVE_MS) return;
     queueMicrotask(() => { if (document.hasFocus()) reclaimFocus(ed); });
@@ -232,6 +240,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     class: 'notes-strip__button notes-strip__new notes-strip__ask', 'data-action': 'new-question', hidden: true,
     'aria-label': 'Въпрос към учителя за избрания текст', title: 'Въпрос към учителя за избрания текст',
   }, h('span', { 'aria-hidden': 'true', class: 'notes-strip__icon', text: '💬' }), h('span', { class: 'notes-strip__label', 'aria-hidden': 'true', text: 'Въпрос' })), () => askFromSelection());
+  // T-025 (D-048): "🌱 Развий ми го" for the selected text, next to "💬 Въпрос".
+  const expandButton = press(button({
+    class: 'notes-strip__button notes-strip__new notes-strip__expand', 'data-action': 'new-topic', hidden: true,
+    'aria-label': 'Развий ми го: допълнителна тема за избрания текст', title: 'Развий ми го: допълнителна тема за избрания текст',
+  }, h('span', { 'aria-hidden': 'true', class: 'notes-strip__icon', text: '🌱' }), h('span', { class: 'notes-strip__label', 'aria-hidden': 'true', text: 'Развий' })), () => expandFromSelection());
   const listCount = h('span', { class: 'notes-strip__count', 'data-field': 'notes-count', text: '0' });
   const listWarn = h('span', { class: 'notes-strip__warn', 'aria-hidden': 'true', hidden: true, text: '⚠' });
   const listButton = press(button({
@@ -250,12 +263,18 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     class: 'notes-strip__button notes-strip__questions', 'data-action': 'questions', 'aria-expanded': 'false', 'aria-controls': 'notes-panel',
     'aria-label': 'Въпрос към учителя за урока', title: 'Въпрос към учителя за урока и всички въпроси',
   }, h('span', { 'aria-hidden': 'true', class: 'notes-strip__icon', text: '💬' }), questionsCount), () => (panelMode === 'questions' ? closePanel() : openQuestions({ focusField: true })));
+  // T-025: "🌱" — the topics of the lesson.
+  const topicsCount = h('span', { class: 'notes-strip__count', 'data-field': 'topics-count', text: '' });
+  const topicsButton = press(button({
+    class: 'notes-strip__button notes-strip__topics', 'data-action': 'topics', 'aria-expanded': 'false', 'aria-controls': 'notes-panel',
+    'aria-label': 'Допълнителни теми на урока', title: 'Допълнителни теми на урока („Развий ми го“)',
+  }, h('span', { 'aria-hidden': 'true', class: 'notes-strip__icon', text: '🌱' }), topicsCount), () => (panelMode === 'topics' ? closePanel() : openTopics()));
   const hideButton = press(button({
     class: 'notes-strip__button notes-strip__hide', 'data-action': 'hide-notes', 'aria-expanded': 'true', 'aria-controls': 'notes-strip',
     'aria-label': 'Скрий бележките', title: 'Скрий бележките',
   }, h('span', { 'aria-hidden': 'true', text: '»' }), h('span', { class: 'notes-strip__label', 'aria-hidden': 'true', text: 'Скрий' })), () => setHidden(true, { focus: true }));
   const bar = h('div', { class: 'notes-strip__bar', role: 'toolbar', 'aria-label': 'Бележки', 'aria-orientation': 'vertical' },
-    hideButton, noteButton, askButton, listButton, prevButton, nextButton, questionsButton);
+    hideButton, noteButton, askButton, expandButton, listButton, prevButton, nextButton, questionsButton, topicsButton);
   const marks = h('div', { class: 'notes-strip__marks', 'data-field': 'notes-marks' });
   const element = h('div', { class: 'notes-strip', id: 'notes-strip', 'data-field': 'notes-strip' }, bar, marks);
 
@@ -272,6 +291,15 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     class: 'notes-strip-quick notes-strip-quick--ask', 'data-action': 'new-question-quick', hidden: true,
     'aria-label': 'Въпрос към учителя за избрания текст', title: 'Въпрос към учителя за избрания текст',
   }, h('span', { 'aria-hidden': 'true', text: '💬' }), h('span', { class: 'notes-strip-quick__label', text: 'Въпрос' })), () => askFromSelection());
+  const quickExpand = press(button({
+    class: 'notes-strip-quick notes-strip-quick--expand', 'data-action': 'new-topic-quick', hidden: true,
+    'aria-label': 'Развий ми го: допълнителна тема за избрания текст', title: 'Развий ми го: допълнителна тема за избрания текст',
+  }, h('span', { 'aria-hidden': 'true', text: '🌱' }), h('span', { class: 'notes-strip-quick__label', text: 'Развий' })), () => expandFromSelection());
+  // A phone: "🌱" — the topics of the lesson (no bar there).
+  const phoneTopics = press(button({
+    class: 'notes-strip-phone-list notes-strip-phone-topics', 'data-action': 'topics-phone', hidden: true,
+    'aria-label': 'Допълнителни теми на урока', title: 'Допълнителни теми на урока',
+  }, h('span', { 'aria-hidden': 'true', text: '🌱' }), h('span', { class: 'notes-strip-phone-list__count', 'aria-hidden': 'true' })), () => openTopics());
   // A phone: "💬" for a question about the lesson (and the list of the questions); no bar there.
   const phoneAsk = press(button({
     class: 'notes-strip-phone-list notes-strip-phone-ask', 'data-action': 'questions-phone', hidden: true,
@@ -287,9 +315,14 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     phoneList.hidden = !phone || !unplaced;
     phoneList.querySelector('.notes-strip-phone-list__count').textContent = notes.length ? String(notes.length) : '';
     phoneAsk.hidden = !phone;
-    phoneAsk.querySelector('.notes-strip-phone-list__count').textContent = threads.length ? String(threads.length) : '';
+    const nq = lessonThreadsOnly().length;
+    phoneAsk.querySelector('.notes-strip-phone-list__count').textContent = nq ? String(nq) : '';
+    phoneTopics.hidden = !phone || !topics.length;
+    phoneTopics.querySelector('.notes-strip-phone-list__count').textContent = topics.length ? String(topics.length) : '';
   };
-  const handleBox = h('div', { class: 'notes-strip-handle-box' }, handle, quickNote, quickAsk, phoneList, phoneAsk);
+  /** T-025: the threads on the lesson itself (a thread of a topic is shown in its topic). */
+  const lessonThreadsOnly = () => threads.filter((x) => !x.thread.topicId);
+  const handleBox = h('div', { class: 'notes-strip-handle-box' }, handle, quickNote, quickAsk, quickExpand, phoneList, phoneAsk, phoneTopics);
   const slot = h('div', { class: 'reader__notes', 'data-field': 'reader-notes' }, handleBox, element);
 
   // Keyboard: one stop for the strip, arrows move inside (a toolbar).
@@ -383,11 +416,21 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   const orderedThreads = () => {
     const frame = getFrame();
     const live = new Map((frame?.annotations || []).map((a) => [a.id, a]));
-    const list = threads.map((x) => ({ ...x, annotation: x.annotation ? (live.get(x.annotation.id) || x.annotation) : null }));
+    const list = lessonThreadsOnly().map((x) => ({ ...x, annotation: x.annotation ? (live.get(x.annotation.id) || x.annotation) : null }));
     const placed = list.filter((x) => x.annotation && stateOf(x.annotation) !== 'orphan').sort((a, b) => startOf(a.annotation) - startOf(b.annotation));
     const whole = list.filter((x) => !x.thread.annotationId);
     const orphans = list.filter((x) => x.thread.annotationId && (!x.annotation || stateOf(x.annotation) === 'orphan'));
     return { placed, whole, orphans, all: [...placed, ...whole, ...orphans] };
+  };
+  /** T-025: the topics made on the lesson with their live anchoring, in text order; those not found after them. */
+  const orderedTopics = () => {
+    const frame = getFrame();
+    const live = new Map((frame?.annotations || []).map((a) => [a.id, a]));
+    const list = topics.filter((x) => x.topic.parent?.type === 'lesson')
+      .map((x) => ({ ...x, annotation: x.annotation ? (live.get(x.annotation.id) || x.annotation) : null }));
+    const placed = list.filter((x) => x.annotation && stateOf(x.annotation) !== 'orphan').sort((a, b) => startOf(a.annotation) - startOf(b.annotation));
+    const orphans = list.filter((x) => !x.annotation || stateOf(x.annotation) === 'orphan');
+    return { placed, orphans, all: [...placed, ...orphans] };
   };
   const topOf = (item) => {
     const p = places.get(item.annotation.id);
@@ -447,7 +490,29 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       b.style.top = `${Math.round(offset + row.top + (under ? 38 : 0))}px`;
       return b;
     });
-    mount(marks, ...threadMarks, ...rows.map((row) => {
+    // T-025: the 🌱 of the topics made on the lesson, in the same column (under a 📝 / 💬 of the same line).
+    const topicRows = [];
+    for (const item of orderedTopics().placed) {
+      const top = lineMiddle(item);
+      if (top === null || top > fr.height + 1) continue;
+      const row = topicRows.find((r) => Math.abs(r.top - top) < SAME_LINE_PX);
+      if (row) row.items.push(item);
+      else topicRows.push({ top, items: [item] });
+    }
+    const topicMarks = topicRows.map((row) => {
+      const first = row.items[0];
+      const t = first.topic.title || first.topic.quote;
+      const label = row.items.length > 1 ? `${row.items.length} теми на този ред: ${quoted(t, 60)}` : `Тема: ${quoted(t, 60)}`;
+      const b = press(button({
+        class: 'notes-strip__mark notes-strip__mark--topic', 'data-topic': first.topic.id, 'data-annotation': first.annotation.id,
+        'data-state': stateOf(first.annotation), 'aria-label': label, title: label, tabindex: '-1',
+      }, h('span', { 'aria-hidden': 'true', text: '🌱' }), row.items.length > 1 ? h('span', { class: 'notes-strip__mark-count', 'aria-hidden': 'true', text: String(row.items.length) }) : null),
+      () => openTopic(first.topic.id, { from: b }));
+      const under = rows.filter((r) => Math.abs(r.top - row.top) < SAME_LINE_PX).length + threadRows.filter((r) => Math.abs(r.top - row.top) < SAME_LINE_PX).length;
+      b.style.top = `${Math.round(offset + row.top + under * 38)}px`;
+      return b;
+    });
+    mount(marks, ...topicMarks, ...threadMarks, ...rows.map((row) => {
       const first = row.items[0];
       const label = row.items.length > 1
         ? `${row.items.length} бележки на този ред: ${quoted(first.annotation.selector?.quote?.exact, 60)}`
@@ -494,6 +559,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     panel.dataset.mode = mode || 'none';
     listButton.setAttribute('aria-expanded', String(mode === 'list'));
     questionsButton.setAttribute('aria-expanded', String(mode === 'questions'));
+    topicsButton.setAttribute('aria-expanded', String(mode === 'topics'));
     slot.dataset.panel = mode || 'none';
     applyLayout(); // D-046: the strip goes while the panel is open, comes back after
   };
@@ -677,6 +743,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     editing = null;
     if (asking) { clearTimeout(asking.previewTimer); asking.closed = true; }
     asking = null; // T-023: an answer still coming in goes on and is kept (src/questions.js)
+    dropTopicView(); // T-025: a topic still coming in goes on and is kept (src/topics.js)
     dropVoices(); // T-041: the 🎤 of the panel stops (no audio is kept)
     const done = was ? finishEditing(was) : Promise.resolve();
     // T018-D12: whether the focus was in the panel is known only before it is emptied.
@@ -873,12 +940,19 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     try {
       let annotationRestored = false;
       for (const entry of entries) {
+        if (entry.kind === 'topic') { await restoreTopic(lesson, entry); annotationRestored = annotationRestored || entry.annotationDeleted; continue; }
+        if (entry.kind === 'topic-note') { await restoreTopicNote(entry); continue; }
         const back = entry.kind === 'thread' ? await restoreThread(lesson, entry) : await restoreNote(lesson, entry);
         if (back.annotationRestored) annotationRestored = true;
       }
       if (annotationRestored) await getFrame()?.reloadAnnotations();
       await reload();
       const last = entries[entries.length - 1];
+      if (last.kind === 'topic' || last.kind === 'topic-note') {
+        announce(last.kind === 'topic' ? 'Темата е върната.' : 'Бележката е върната.');
+        openTopic(last.topicId);
+        return;
+      }
       if (last.kind === 'thread') {
         announce('Въпросът е върнат.');
         openThread({ threadId: last.threadId });
@@ -888,7 +962,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       openNote(last.noteId);
     } catch (err) {
       console.warn('Cannot restore:', err?.message || err);
-      announce(entries.some((e) => e.kind === 'thread') ? 'Въпросът не можа да се върне.' : 'Бележката не можа да се върне.');
+      announce(entries.some((e) => e.kind === 'topic') ? 'Темата не можа да се върне.' : entries.some((e) => e.kind === 'thread') ? 'Въпросът не можа да се върне.' : 'Бележката не можа да се върне.');
     }
   }
 
@@ -959,10 +1033,13 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       draft: { annotationId: annotation.id }, quote: annotation.selector?.quote?.exact, annotation, focusText: true,
     }));
     const ask = press(button({ class: 'button', 'data-action': 'ask-about-mark' }, '💬 Въпрос'), () => askAboutAnnotation(annotation));
+    const expand = press(button({ class: 'button', 'data-action': 'expand-mark' }, '🌱 Развий ми го'), () => expandAnnotation(annotation));
+    const onIt = topics.filter((x) => x.topic.annotationId === annotation.id);
     mount(panelBody,
       h('blockquote', { class: 'notes-panel__quote', 'data-field': 'note-quote' }, quoted(annotation.selector?.quote?.exact, 400)),
-      // T-025: "Развий ми го" comes next to them.
-      h('div', { class: 'notes-panel__actions' }, add, ask));
+      h('div', { class: 'notes-panel__actions' }, add, ask, expand),
+      onIt.length ? h('ul', { class: 'topic__children', 'data-field': 'mark-topics' }, onIt.map((x) => h('li', {},
+        press(button({ class: 'notes-list__open', 'data-action': 'open-topic', 'data-topic': x.topic.id }, `🌱 ${x.topic.title || short(x.topic.quote, 80)}`), () => openTopic(x.topic.id))))) : null);
     add.focus({ preventScroll: true });
   }
 
@@ -974,6 +1051,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     quickNote.hidden = !on || !(off || phone);
     askButton.hidden = noteButton.hidden;
     quickAsk.hidden = quickNote.hidden;
+    expandButton.hidden = noteButton.hidden; // T-025
+    quickExpand.hidden = quickNote.hidden;
     handle.dataset.attention = String(on && off);
     slot.dataset.selection = String(on);
     fixRove();
@@ -1133,7 +1212,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       const src = t || state.draft;
       const { text } = await previewTeacher({
         settings, course, lesson, quote: src?.quote || '', paragraph: src?.paragraph || '', path: src?.path || [],
-        question: state.textarea.value.trim() || '…', history: threadHistory(messages), followUp,
+        question: state.textarea.value.trim() || '…', history: threadHistory(messages), followUp, doc: src?.doc || null,
       });
       if (run === state.previewRun && !state.closed) state.promptBox.textContent = text;
     } catch (err) {
@@ -1152,7 +1231,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     const stale = isStale(m, new Set(running.keys()));
     const status = live ? 'streaming' : stale ? 'error' : m.status;
     const text = live ? live.text : m.content;
-    const body = h('div', { class: 'thread__a-body md', 'data-field': 'answer-text' }, text ? renderMarkdown(text, { headingOffset: 3 }) : null);
+    // T-025: a finished answer is a document of the app (DocRef message): its text can be expanded ("🌱").
+    const body = h('div', {
+      class: 'thread__a-body md', 'data-field': 'answer-text',
+      ...(status === 'done' ? { 'data-doc-type': 'message', 'data-doc-id': m.id } : {}),
+    }, text ? renderMarkdown(text, { headingOffset: 3 }) : null);
     const lastUser = [...all].reverse().find((x) => x.role === 'user');
     const isLast = lastUser && m.replyTo === lastUser.id;
     const foot = [];
@@ -1166,6 +1249,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
         m.interrupted || (stale && text) ? `${why} Показано е полученото дотук.` : why,
         m.errorKind === 'no-key' || m.errorKind === 'auth' || m.errorKind === 'bad-key' ? h('span', {}, ' ', settingsLink()) : null));
       if (isLast) foot.push(press(button({ class: 'button', 'data-action': 'question-retry' }, 'Опитай пак'), () => retryAnswer(state, m)));
+    }
+    const born = topics.filter((x) => x.topic.parent?.type === 'message' && x.topic.parent.id === m.id);
+    if (born.length) {
+      foot.push(h('ul', { class: 'topic__children', 'data-field': 'answer-topics' }, born.map((x) => h('li', {},
+        press(button({ class: 'notes-list__open', 'data-action': 'open-topic', 'data-topic': x.topic.id }, `🌱 ${x.topic.title || short(x.topic.quote, 80)}`), () => openTopic(x.topic.id))))));
     }
     return h('div', { class: 'thread__a', 'data-message': m.id, 'data-role': 'assistant', 'data-status': status },
       h('span', { class: 'thread__who', text: 'Учителят' }), body, ...foot);
@@ -1211,9 +1299,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     await closePanel();
     if (destroyed) return;
     returnFocus = from || (fromPanel || !active || active === document.body || !active.isConnected ? homeButton() : active);
-    const item = threadId ? orderedThreads().all.find((x) => x.thread.id === threadId) : null;
+    const item = threadId ? (orderedThreads().all.find((x) => x.thread.id === threadId) || threads.find((x) => x.thread.id === threadId)) : null;
     if (threadId && !item) return;
-    const annotation = item ? item.annotation : draft?.annotation || null;
+    // T-025: a question on the text of a topic (its place is in the topic, not in the lesson).
+    const topicId = item ? item.thread.topicId || null : draft?.topicId || null;
+    const annotation = topicId ? null : item ? item.annotation : draft?.annotation || null;
     if (annotation && item) {
       if (scroll && stateOf(annotation) !== 'orphan') showPlace(annotation.id);
       else getFrame()?.focus(annotation.id);
@@ -1224,7 +1314,9 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     asking = state;
     const log = h('div', { class: 'thread__log', 'data-field': 'thread-log', 'aria-live': 'polite' });
     state.log = log;
-    const toQuestions = press(button({ class: 'notes-panel__back', 'data-action': 'questions-back-to-list' }, '← Всички въпроси'), () => openQuestions());
+    const toQuestions = topicId
+      ? press(button({ class: 'notes-panel__back', 'data-action': 'thread-back-to-topic' }, '← Към темата'), () => openTopic(topicId))
+      : press(button({ class: 'notes-panel__back', 'data-action': 'questions-back-to-list' }, '← Всички въпроси'), () => openQuestions());
     const showButton = annotation && stateOf(annotation) !== 'orphan' && item
       ? press(button({ class: 'button notes-panel__show', 'data-action': 'show-thread-place' }, 'Покажи мястото'), () => showPlace(annotation.id)) : null;
     const deleteButton = press(button({ class: 'button notes-panel__delete', 'data-action': 'delete-thread', hidden: !threadId }, 'Изтрий въпроса'), () => removeThread(state));
@@ -1238,6 +1330,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
         ? h('blockquote', { class: 'notes-panel__quote', 'data-field': 'question-quote' }, quoted(quote, 400))
         : h('p', { class: 'notes-panel__hint', 'data-field': 'question-quote', 'data-whole': 'true', text: `Въпрос за ${lesson.kind === 'reference' ? 'справочника' : 'урока'} като цяло.` }),
       annotation && item ? stateBadge(annotation) : null,
+      topicId ? h('p', { class: 'notes-panel__hint', 'data-field': 'question-in-topic', text: `В темата: ${topicName(topicId)}` }) : null,
       quote && !found ? h('p', { class: 'notes-panel__hint', 'data-field': 'question-quote-unknown', text: '⚠ Този текст не е намерен в файла на урока (може да е създаден от скрипт на урока). Учителят ще го получи така, както е тук.' }) : null,
       log,
       composer(state),
@@ -1281,11 +1374,11 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       let thread;
       if (!state.threadId) {
         const d = state.draft || {};
-        const made = await startThread({ course, lesson, place: d.place || {}, quote: d.quote || '', paragraph: d.paragraph || '', path: d.path || [], quoteFound: d.found !== false });
+        const made = await startThread({ course, lesson, place: d.place || {}, quote: d.quote || '', paragraph: d.paragraph || '', path: d.path || [], quoteFound: d.found !== false, doc: d.doc || null, topicId: d.topicId || null });
         thread = made.thread;
         state.threadId = thread.id;
         state.draft = null;
-        if (made.createdAnnotation) await getFrame()?.reloadAnnotations();
+        if (made.createdAnnotation && !d.topicId) await getFrame()?.reloadAnnotations();
       } else {
         thread = (await lessonThreads(lesson)).find((x) => x.thread.id === state.threadId)?.thread;
         if (!thread) throw new Error('thread gone');
@@ -1318,7 +1411,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     try {
       const r = await askTeacher({
         apiKey, settings, course, lesson, quote: thread.quote || '', paragraph: thread.paragraph || '', path: thread.path || [],
-        question, history, followUp, signal: controller.signal,
+        question, history, followUp, doc: thread.doc || null, signal: controller.signal,
         onText: (_d, all) => { live.text = all; paintStream(assistant.id); },
       });
       await finishAnswer(assistant.id, {
@@ -1446,6 +1539,622 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     announce(`Въпрос ${i + 1} от ${list.length}.`);
   }
 
+  // --- T-025 (D-048): "Развий ми го" — the additional topics ---------------------------
+  // A topic opens in the panel of a note (its place, its divider; a phone: the
+  // whole window), with a trail "Урок 0001 › Тема › Подтема" and the way back.
+  // It is a document of the APP (src/screens/app-doc.js), never of the lesson:
+  // the lesson cannot start one (only the app's own buttons do), read one or
+  // change its quote (taken at the press, the app's own text). Its text can be
+  // marked with the tools, noted, asked about and expanded again (a tree).
+  const runningTopics = new Map(); // topic id → { controller, text, paintTimer }
+  let topicView = null; // the open topic: { topicId, doc, … }
+  let topicField = null; // the note field of the open topic that has the focus (guarded like the note's)
+  let docSel = null; // the selection inside a document of the panel (a topic, an answer)
+  let docSelTimer = 0;
+  let expanding = false;
+  const lessonLabel = () => `${lesson.kind === 'reference' ? 'Справочник' : 'Урок'} ${lesson.number || ''}`.trim();
+  const topicName = (id) => {
+    const t = topics.find((x) => x.topic.id === id)?.topic;
+    return t ? (t.title || short(t.quote, 80)) : 'темата';
+  };
+  const topicSettingsNotice = (field) => h('p', { class: 'thread__notice', 'data-field': field },
+    'Няма API ключ. Въведи го в ', settingsLink(), '. Уроците никога не искат API ключ — въвеждай го само в „Настройки“ на приложението.');
+
+  // The bar of a selection inside a document of the panel: 🌱 (and 📝 / 💬 in a topic).
+  const docExpand = press(button({ class: 'button doc-bar__button', 'data-action': 'doc-expand', 'aria-label': 'Развий ми го: допълнителна тема за избрания текст' }, '🌱 Развий ми го'), () => expandFromDoc());
+  const docNote = press(button({ class: 'button doc-bar__button', 'data-action': 'doc-note', 'aria-label': 'Бележка към избрания текст' }, '📝 Бележка'), () => noteFromDoc());
+  const docAsk = press(button({ class: 'button doc-bar__button', 'data-action': 'doc-ask', 'aria-label': 'Въпрос към учителя за избрания текст' }, '💬 Въпрос'), () => askFromDoc());
+  const docBar = h('div', { class: 'doc-bar', 'data-field': 'doc-selection', role: 'toolbar', 'aria-label': 'Избран текст', hidden: true }, docExpand, docNote, docAsk);
+  // A press on the bar keeps the selection (the mouse; a finger acts on pointerup).
+  docBar.addEventListener('mousedown', (e) => { if (e.isTrusted) e.preventDefault(); });
+  const showDocBar = () => {
+    const on = Boolean(docSel) && !getTool() && Boolean(panelMode);
+    docBar.hidden = !on;
+    docNote.hidden = !on || docSel.kind !== 'subtopic';
+    docAsk.hidden = docNote.hidden;
+    if (on && !docBar.isConnected) panel.querySelector('.notes-panel__head')?.after(docBar);
+  };
+  const setDocSel = (sel) => {
+    clearTimeout(docSelTimer);
+    if (sel) { docSel = sel; showDocBar(); return; }
+    const wait = Math.max(SELECTION_GRACE_MS, pressingUntil - performance.now());
+    docSelTimer = setTimeout(() => { docSel = null; showDocBar(); }, wait);
+  };
+  // An answer of the teacher (a done one) in the panel: its selection, with the app's own text model.
+  const onPanelSelection = () => {
+    if (destroyed || !panelMode || getTool()) return;
+    const sel = document.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) { if (docSel?.kind === 'message') setDocSel(null); return; }
+    const range = sel.getRangeAt(0);
+    const start = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    const root = start?.closest?.('[data-doc-type="message"]');
+    if (!root || !panel.contains(root)) { if (docSel?.kind === 'message') setDocSel(null); return; }
+    let selector = null;
+    try { selector = anchorDescribeRange(anchorTextModel(root), range); } catch { selector = null; }
+    if (!selector?.quote?.exact?.trim()) return;
+    setDocSel({ kind: 'message', id: root.dataset.docId, selector, quote: selector.quote.exact, ...rangeContext(root, range) });
+  };
+  document.addEventListener('selectionchange', onPanelSelection);
+
+  /** "🌱 Развий ми го" for the selection of the lesson. */
+  async function expandFromSelection() {
+    const sel = selection;
+    if (!sel) return;
+    selection = null;
+    clearTimeout(selectionTimer);
+    showSelectionButtons();
+    const frame = getFrame();
+    frame?.clearSelection();
+    if (sel.excludedOnly || !sel.position) {
+      announce('Тук не може да се закачи тема: тази част на урока (тест или бележка на автора) не се маркира.');
+      return;
+    }
+    // A topic at exactly this place opens (no second request).
+    const there = topicAtSelection(sel, orderedTopics().all);
+    if (there) { announce('Тук вече има тема: отварям я.'); await openTopic(there.topic.id); return; }
+    const mark = markAtSelection(sel, frame?.annotations || []);
+    const ctx = await contextOf(sel.quote);
+    await expandWith({
+      place: mark ? { annotationId: mark.id } : { selection: sel }, quote: sel.quote.exact,
+      paragraph: ctx.paragraph, path: ctx.path, trail: [lessonLabel()], from: homeButton(),
+    });
+  }
+  /** "🌱 Развий ми го" in the card of a mark. */
+  async function expandAnnotation(annotation) {
+    const there = topics.find((x) => x.topic.annotationId === annotation.id);
+    if (there) { await openTopic(there.topic.id); return; }
+    const ctx = await contextOf(annotation.selector?.quote || {});
+    await expandWith({
+      place: { annotationId: annotation.id }, quote: annotation.selector?.quote?.exact || '',
+      paragraph: ctx.paragraph, path: ctx.path, trail: [lessonLabel()],
+    });
+  }
+  /** "🌱" for the selection in a topic / an answer of the panel. */
+  async function expandFromDoc() {
+    const sel = docSel;
+    if (!sel) return;
+    docSel = null;
+    showDocBar();
+    document.getSelection()?.removeAllRanges();
+    const ref = { type: sel.kind, id: sel.id };
+    let doc = null;
+    let version = null;
+    if (sel.kind === 'subtopic') {
+      const t = topics.find((x) => x.topic.id === sel.id)?.topic;
+      if (!t) return;
+      if ((t.depth || 1) >= MAX_TOPIC_DEPTH) { announce(`Темите стигат до ${MAX_TOPIC_DEPTH} нива: развий текст от по-горна тема.`); return; }
+      doc = { type: 'subtopic', id: t.id, title: t.title || '', text: t.content || '' };
+      version = t.run || null;
+    } else {
+      const item = threads.find((x) => x.messages.some((m) => m.id === sel.id));
+      const m = item?.messages.find((x) => x.id === sel.id);
+      if (!m) return;
+      doc = { type: 'message', id: m.id, title: item.thread.title || '', text: m.content || '' };
+    }
+    const trail = (await topicTrail(lesson, { parent: ref }, topics)).map((t) => t.title);
+    await expandWith({ place: { target: ref, selector: sel.selector, version }, quote: sel.quote, paragraph: sel.paragraph, path: sel.path, trail, doc });
+  }
+
+  /** A new topic: written by the teacher at once (no key: nothing is made, the way to "Настройки"). */
+  async function expandWith({ place, quote, paragraph = '', path = [], trail = [], doc = null, from = null }) {
+    if (expanding || destroyed) return;
+    expanding = true;
+    try {
+      const apiKey = await getApiKey();
+      if (!apiKey) { await openNoKey(quote, from); return; }
+      const settings = await getSettings();
+      const made = await startTopic({ course, lesson, place, quote, paragraph, path, trail, doc });
+      if (made.createdAnnotation && place.selection) await getFrame()?.reloadAnnotations();
+      runTopic(made.topic, { apiKey, settings });
+      await reload();
+      await openTopic(made.topic.id, { from });
+    } catch (err) {
+      console.warn('Cannot expand:', err?.message || err);
+      announce('Темата не можа да се започне. Опитай пак.');
+    } finally {
+      expanding = false;
+    }
+  }
+  async function openNoKey(quote, from) {
+    const active = document.activeElement;
+    await closePanel();
+    if (destroyed) return;
+    returnFocus = from || (active?.isConnected && active !== document.body ? active : homeButton());
+    setMode('topic');
+    panel.dataset.topic = 'none';
+    panelTitle.textContent = 'Развий ми го';
+    mount(panelBody,
+      quote ? h('blockquote', { class: 'notes-panel__quote', 'data-field': 'topic-quote' }, quoted(quote, 400)) : null,
+      topicSettingsNotice('topic-no-key'));
+    announce('Няма API ключ. Въведи го в Настройки.');
+    panelTitle.focus({ preventScroll: true });
+  }
+
+  /** Stream a topic into its record; kept in the database at the end (also when the panel is closed). */
+  async function runTopic(topic, { apiKey, settings }) {
+    const controller = new AbortController();
+    const live = { controller, text: '', paintTimer: 0 };
+    runningTopics.set(topic.id, live);
+    try {
+      const r = await askTopic({
+        apiKey, settings, course, lesson, quote: topic.quote || '', paragraph: topic.paragraph || '', path: topic.path || [],
+        trail: topic.trail || [], doc: topic.doc || null, signal: controller.signal,
+        onText: (_d, all) => { live.text = all; paintTopicStream(topic.id); },
+      });
+      await finishTopic(topic.id, {
+        content: r.text, status: 'done', interrupted: false, costUSD: r.costUSD, usage: r.usage, model: r.model, stopReason: r.stopReason || null,
+      }, topic.run);
+      announce('Темата е готова.');
+      if (r.month?.over) announce(budgetWarning(r.month));
+    } catch (err) {
+      const kind = err?.kind || 'error';
+      const text = err?.text || 'Темата не дойде. Опитай пак.';
+      await finishTopic(topic.id, {
+        content: typeof err?.partial === 'string' ? err.partial : live.text, status: 'error', interrupted: Boolean(err?.interrupted || (kind === 'aborted' && live.text)),
+        errorKind: kind, errorText: kind === 'aborted' ? 'Отказано: темата е спряна.' : text,
+      }, topic.run).catch(() => {});
+      announce(kind === 'aborted' ? 'Темата е спряна.' : text);
+    } finally {
+      clearTimeout(live.paintTimer);
+      runningTopics.delete(topic.id);
+      if (!destroyed) {
+        await reload();
+        if (topicView?.topicId === topic.id) await paintTopic(topicView);
+      }
+    }
+  }
+  function paintTopicStream(id) {
+    const live = runningTopics.get(id);
+    if (!live || live.paintTimer) return;
+    live.paintTimer = setTimeout(() => {
+      live.paintTimer = 0;
+      const state = topicView;
+      if (!state || state.topicId !== id || state.closed) return;
+      state.doc.setMarkdown(withoutTitle(live.text));
+      const title = live.text.match(/^\s{0,3}#{1,2}[ \t]+(.+)$/m)?.[1];
+      if (title) panelTitle.textContent = title.replace(/[*_`#]/g, '').trim().slice(0, 120);
+      state.stateLine.textContent = live.text ? 'Учителят пише…' : 'Чакам темата…';
+    }, STREAM_PAINT_MS);
+  }
+  async function retryTopic(state) {
+    if (runningTopics.has(state.topicId)) return;
+    try {
+      const apiKey = await getApiKey();
+      if (!apiKey) { state.keyNote.hidden = false; return; }
+      const settings = await getSettings();
+      const restarted = await restartTopic(lesson, state.topicId);
+      runTopic(restarted, { apiKey, settings });
+      await reload();
+      await paintTopic(state);
+    } catch (err) {
+      console.warn('Cannot expand again:', err?.message || err);
+      announce('Не можа да се опита пак.');
+    }
+  }
+  function cancelTopic(state) { runningTopics.get(state.topicId)?.controller.abort(); }
+
+  /** Close the view of the open topic (its fields are saved; a topic coming in goes on). */
+  function dropTopicView() {
+    const state = topicView;
+    topicView = null;
+    topicField = null;
+    docSel = null;
+    clearTimeout(docSelTimer);
+    docBar.hidden = true;
+    delete panel.dataset.topic;
+    delete panel.dataset.topicStatus;
+    if (!state) return;
+    state.closed = true;
+    for (const ed of state.noteEds || []) saveTopicNote(state, ed);
+    state.doc?.destroy();
+  }
+
+  /** Open a topic: the trail, its quote, its text (streaming or done), its marks, notes, questions and topics. */
+  async function openTopic(topicId, { from = null, scroll = false } = {}) {
+    const active = document.activeElement;
+    const fromPanel = panel.contains(active);
+    await closePanel();
+    if (destroyed) return;
+    returnFocus = from || (fromPanel || !active || active === document.body || !active.isConnected ? homeButton() : active);
+    const item = topics.find((x) => x.topic.id === topicId);
+    if (!item) { announce('Темата не е намерена.'); return; }
+    const { topic } = item;
+    const annotation = topic.parent?.type === 'lesson' ? orderedTopics().all.find((x) => x.topic.id === topicId)?.annotation : null;
+    if (annotation && stateOf(annotation) !== 'orphan') {
+      if (scroll) showPlace(annotation.id); else getFrame()?.focus(annotation.id);
+      if (!phone) keepPlace = { id: annotation.id, until: performance.now() + 1500 };
+    }
+    const state = { topicId, closed: false, noteEds: [] };
+    topicView = state;
+    const trail = await topicTrail(lesson, topic, topics);
+    if (topicView !== state) return;
+    state.doc = createAppDoc({
+      kind: 'subtopic', id: topic.id, getTool, getColor: getToolColor, label: topic.title || 'Тема',
+      scroller: () => panelBody,
+      onSelection: (sel) => setDocSel(sel),
+      onStroke: (st) => strokeTopic(state, st),
+      onIcon: (icon) => openTopicIcon(state, icon),
+    });
+    // The trail: the lesson › topics above › this one (the way back).
+    const crumb = (t, i) => {
+      if (i === trail.length) return (state.here = h('span', { class: 'topic__crumb topic__crumb--here', 'aria-current': 'page', text: topic.title || short(topic.quote, 60) }));
+      const go = t.type === 'lesson' ? () => closePanel({ focus: true }) : t.type === 'thread' ? () => openThread({ threadId: t.id }) : () => openTopic(t.id);
+      return press(button({ class: 'topic__crumb', 'data-action': 'topic-crumb', 'data-crumb': t.type, 'data-id': t.id }, short(t.title, 60)), go);
+    };
+    const parts = [];
+    [...trail, null].forEach((t, i) => { if (i) parts.push(h('span', { class: 'topic__sep', 'aria-hidden': 'true', text: ' › ' })); parts.push(crumb(t, i)); });
+    const up = trail[trail.length - 1];
+    const back = press(button({ class: 'notes-panel__back', 'data-action': 'topic-back' },
+      up.type === 'lesson' ? `← ${up.title}` : up.type === 'thread' ? '← Към въпроса' : `← ${short(up.title, 40)}`),
+    () => (up.type === 'lesson' ? closePanel({ focus: true }) : up.type === 'thread' ? openThread({ threadId: up.id }) : openTopic(up.id)));
+    const toAll = press(button({ class: 'notes-panel__back', 'data-action': 'topics-all' }, 'Всички теми'), () => openTopics());
+    state.stateLine = h('p', { class: 'thread__state', 'data-field': 'topic-state' });
+    state.foot = h('div', { class: 'topic__foot', 'data-field': 'topic-foot' });
+    state.keyNote = topicSettingsNotice('topic-no-key');
+    state.keyNote.hidden = true;
+    state.cancel = press(button({ class: 'button', 'data-action': 'topic-cancel', hidden: true }, 'Отказ'), () => cancelTopic(state));
+    const promptBox = h('pre', { class: 'thread__prompt', 'data-field': 'topic-prompt', hidden: true, tabindex: '0' });
+    const promptToggle = press(button({ class: 'button thread__prompt-toggle', 'data-action': 'topic-prompt', 'aria-expanded': 'false' }, 'Покажи промпта'), async () => {
+      const on = promptBox.hidden;
+      promptBox.hidden = !on;
+      promptToggle.setAttribute('aria-expanded', String(on));
+      promptToggle.textContent = on ? 'Скрий промпта' : 'Покажи промпта';
+      if (!on) return;
+      try {
+        const t = topics.find((x) => x.topic.id === topicId)?.topic || topic;
+        const { text } = await previewTopic({ settings: await getSettings(), course, lesson, quote: t.quote, paragraph: t.paragraph, path: t.path, trail: t.trail, doc: t.doc });
+        if (!state.closed) promptBox.textContent = text;
+      } catch (err) {
+        console.warn('Cannot build the prompt:', err?.message || err);
+        promptBox.textContent = 'Промптът не може да се сглоби сега.';
+      }
+    });
+    const showButton = press(button({ class: 'button notes-panel__show', 'data-action': 'show-topic-place' }, 'Покажи мястото'), () => showTopicPlace(topic));
+    const deleteButton = press(button({ class: 'button notes-panel__delete', 'data-action': 'delete-topic' }, 'Изтрий темата'), () => removeTopic(state));
+    state.notesBox = h('section', { class: 'topic__section', 'data-field': 'topic-notes' });
+    state.threadsBox = h('section', { class: 'topic__section', 'data-field': 'topic-threads' });
+    state.childBox = h('section', { class: 'topic__section', 'data-field': 'topic-children' });
+    setMode('topic');
+    panel.dataset.topic = topic.id;
+    panelTitle.textContent = topic.title || 'Нова тема';
+    mount(panelBody,
+      h('nav', { class: 'topic__trail', 'data-field': 'topic-trail', 'aria-label': 'Път на темите' }, ...parts),
+      h('div', { class: 'topic__nav' }, back, toAll),
+      h('blockquote', { class: 'notes-panel__quote', 'data-field': 'topic-quote' }, quoted(topic.quote, 400)),
+      annotation ? stateBadge(annotation) : null,
+      h('article', { class: 'topic__doc', 'data-field': 'topic-doc', 'aria-label': 'Текст на темата' }, state.doc.element),
+      state.stateLine, state.keyNote, state.foot,
+      h('div', { class: 'notes-panel__actions' }, state.cancel, promptToggle, showButton, deleteButton),
+      promptBox,
+      state.notesBox, state.threadsBox, state.childBox);
+    await paintTopic(state);
+    if (topicView !== state) return;
+    panelTitle.focus({ preventScroll: true });
+  }
+
+  /** Draw the open topic again from its record (or the text coming in). */
+  async function paintTopic(state) {
+    if (state.closed || topicView !== state) return;
+    const item = topics.find((x) => x.topic.id === state.topicId);
+    if (!item) return;
+    const t = item.topic;
+    const live = runningTopics.get(t.id);
+    const stale = isStaleTopic(t, new Set(runningTopics.keys()));
+    const status = live ? 'streaming' : stale ? 'error' : t.status;
+    const text = live ? live.text : t.content || '';
+    panel.dataset.topicStatus = status;
+    if (t.title) { panelTitle.textContent = t.title; if (state.here) state.here.textContent = short(t.title, 60); }
+    state.doc.setMarkdown(withoutTitle(text));
+    state.cancel.hidden = status !== 'streaming';
+    state.stateLine.hidden = status !== 'streaming';
+    state.stateLine.textContent = text ? 'Учителят пише…' : 'Чакам темата…';
+    const foot = [];
+    if (status === 'done') {
+      if (Number.isFinite(Number(t.costUSD))) foot.push(h('p', { class: 'thread__cost', 'data-field': 'topic-cost', text: `Цена на темата: ${formatUSD(t.costUSD)}` }));
+      foot.push(h('p', { class: 'notes-panel__hint topic__links-note', 'data-field': 'topic-links-note', text: 'Линковете в темата са предложени от AI учителя: провери ги, преди да им се довериш. Отварят се в нов раздел.' }));
+    }
+    if (status === 'error') {
+      const why = stale ? 'Темата прекъсна (страницата беше затворена).' : (t.errorText || 'Темата не дойде.');
+      foot.push(h('p', { class: 'thread__error', 'data-field': 'topic-error', role: 'alert' },
+        t.interrupted || (stale && text) ? `${why} Показано е полученото дотук.` : why,
+        ['no-key', 'auth', 'bad-key'].includes(t.errorKind) ? h('span', {}, ' ', settingsLink()) : null));
+      foot.push(press(button({ class: 'button', 'data-action': 'topic-retry' }, 'Опитай пак'), () => retryTopic(state)));
+    }
+    mount(state.foot, foot);
+    await paintTopicMarks(state, t, status);
+  }
+
+  /** The marks of the topic, the icons next to its lines, its notes, questions and topics. */
+  async function paintTopicMarks(state, t, status) {
+    let anns = [];
+    let allNotes = [];
+    try { [anns, allNotes] = await Promise.all([annotationsFor(topicRef(t)), list(STORES.notes)]); } catch { /* nothing to paint */ }
+    if (state.closed || topicView !== state) return;
+    const ids = new Set(anns.map((a) => a.id));
+    const byAnn = new Map(anns.map((a) => [a.id, a]));
+    state.notes = allNotes.filter((n) => ids.has(n.annotationId)).sort((a, b) => (a.id < b.id ? -1 : 1));
+    state.threads = threads.filter((x) => x.thread.topicId === t.id);
+    state.children = topics.filter((x) => x.topic.parent?.type === 'subtopic' && x.topic.parent.id === t.id);
+    state.anns = byAnn;
+    const icons = [
+      ...state.notes.map((n) => ({ annotationId: n.annotationId, kind: 'note', id: n.id, label: `Бележка: ${quoted(byAnn.get(n.annotationId)?.selector?.quote?.exact, 60)}` })),
+      ...state.threads.filter((x) => x.thread.annotationId).map((x) => ({ annotationId: x.thread.annotationId, kind: 'thread', id: x.thread.id, label: `Въпрос: ${quoted(x.thread.quote, 60)}` })),
+      ...state.children.map((x) => ({ annotationId: x.topic.annotationId, kind: 'topic', id: x.topic.id, label: `Тема: ${quoted(x.topic.title || x.topic.quote, 60)}` })),
+    ];
+    // While the text comes in, the marks wait (the text is not final yet).
+    const results = status === 'streaming' ? [] : state.doc.paint(anns.map((a) => ({
+      id: a.id, color: a.color, style: a.style, selector: a.selector, sameVersion: Boolean(t.run) && a.targetVersion === t.run,
+    })), icons);
+    const found = new Map(results.map((r) => [r.id, r.state]));
+    const badge = (annId) => {
+      const s = found.get(annId);
+      return s === 'fuzzy' ? h('span', { class: 'notes-badge notes-badge--fuzzy', text: '⚠ провери' }) : s === 'orphan' ? h('span', { class: 'notes-badge notes-badge--orphan', text: 'неприкачена' }) : null;
+    };
+    paintTopicNotes(state, badge);
+    mount(state.threadsBox, state.threads.length ? [
+      h('h3', { class: 'notes-list__heading', text: `Въпроси в темата (${state.threads.length})` }),
+      h('ul', { class: 'notes-list' }, state.threads.map((x) => h('li', { class: 'notes-list__item', 'data-thread': x.thread.id },
+        press(button({ class: 'notes-list__open', 'data-action': 'open-thread' },
+          h('span', { class: 'notes-list__quote', text: quoted(x.thread.quote, 120) }), badge(x.thread.annotationId)),
+        () => openThread({ threadId: x.thread.id })),
+        h('p', { class: 'notes-list__body', text: x.messages.find((m) => m.role === 'user')?.content || x.thread.title || '' })))),
+    ] : null);
+    mount(state.childBox, state.children.length ? [
+      h('h3', { class: 'notes-list__heading', text: `Теми от тази тема (${state.children.length})` }),
+      h('ul', { class: 'topic__children' }, state.children.map((x) => h('li', { 'data-topic': x.topic.id },
+        press(button({ class: 'notes-list__open', 'data-action': 'open-topic', 'data-topic': x.topic.id }, `🌱 ${x.topic.title || short(x.topic.quote, 80)}`), () => openTopic(x.topic.id)),
+        badge(x.topic.annotationId)))),
+    ] : null);
+  }
+
+  // The notes of a topic: in the topic itself (a list with a field each), saved by themselves.
+  function topicNoteEditor(state, { note = null, annotationId = null, draft = null, quote, badge = null }) {
+    const textarea = h('textarea', {
+      class: 'notes-panel__text topic__note-text', 'data-field': 'topic-note-text', rows: '3', maxlength: String(MAX_NOTE_LENGTH),
+      'aria-label': `Бележка към ${quoted(quote, 60)}`, placeholder: 'Напиши бележката си…',
+    });
+    textarea.value = note?.body || '';
+    const status = h('p', { class: 'notes-panel__status', 'data-field': 'topic-note-status', role: 'status', 'aria-live': 'polite' });
+    const ed = { textarea, status, noteId: note?.id || null, annotationId, draft, savedBody: note?.body || '', timer: 0, saving: Promise.resolve(), topicNote: true };
+    state.noteEds.push(ed);
+    textarea.addEventListener('focus', () => { topicField = ed; }, true);
+    attachFieldGuard(ed);
+    textarea.addEventListener('input', () => {
+      status.textContent = 'Пиша…';
+      clearTimeout(ed.timer);
+      ed.timer = setTimeout(() => saveTopicNote(state, ed), SAVE_MS);
+    });
+    textarea.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); saveTopicNote(state, ed); closePanel({ focus: true }); } });
+    const del = press(button({ class: 'button notes-panel__delete', 'data-action': 'delete-topic-note', hidden: !ed.noteId }, 'Изтрий'), () => removeTopicNote(state, ed));
+    ed.deleteButton = del;
+    const li = h('li', { class: 'notes-list__item topic__note', 'data-note': ed.noteId || '', 'data-annotation': annotationId || '' },
+      h('span', { class: 'notes-list__quote', text: quoted(quote, 160) }), badge,
+      h('div', { class: 'voice-field' }, textarea, voiceFor(textarea, 'Гласово въвеждане на бележката').element),
+      status, h('div', { class: 'notes-panel__actions' }, del));
+    ed.element = li;
+    return li;
+  }
+  function paintTopicNotes(state, badge) {
+    // A field being written keeps its text: a note being edited is not drawn again.
+    const keep = state.noteEds.filter((ed) => ed.textarea === document.activeElement || (!ed.noteId && ed.textarea.value.trim()));
+    state.noteEds = keep;
+    const items = state.notes.filter((n) => !keep.some((ed) => ed.noteId === n.id)).map((n) => topicNoteEditor(state, {
+      note: n, annotationId: n.annotationId, quote: state.anns.get(n.annotationId)?.selector?.quote?.exact || '', badge: badge(n.annotationId),
+    }));
+    mount(state.notesBox, (state.notes.length || keep.length) ? [
+      h('h3', { class: 'notes-list__heading', text: `Бележки в темата (${state.notes.length})` }),
+      h('ul', { class: 'notes-list', 'data-field': 'topic-notes-list' }, ...keep.map((ed) => ed.element), ...items),
+    ] : null);
+  }
+  /** Save a note of a topic (a new one: its place is made at the first text). */
+  function saveTopicNote(state, ed) {
+    clearTimeout(ed.timer);
+    ed.timer = 0;
+    const body = ed.textarea.value.slice(0, MAX_NOTE_LENGTH);
+    if (body === ed.savedBody || (!ed.noteId && !body.trim())) return ed.saving;
+    ed.saving = ed.saving.then(async () => {
+      if (body === ed.savedBody) return;
+      if (ed.noteId) {
+        await update(STORES.notes, ed.noteId, { body });
+      } else {
+        const a = ed.annotationId ? await getAnnotation(ed.annotationId) : await annotateDocument({ course, ...ed.draft });
+        ed.annotationId = a.id;
+        const note = await createNote({ annotationId: a.id, body, courseId: course.id, lessonId: lesson.id, topicId: state.topicId });
+        ed.noteId = note.id;
+        ed.element.dataset.note = note.id;
+        ed.deleteButton.hidden = false;
+        if (!state.closed) paintTopic(state);
+      }
+      ed.savedBody = body;
+      if (!state.closed) ed.status.textContent = 'Запазено.';
+    }).catch((err) => {
+      console.warn('Cannot save the note of the topic:', err?.message || err);
+      if (!state.closed) ed.status.textContent = 'Бележката не можа да се запише.';
+    });
+    return ed.saving;
+  }
+  async function removeTopicNote(state, ed) {
+    if (!ed.noteId) { ed.element.remove(); return; }
+    try {
+      await ed.saving;
+      await remove(STORES.notes, ed.noteId);
+      let annotationDeleted = false;
+      const a = await getAnnotation(ed.annotationId);
+      if (a && !COLORS.includes(a.color)) {
+        const left = await annotationDependents(a.id);
+        if (!left.notes && !left.threads && !left.subtopics) { await remove(STORES.annotations, a.id); annotationDeleted = true; }
+      }
+      state.noteEds = state.noteEds.filter((x) => x !== ed);
+      await paintTopic(state);
+      offerUndo({ kind: 'topic-note', topicId: state.topicId, noteId: ed.noteId, annotationId: ed.annotationId, annotationDeleted }, 'Бележката е изтрита.');
+    } catch (err) {
+      console.warn('Cannot delete the note of the topic:', err?.message || err);
+      announce('Бележката не можа да се изтрие.');
+    }
+  }
+  async function restoreTopicNote({ noteId, annotationId, annotationDeleted }) {
+    if (annotationDeleted) await restore(STORES.annotations, annotationId);
+    await restore(STORES.notes, noteId);
+  }
+  /** "📝 Бележка" for the selection in a topic: a new field in its notes. */
+  function noteFromDoc() {
+    const sel = docSel;
+    const state = topicView;
+    if (!sel || sel.kind !== 'subtopic' || !state || state.topicId !== sel.id) return;
+    docSel = null;
+    showDocBar();
+    document.getSelection()?.removeAllRanges();
+    const t = topics.find((x) => x.topic.id === sel.id)?.topic;
+    const li = topicNoteEditor(state, { draft: { target: topicRef(t), selector: sel.selector, version: t?.run || null }, quote: sel.quote });
+    let ul = state.notesBox.querySelector('[data-field="topic-notes-list"]');
+    if (!ul) {
+      ul = h('ul', { class: 'notes-list', 'data-field': 'topic-notes-list' });
+      mount(state.notesBox, h('h3', { class: 'notes-list__heading', text: `Бележки в темата (${state.notes?.length || 0})` }), ul);
+    }
+    ul.prepend(li);
+    li.scrollIntoView({ block: 'nearest' });
+    li.querySelector('textarea').focus({ preventScroll: true });
+  }
+  /** "💬 Въпрос" for the selection in a topic: a thread on that place, with the topic's text in the prompt. */
+  async function askFromDoc() {
+    const sel = docSel;
+    if (!sel || sel.kind !== 'subtopic') return;
+    docSel = null;
+    showDocBar();
+    document.getSelection()?.removeAllRanges();
+    const t = topics.find((x) => x.topic.id === sel.id)?.topic;
+    if (!t) return;
+    await openThread({
+      draft: {
+        place: { target: topicRef(t), selector: sel.selector, version: t.run || null }, quote: sel.quote, found: true,
+        paragraph: sel.paragraph, path: sel.path, topicId: t.id, doc: { title: t.title || '', text: t.content || '' },
+      },
+      focusField: true,
+    });
+  }
+  /** A stroke of a tool over the text of the topic: a mark, an underline, or the marks erased. */
+  async function strokeTopic(state, st) {
+    const t = topics.find((x) => x.topic.id === state.topicId)?.topic;
+    if (!t || state.closed) return;
+    try {
+      if (st.tool === 'eraser') {
+        for (const id of st.ids) {
+          const left = await annotationDependents(id);
+          if (left.notes || left.threads || left.subtopics) await updateAnnotation(id, { color: null });
+          else await remove(STORES.annotations, id);
+        }
+        announce(st.ids.length > 1 ? 'Маркировките са изтрити.' : 'Маркировката е изтрита.');
+      } else {
+        await annotateDocument({ course, target: topicRef(t), selector: st.selector, color: COLORS.includes(st.color) ? st.color : 'yellow', style: st.style, version: t.run || null });
+        announce(st.style === 'underline' ? 'Подчертано.' : 'Маркирано.');
+      }
+      await paintTopic(state);
+    } catch (err) {
+      console.warn('Cannot mark the topic:', err?.message || err);
+      announce('Маркировката не можа да се запише.');
+    }
+  }
+  function openTopicIcon(state, icon) {
+    if (icon.kind === 'topic') { openTopic(icon.id); return; }
+    if (icon.kind === 'thread') { openThread({ threadId: icon.id }); return; }
+    const ed = state.noteEds.find((x) => x.noteId === icon.id);
+    state.doc.focus(icon.annotationId);
+    if (ed) { ed.element.scrollIntoView({ block: 'nearest' }); ed.textarea.focus({ preventScroll: true }); }
+  }
+  /** "Покажи мястото": the place of the topic in its parent (the lesson, a topic, an answer). */
+  async function showTopicPlace(topic) {
+    const p = topic.parent;
+    if (p?.type === 'lesson') {
+      if (!showPlace(topic.annotationId)) announce('Мястото на темата не е намерено в урока.');
+      return;
+    }
+    if (p?.type === 'subtopic') {
+      await openTopic(p.id);
+      const state = topicView;
+      if (state?.topicId === p.id) {
+        state.doc.focus(topic.annotationId);
+        state.doc.rangeOf(topic.annotationId)?.startContainer?.parentElement?.scrollIntoView({ block: 'center' });
+      }
+      return;
+    }
+    if (p?.type === 'message') {
+      const item = threads.find((x) => x.messages.some((m) => m.id === p.id));
+      if (item) await openThread({ threadId: item.thread.id });
+    }
+  }
+  async function removeTopic(state) {
+    cancelTopic(state);
+    try {
+      const entry = await deleteTopic(lesson, state.topicId);
+      for (const id of entry.ids) runningTopics.get(id)?.controller.abort();
+      if (entry.annotationDeleted) await getFrame()?.reloadAnnotations();
+      await reload();
+      if (topicView === state) await closePanel({ focus: true });
+      offerUndo(entry, entry.ids.length > 1 ? `Темата и ${entry.ids.length - 1} теми от нея са изтрити.` : 'Темата е изтрита.');
+    } catch (err) {
+      console.warn('Cannot delete the topic:', err?.message || err);
+      announce('Темата не можа да се изтрие.');
+    }
+  }
+
+  /** The topics of the lesson: a tree in the order they were made (D-013: from the links). */
+  async function openTopics() {
+    const from = document.activeElement;
+    await closePanel();
+    if (destroyed) return;
+    returnFocus = from === document.body ? topicsButton : from;
+    setMode('topics');
+    panelTitle.textContent = `Теми (${topics.length})`;
+    mount(panelBody, h('div', { 'data-field': 'topics-list' }));
+    refreshTopicList();
+    panelTitle.focus({ preventScroll: true });
+  }
+  function refreshTopicList() {
+    const box = panelBody.querySelector('[data-field="topics-list"]');
+    if (!box || panelMode !== 'topics') return;
+    panelTitle.textContent = `Теми (${topics.length})`;
+    const ids = new Set(topics.map((x) => x.topic.id));
+    const kids = (id) => topics.filter((x) => x.topic.parent?.type === 'subtopic' && x.topic.parent.id === id);
+    const placedLesson = orderedTopics().all.map((x) => x.topic.id);
+    const roots = topics.filter((x) => !(x.topic.parent?.type === 'subtopic' && ids.has(x.topic.parent.id)))
+      .sort((a, b) => {
+        const ia = placedLesson.indexOf(a.topic.id);
+        const ib = placedLesson.indexOf(b.topic.id);
+        return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib) || (a.topic.id < b.topic.id ? -1 : 1);
+      });
+    const node = (x, depth) => h('li', { class: 'notes-list__item topic__item', 'data-topic': x.topic.id, 'data-depth': String(depth), 'data-status': x.topic.status },
+      press(button({ class: 'notes-list__open', 'data-action': 'open-topic' },
+        h('span', { class: 'topic__item-title', text: `🌱 ${x.topic.title || 'Тема без заглавие'}` }),
+        h('span', { class: 'notes-list__quote', text: quoted(x.topic.quote, 120) }),
+        x.topic.parent?.type === 'message' ? h('span', { class: 'notes-badge', text: 'от отговор' }) : null,
+        x.topic.status === 'error' ? h('span', { class: 'notes-badge notes-badge--orphan', text: 'не е довършена' }) : null),
+      () => openTopic(x.topic.id, { scroll: x.topic.parent?.type === 'lesson' })),
+      kids(x.topic.id).length ? h('ul', { class: 'notes-list topic__tree' }, kids(x.topic.id).map((k) => node(k, depth + 1))) : null);
+    mount(box,
+      topics.length ? null : h('p', { class: 'notes-panel__hint', 'data-field': 'topics-empty', text: 'Още няма теми. Задръж пръста върху текста на урока и натисни „🌱 Развий ми го“.' }),
+      roots.length ? h('ul', { class: 'notes-list topic__tree', 'data-field': 'topics-tree' }, roots.map((x) => node(x, 0))) : null);
+  }
+
   // --- Keys ------------------------------------------------------------------------------
   const onKey = (event) => {
     if (destroyed || event.defaultPrevented || event.key !== 'Escape' || !panelMode || getTool()) return;
@@ -1484,9 +2193,12 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     let found = threads;
     try { list = await lessonNotes(lesson); } catch (err) { console.warn('Cannot read the notes:', err?.name || err); }
     try { found = await lessonThreads(lesson); } catch (err) { console.warn('Cannot read the questions:', err?.name || err); }
+    let tree = topics;
+    try { tree = await lessonTopics(lesson); } catch (err) { console.warn('Cannot read the topics:', err?.name || err); }
     if (destroyed || run !== reloadRun) return;
     notes = list;
     threads = found;
+    topics = tree;
     refreshCounts();
     queuePlace();
     if (panelMode === 'list') {
@@ -1495,6 +2207,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       panelBody.scrollTop = scroll;
     } else if (panelMode === 'questions') {
       refreshQuestionList();
+    } else if (panelMode === 'topics') {
+      refreshTopicList();
     }
   }
   function refreshCounts() {
@@ -1509,8 +2223,12 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     element.dataset.count = String(all.length);
     prevButton.disabled = !all.length;
     nextButton.disabled = !all.length;
-    // T-023: the number of questions on the 💬.
-    const nq = threads.length;
+    // T-023: the number of questions on the 💬 (T-025: those of the lesson itself).
+    const nq = lessonThreadsOnly().length;
+    // T-025: the number of topics on the 🌱.
+    topicsCount.textContent = topics.length ? String(topics.length) : '';
+    topicsButton.setAttribute('aria-label', topics.length ? `Допълнителни теми на урока: ${topics.length}` : 'Допълнителни теми на урока');
+    element.dataset.topics = String(topics.length);
     questionsCount.textContent = nq ? String(nq) : '';
     const qLabel = nq ? `Въпрос към учителя за урока; въпроси: ${nq}` : 'Въпрос към учителя за урока';
     questionsButton.setAttribute('aria-label', qLabel);
@@ -1541,7 +2259,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
   // dialog) does NOT stop the lesson's own focus() in Chrome — checked.
   let guarded = null; // { frame, tabindex }
   /** The field the guard is for now: the note's or the question's (T-023). */
-  const currentField = () => editing || asking;
+  const currentField = () => editing || asking || topicField;
   /**
    * T018-D2 (and T-023 for the question): the field `ed.textarea` keeps the
    * keyboard while it has the focus — the lesson's frame is guarded (keys off,
@@ -1664,8 +2382,10 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       if (!annotation || getTool() || guarded) return;
       const item = notes.find((x) => x.annotation.id === annotation.id);
       if (item) { openNote(item.note.id); return; }
-      const thread = threads.find((x) => x.thread.annotationId === annotation.id);
+      const thread = lessonThreadsOnly().find((x) => x.thread.annotationId === annotation.id);
       if (thread) { openThread({ threadId: thread.thread.id }); return; }
+      const topic = topics.find((x) => x.topic.annotationId === annotation.id && x.topic.parent?.type === 'lesson');
+      if (topic && !COLORS.includes(annotation.color)) { openTopic(topic.topic.id); return; }
       if (COLORS.includes(annotation.color)) openMarkCard(annotation);
     },
     onLayout(next) {
@@ -1680,7 +2400,7 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
     },
     onAnchored() { refreshCounts(); queuePlace(); if (panelMode === 'list' || panelMode === 'questions') reload(); },
     /** The tool changed: no "Бележка" while a tool is on. */
-    onTool() { showSelectionButtons(); },
+    onTool() { showSelectionButtons(); topicView?.doc?.syncTool(); if (getTool()) { docSel = null; showDocBar(); } },
     reload,
     /** Escape inside the lesson (lrn:escape). */
     escape() {
@@ -1701,6 +2421,8 @@ export function createNotesStrip({ getFrame, getTool = () => null, course, lesso
       clearTimeout(focusTimer);
       cancelAnimationFrame(placeQueued);
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('selectionchange', onPanelSelection);
+      dropTopicView();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('pointerdown', onAnyPress, true);
       window.removeEventListener('keydown', onFocusKey, true);

@@ -1533,3 +1533,72 @@ ol.activity { list-style: none; }
 .thread__prompt[hidden] { display: none; }
 .thread__actions { margin-top: 12px; }
 .thread__list { margin-top: 16px; }
+
+/* T-025 (D-048): "Развий ми го" — the additional topics, in the panel of the notes. */
+.notes-strip-quick--expand { top: 168px; }
+.reader__notes[data-panel-open="true"] .notes-strip-quick--expand { top: 112px; }
+.notes-strip-phone-topics { top: 228px; }
+.notes-strip__mark--topic { border-style: solid; border-color: #2e7d32; }
+.notes-strip__topics[aria-expanded="true"] { border-color: var(--accent); }
+.topic__trail { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 0 0 6px; font-family: var(--font-sans); font-size: 0.8rem; color: var(--ink-muted); }
+.topic__crumb { min-height: 32px; padding: 2px 6px; border: 0; border-radius: 6px; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.topic__crumb--here { color: var(--ink); font-weight: 700; text-decoration: none; padding: 2px 6px; }
+.topic__nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.topic__doc { margin: 8px 0; }
+.topic__foot:empty { display: none; }
+.topic__section:empty { display: none; }
+.topic__section { margin-top: 14px; border-top: 1px solid var(--rule); padding-top: 6px; }
+.topic__children { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.topic__tree .topic__tree { margin-left: 14px; border-left: 2px solid var(--rule); padding-left: 6px; }
+.topic__item-title { display: block; font-weight: 700; }
+.topic__note-text { min-height: 3.5em; }
+.topic__links-note { font-size: 0.8rem; }
+/* The document of the app: its text with a gutter of icons at the right edge. */
+.app-doc { position: relative; padding-right: 36px; }
+.app-doc__body { overflow-wrap: anywhere; }
+.app-doc__gutter { position: absolute; top: 0; right: 0; bottom: 0; width: 34px; }
+.app-doc__icon {
+  position: absolute;
+  right: 0;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.app-doc__icon--topic { border-color: #2e7d32; }
+.app-doc__icon--thread { border-color: var(--accent); }
+.app-doc:not([data-tool="none"]):not([data-tool=""]) .app-doc__body[data-doc-type] { touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+.app-doc[data-tool="none"] .app-doc__body { touch-action: auto; }
+/* The bar of a selection inside a document of the panel (a topic, an answer). */
+.doc-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+.doc-bar[hidden] { display: none; }
+.doc-bar__button[hidden] { display: none; }
+.doc-bar__button { min-height: 44px; }
+/* The marks on the documents of the app (src/highlight.js: CSS Custom Highlight API). */
+::highlight(lrn-app-yellow) { background-color: var(--hl-yellow); color: inherit; }
+::highlight(lrn-app-green) { background-color: var(--hl-green); color: inherit; }
+::highlight(lrn-app-blue) { background-color: var(--hl-blue); color: inherit; }
+::highlight(lrn-app-pink) { background-color: var(--hl-pink); color: inherit; }
+::highlight(lrn-app-orange) { background-color: var(--hl-orange); color: inherit; }
+::highlight(lrn-app-ul-yellow) { text-decoration: underline 3px var(--ul-yellow); }
+::highlight(lrn-app-ul-green) { text-decoration: underline 3px var(--ul-green); }
+::highlight(lrn-app-ul-blue) { text-decoration: underline 3px var(--ul-blue); }
+::highlight(lrn-app-ul-pink) { text-decoration: underline 3px var(--ul-pink); }
+::highlight(lrn-app-ul-orange) { text-decoration: underline 3px var(--ul-orange); }
+::highlight(lrn-app-fuzzy) { text-decoration: underline dotted 2px var(--ink-muted); }
+::highlight(lrn-app-focus) { text-decoration: underline 2px var(--accent); }

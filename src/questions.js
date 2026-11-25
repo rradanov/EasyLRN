@@ -25,6 +25,7 @@
 import { STORES, list, create, get, update, remove, restore, getAnnotation, updateAnnotation, createMessage, COLORS } from './db.js';
 import { lessonRef, lessonAnnotations, annotateSelection, annotationDependents } from './annotations.js';
 import { questionText } from './teacher.js';
+import { annotateDocument } from './topics.js';
 
 export const MAX_QUESTION_LENGTH = 4000;
 
@@ -131,10 +132,15 @@ export function quoteContext(lessonTextResult, quote) {
  * given), { annotationId } for a mark, or {} for the lesson as a whole.
  * Returns { thread, annotation, createdAnnotation }.
  */
-export async function startThread({ course, lesson, place = {}, quote = '', paragraph = '', path = [], quoteFound = true }) {
+export async function startThread({ course, lesson, place = {}, quote = '', paragraph = '', path = [], quoteFound = true, doc = null, topicId = null }) {
   let annotation = null;
   let createdAnnotation = false;
-  if (place.annotationId) {
+  if (place.target && place.selector) {
+    // T-025: selected text of an additional topic (an annotation on its DocRef).
+    if (place.target.type !== 'subtopic' || place.target.id !== topicId) throw new TypeError('bad target');
+    annotation = await annotateDocument({ course, target: place.target, selector: place.selector, version: place.version ?? null });
+    createdAnnotation = true;
+  } else if (place.annotationId) {
     annotation = await ownAnnotation(lesson, place.annotationId);
   } else if (place.selection) {
     annotation = await annotateSelection({ course, lesson, selection: place.selection, color: null });
@@ -143,8 +149,9 @@ export async function startThread({ course, lesson, place = {}, quote = '', para
   const thread = await create(STORES.threads, {
     courseId: course.id,
     lessonId: lesson.id,
-    target: lessonRef(lesson),
+    target: topicId ? { type: 'subtopic', id: topicId } : lessonRef(lesson),
     annotationId: annotation ? annotation.id : null,
+    ...(topicId ? { topicId, doc: doc && { type: 'subtopic', id: topicId, title: String(doc.title || ''), text: String(doc.text || '') } } : {}),
     title: null,
     quote: annotation ? annotation.selector.quote.exact : String(quote || ''),
     paragraph: String(paragraph || ''),
@@ -157,7 +164,7 @@ export async function startThread({ course, lesson, place = {}, quote = '', para
 /** The text of the user's message as it is sent (the first one with its quote; teacher.js). */
 export function sentText(thread, lesson, question, followUp) {
   return questionText({
-    quote: thread.quote || '', paragraph: thread.paragraph || '', path: thread.path || [], question, lesson, followUp,
+    quote: thread.quote || '', paragraph: thread.paragraph || '', path: thread.path || [], question, lesson, followUp, doc: thread.doc || null,
   });
 }
 

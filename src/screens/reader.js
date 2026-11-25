@@ -249,6 +249,7 @@ export function readerScreen({ params, query }) {
     notes = createNotesStrip({
       getFrame: () => frame,
       getTool: () => tools?.tool || null,
+      getToolColor: () => tools?.color || 'yellow',
       course,
       lesson,
       settings,

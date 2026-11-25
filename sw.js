@@ -14,7 +14,7 @@
 //   the shell cache) before </body>.
 // - No web fonts (D-031): the old font cache `easylrn-fonts` is deleted.
 
-const VERSION = '0.18.1'; // keep in sync with src/config.js
+const VERSION = '0.19.0'; // keep in sync with src/config.js
 const RENDER_VERSION = 4; // keep in sync with src/lesson-render.js
 const BRIDGE_MARKER = '<!--easylrn:bridge-->'; // the renderer's last child of <body> (T050-D1)
 const CACHE_PREFIX = 'easylrn-shell-';
@@ -59,10 +59,13 @@ const SHELL = [
   './src/notes.js',
   './src/questions.js', // T-023
   './src/voice.js', // T-041
+  './src/topics.js', // T-025
+  './src/screens/app-doc.js', // T-025
   './src/claude.js',
   './src/usage.js',
   './src/teacher.js',
   './prompts/teacher-system.md',
+  './prompts/expand.md', // T-025
   './src/theme.js',
   './src/orientation.js',
   './src/screens/settings.js',

@@ -532,6 +532,7 @@ test.describe('T072-D the kept copies "lrn-note-pending:<place>" and the emptied
     await expect.poll(async () => (await liveAnn(page)).filter((a) => a.color === 'blue').length).toBe(1);
     await page.keyboard.press('Escape');
     const t = await textBox(page, 'се прилага за продукти');
+    await page.waitForTimeout(5600); // T-077 (T042-S1): a tap in the lesson opens a card only after a clean gesture
     await page.mouse.click(t.x + 10, t.y);
     await page.locator('[data-action="add-note-to-mark"]').click();
     await noteText(page).pressSequentially('На синята', { delay: 2 });

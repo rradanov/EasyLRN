@@ -546,6 +546,7 @@ test.describe('T070-D the text kept when the page goes (T018-D3 fix)', () => {
     await expect.poll(async () => (await liveAnn(page)).filter((a) => a.color === 'green').length).toBe(1);
     await page.keyboard.press('Escape');
     const t = await textBox(page, 'Уязвимостите се докладват');
+    await page.waitForTimeout(5600); // T-077 (T042-S1): a tap in the lesson opens a card only after a clean gesture
     await page.mouse.click(t.x + 20, t.y);
     await page.locator('[data-action="add-note-to-mark"]').click();
     await noteText(page).pressSequentially('На маркировка', { delay: 2 });

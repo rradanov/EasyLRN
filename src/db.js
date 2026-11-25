@@ -1156,7 +1156,8 @@ export async function resolveRoot(ref) {
       case 'message': {
         const msg = await get(STORES.messages, id, { includeDeleted: true });
         const thread = msg && await get(STORES.threads, msg.threadId, { includeDeleted: true });
-        ann = thread && await get(STORES.annotations, thread.annotationId, { includeDeleted: true });
+        // A question about the lesson as a whole has no annotation: its target is the document (T-025).
+        ann = thread && (thread.annotationId ? await get(STORES.annotations, thread.annotationId, { includeDeleted: true }) : thread.target && { target: thread.target });
         break;
       }
     }

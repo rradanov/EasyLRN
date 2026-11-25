@@ -62,7 +62,7 @@ const clip = clipText;
  * letter case. The model still reads the text; only the app writes real tags.
  */
 export const PROMPT_TAGS = Object.freeze(['LESSON', 'MISSION', 'NOTES', 'RESOURCES', 'GLOSSARY', 'QUOTE', 'PARAGRAPH',
-  'QUESTION', 'ANSWER', 'COURSE', 'REFERENCE', 'SYSTEM', 'RULES', 'MATERIAL', 'INSTRUCTIONS', 'THREAD', 'HISTORY', 'USER', 'ASSISTANT', 'HUMAN']);
+  'QUESTION', 'ANSWER', 'COURSE', 'REFERENCE', 'SYSTEM', 'RULES', 'MATERIAL', 'INSTRUCTIONS', 'THREAD', 'HISTORY', 'USER', 'ASSISTANT', 'HUMAN', 'TOPIC', 'PARENT', 'TASK']);
 // T042-S3 (replaces the fixed list of T024-S2): a model reads "<", any run of
 // characters that are not letters or digits, then "/" as a closing tag — so
 // every such run is neutralised, whatever the characters are (white space,
@@ -267,8 +267,22 @@ export function lessonBlock(lesson, text) {
   return `<LESSON>\n${neutralizeTags(head)}\n\n${neutralizeTags(text.text)}\n</LESSON>`;
 }
 
+/** The most of a parent document (a topic, an answer) that goes with a quote of it (T-025). */
+export const PARENT_CHARS = 20000;
+const DOC_NAMES = { subtopic: 'допълнителната тема', message: 'отговора на учителя' };
+/**
+ * T-025: the app's own document a quote was taken from (a topic, an answer of
+ * the teacher) — its title and text, as they were when the thread / topic was
+ * made (kept in the record: the prompt stays the same byte for byte).
+ */
+function docText(doc) {
+  if (!doc || !DOC_NAMES[doc.type] || typeof doc.text !== 'string' || !doc.text.trim()) return '';
+  const title = neutralizeTags(clean(clip(String(doc.title || ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim());
+  return `Текстът е избран в ${DOC_NAMES[doc.type]}${title ? ` „${title}“` : ''}:\n<PARENT>\n${neutralizeTags(clean(clip(doc.text, PARENT_CHARS)).trim())}\n</PARENT>`;
+}
+
 /** The place of a thread: the quote, its paragraph and the path of headings (or "the lesson as a whole"). */
-export function placeText({ quote = '', paragraph = '', path = [], lesson = null }) {
+export function placeText({ quote = '', paragraph = '', path = [], lesson = null, doc = null }) {
   const q = neutralizeTags(clean(clip(quote, LIMITS.quote)).trim());
   const p = neutralizeTags(clean(clip(paragraph, LIMITS.paragraph)).trim());
   const where = (Array.isArray(path) ? path : []).slice(0, LIMITS.pathItems)
@@ -278,6 +292,8 @@ export function placeText({ quote = '', paragraph = '', path = [], lesson = null
     lines.push(`Избран текст: «${q}»`);
     if (p && p !== q) lines.push(`Абзацът: «${p}»`);
     if (where.length) lines.push(`Място в урока: ${where.join(' › ')}`);
+    const parent = docText(doc);
+    if (parent) lines.push(parent);
   } else {
     lines.push(`Въпрос за ${lesson?.kind === 'reference' ? 'справочника' : 'урока'} като цяло.`);
   }
@@ -285,11 +301,11 @@ export function placeText({ quote = '', paragraph = '', path = [], lesson = null
 }
 
 /** The user's message: the quote, its paragraph, the path of headings, the question. */
-export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null, followUp = false }) {
+export function questionText({ quote = '', paragraph = '', path = [], question = '', lesson = null, followUp = false, doc = null }) {
   const ask = clean(clip(question, LIMITS.question)).trim();
   // T-023: a next question of a thread: only the question (the place is in the first turn).
   if (followUp) return `Въпрос: ${ask}`;
-  return `${placeText({ quote, paragraph, path, lesson })}\n\nВъпрос: ${ask}`;
+  return `${placeText({ quote, paragraph, path, lesson, doc })}\n\nВъпрос: ${ask}`;
 }
 
 /** Pairs dropped at once when a thread outgrows LIMITS.history (T024-D2). */
@@ -330,24 +346,19 @@ export function historyWindow(history) {
  *   model?: string, maxTokens?: number }} opts
  * @returns {{ model, maxTokens, system: object[], messages: object[], cacheControl: object|null, meta }}
  */
-export function buildRequest({ rules, course, lesson, text, quote = '', paragraph = '', path = [], question, history = [], followUp = false, model = DEFAULT_MODEL, maxTokens = DEFAULT_MAX_TOKENS }) {
+export function buildRequest({ rules, course, lesson, text, quote = '', paragraph = '', path = [], question, history = [], followUp = false, doc = null, model = DEFAULT_MODEL, maxTokens = DEFAULT_MAX_TOKENS }) {
   if (!rules?.text) throw new Error('teacher rules missing');
   if (typeof question !== 'string' || !question.trim()) throw new Error('empty question');
-  const lessonPart = shortenLesson(text.text, quote);
-  const system = [
-    { type: 'text', text: rules.text },
-    { type: 'text', text: courseBlock(course), cache_control: { ...CACHE_1H } },
-    { type: 'text', text: lessonBlock(lesson, { title: text.title, text: lessonPart.text }), cache_control: { ...CACHE_1H } },
-  ];
+  const { system, lessonPart } = systemBlocks({ rules, course, lesson, text, quote: doc ? '' : quote });
   const turns = historyWindow(history);
   // T024-D2: the place of the thread is always in its first turn — also when the
   // first answer failed (the first kept turn is then a next question) or no
   // earlier answer is kept at all. Deterministic: the same prefix every time.
-  const place = placeText({ quote, paragraph, path, lesson });
+  const place = placeText({ quote, paragraph, path, lesson, doc });
   if (turns.length && !turns[0].content.startsWith(`${place}\n\n`)) turns[0].content = `${place}\n\n${turns[0].content}`;
   const messages = [
     ...turns.map((t) => ({ role: t.role, content: [{ type: 'text', text: t.content }] })),
-    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson, followUp: followUp && turns.length > 0 }) }] },
+    { role: 'user', content: [{ type: 'text', text: questionText({ quote, paragraph, path, question, lesson, doc, followUp: followUp && turns.length > 0 }) }] },
   ];
   return {
     model,
@@ -358,6 +369,104 @@ export function buildRequest({ rules, course, lesson, text, quote = '', paragrap
     cacheControl: turns.length ? { type: 'ephemeral' } : null,
     meta: { rulesVersion: rules.version || '', textVersion: TEXT_VERSION, shortened: lessonPart.shortened },
   };
+}
+
+/**
+ * The system blocks of every request about a lesson (a question, a topic): the
+ * rules, the course, the lesson — the same bytes for both, so a topic hits the
+ * cache a question made and the other way round (D-017).
+ */
+function systemBlocks({ rules, course, lesson, text, quote = '' }) {
+  const lessonPart = shortenLesson(text.text, quote);
+  return {
+    lessonPart,
+    system: [
+      { type: 'text', text: rules.text },
+      { type: 'text', text: courseBlock(course), cache_control: { ...CACHE_1H } },
+      { type: 'text', text: lessonBlock(lesson, { title: text.title, text: lessonPart.text }), cache_control: { ...CACHE_1H } },
+    ],
+  };
+}
+
+// --- T-025 (D-048): "Развий ми го" -------------------------------------------------
+
+export const EXPAND_URL = './prompts/expand.md';
+let expandCache = null;
+/** The instructions of a topic (prompts/expand.md without its comment): { text, version }. */
+export async function loadExpand() {
+  if (expandCache) return expandCache;
+  const response = await fetch(EXPAND_URL, { cache: 'no-cache', credentials: 'same-origin' });
+  if (!response.ok) throw new Error(`expand instructions: HTTP ${response.status}`);
+  expandCache = parseRules(await response.text());
+  return expandCache;
+}
+
+/** The trail of a topic for the prompt: "Урок 0001 › Тема › Подтема" (titles of the app, neutralised). */
+export function trailText(trail) {
+  const items = (Array.isArray(trail) ? trail : []).slice(-LIMITS.pathItems)
+    .map((s) => neutralizeTags(clean(clip(String(s ?? ''), LIMITS.pathItem)).replace(/\s+/g, ' ').trim())).filter(Boolean);
+  return items.join(' › ');
+}
+
+/**
+ * The request of a topic (D-048): the same system blocks as a question; one
+ * user turn — the place (quote, paragraph, path; the text of the topic / the
+ * answer it was taken from), the trail of topics above it, the instructions.
+ */
+export function buildTopicRequest({ rules, expand, course, lesson, text, quote = '', paragraph = '', path = [], trail = [], doc = null, model = DEFAULT_MODEL, maxTokens = DEFAULT_MAX_TOKENS }) {
+  if (!rules?.text) throw new Error('teacher rules missing');
+  if (!expand?.text) throw new Error('expand instructions missing');
+  if (!String(quote || '').trim()) throw new Error('empty quote');
+  const { system, lessonPart } = systemBlocks({ rules, course, lesson, text, quote: doc ? '' : quote });
+  const lines = [placeText({ quote, paragraph, path, lesson, doc })];
+  const where = trailText(trail);
+  if (where) lines.push(`Път на темите: ${where}`);
+  lines.push(expand.text);
+  return {
+    model,
+    maxTokens,
+    system,
+    messages: [{ role: 'user', content: [{ type: 'text', text: lines.join('\n\n') }] }],
+    cacheControl: null,
+    meta: { rulesVersion: rules.version || '', expandVersion: expand.version || '', textVersion: TEXT_VERSION, shortened: lessonPart.shortened },
+  };
+}
+
+/** The tokens of a topic: "maxTokensSubtopic" of the settings (3000 by default). */
+export const topicMaxTokens = (settings) => answerMaxTokens(settings?.maxTokensSubtopic ?? 3000);
+
+/**
+ * Write a topic: streamed; the cost is kept as a "subtopic" (src/usage.js).
+ * Resolves { text, usage, costUSD, month, request } or rejects with a ClaudeError.
+ */
+export async function askTopic({ apiKey, settings = {}, course, lesson, quote, paragraph, path, trail, doc, signal, onText, retryWaits, idleTimeoutMs }) {
+  const [rules, expand, text] = await Promise.all([loadRules(), loadExpand(), lessonText(lesson)]);
+  const request = buildTopicRequest({
+    rules, expand, course, lesson, text, quote, paragraph, path, trail, doc,
+    model: settings.model || DEFAULT_MODEL, maxTokens: topicMaxTokens(settings),
+  });
+  const result = await streamMessage({
+    apiKey, model: request.model, maxTokens: request.maxTokens, system: request.system, messages: request.messages,
+    cacheControl: null, signal, onText,
+    ...(retryWaits ? { retryWaits } : {}), ...(idleTimeoutMs ? { idleTimeoutMs } : {}),
+  });
+  let month = null;
+  try {
+    month = await recordCall({ model: result.model, kind: 'subtopic', usage: result.usage, costUSD: result.costUSD });
+  } catch (err) {
+    console.warn('Cannot keep the cost of the topic:', err?.name || 'error');
+  }
+  return { text: result.text, usage: result.usage, costUSD: result.costUSD, stopReason: result.stopReason, model: result.model, month, request };
+}
+
+/** "Покажи промпта" of a topic: the request without sending it. */
+export async function previewTopic({ settings = {}, course, lesson, quote, paragraph, path, trail, doc }) {
+  const [rules, expand, text] = await Promise.all([loadRules(), loadExpand(), lessonText(lesson)]);
+  const request = buildTopicRequest({
+    rules, expand, course, lesson, text, quote, paragraph, path, trail, doc,
+    model: settings.model || DEFAULT_MODEL, maxTokens: topicMaxTokens(settings),
+  });
+  return { request, text: showPrompt(request) };
 }
 
 /** "Покажи промпта" (D-047): the whole prompt as plain text, exactly what is sent. */
@@ -381,10 +490,10 @@ export function showPrompt(request) {
  *   quote?: string, paragraph?: string, path?: string[], question: string,
  *   history?: object[], signal?: AbortSignal, onText?: Function, fetchOptions?: object }} opts
  */
-export async function askTeacher({ apiKey, settings = {}, course, lesson, quote, paragraph, path, question, history, followUp, signal, onText, retryWaits, idleTimeoutMs }) {
+export async function askTeacher({ apiKey, settings = {}, course, lesson, quote, paragraph, path, question, history, followUp, doc = null, signal, onText, retryWaits, idleTimeoutMs }) {
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
-    rules, course, lesson, text, quote, paragraph, path, question, history, followUp,
+    rules, course, lesson, text, quote, paragraph, path, question, history, followUp, doc,
     model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   const result = await streamMessage({
@@ -402,10 +511,10 @@ export async function askTeacher({ apiKey, settings = {}, course, lesson, quote,
 }
 
 /** For "Покажи промпта" before sending: the request without sending it. */
-export async function previewTeacher({ settings = {}, course, lesson, quote, paragraph, path, question, history, followUp }) {
+export async function previewTeacher({ settings = {}, course, lesson, quote, paragraph, path, question, history, followUp, doc = null }) {
   const [rules, text] = await Promise.all([loadRules(), lessonText(lesson)]);
   const request = buildRequest({
-    rules, course, lesson, text, quote, paragraph, path, question, history, followUp,
+    rules, course, lesson, text, quote, paragraph, path, question, history, followUp, doc,
     model: settings.model || DEFAULT_MODEL, maxTokens: answerMaxTokens(settings.maxTokensAnswer),
   });
   return { request, text: showPrompt(request) };

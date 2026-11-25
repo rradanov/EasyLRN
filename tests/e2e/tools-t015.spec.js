@@ -462,6 +462,8 @@ test.describe('T-015 tools: the bar, drawing with one finger, scrolling with two
     await waitMarks(page, 0);
     // Escape inside the lesson turns the tool off too.
     await expect(tool(page, 'pencil')).toHaveAttribute('aria-pressed', 'true');
+    // T-077 (T042-S1): lrn:escape acts only after a clean gesture in the lesson (5 s after a key / press in the app).
+    await page.waitForTimeout(5600);
     await page.locator('iframe.lesson-frame').focus();
     await frame.locator('body').press('Escape');
     await expect(tool(page, 'pencil')).toHaveAttribute('aria-pressed', 'false');
